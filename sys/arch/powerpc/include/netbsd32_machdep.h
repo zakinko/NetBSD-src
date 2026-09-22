@@ -70,4 +70,6 @@ extern char netbsd32_esigcode[], netbsd32_sigcode[];
 #define	NETBSD32_MD_IOCTL	/* enable netbsd32_md_ioctl() */
 int netbsd32_md_ioctl(struct file *, netbsd32_u_long, void *, struct lwp *);
 
+#define	NETBSD32_MID_MACHINE	MID_POWERPC
+
 #endif /* _MACHINE_NETBSD32_H_ */

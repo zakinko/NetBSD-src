@@ -11,6 +11,7 @@ _BSD_ENDIAN_MK_=1
     (!empty(MACHINE_ARCH:Mearm*) && empty(MACHINE_ARCH:Mearm*eb)) || \
     ${MACHINE_ARCH} == "i386" || \
     ${MACHINE_ARCH} == "ia64" || \
+    ${MACHINE_ARCH} == "powerpc64le" || \
     ${MACHINE_ARCH} == "vax" || \
     ${MACHINE_ARCH} == "riscv32" || \
     ${MACHINE_ARCH} == "riscv64" || \

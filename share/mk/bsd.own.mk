@@ -14,7 +14,7 @@ MAKECONF?=	/etc/mk.conf
 #
 # CPU model, derived from MACHINE_ARCH
 #
-MACHINE_CPU=	${MACHINE_ARCH:C/mips.*e[bl]/mips/:C/sh3e[bl]/sh3/:S/coldfire/m68k/:S/m68000/m68k/:S/m68ksf/m68k/:C/e?arm.*/arm/:S/powerpc64/powerpc/:S/aarch64eb/aarch64/:S/or1knd/or1k/:C/riscv../riscv/}
+MACHINE_CPU=	${MACHINE_ARCH:C/mips.*e[bl]/mips/:C/sh3e[bl]/sh3/:S/coldfire/m68k/:S/m68000/m68k/:S/m68ksf/m68k/:C/e?arm.*/arm/:S/powerpc64le/powerpc/:S/powerpc64/powerpc/:S/aarch64eb/aarch64/:S/or1knd/or1k/:C/riscv../riscv/}
 
 .if (${MACHINE_ARCH} == "mips64el" || \
      ${MACHINE_ARCH} == "mips64eb" || \
@@ -245,6 +245,7 @@ _LIBC_COMPILER_RT.aarch64eb=	yes
 _LIBC_COMPILER_RT.i386=		yes
 _LIBC_COMPILER_RT.powerpc=	yes
 _LIBC_COMPILER_RT.powerpc64=	yes
+_LIBC_COMPILER_RT.powerpc64le=	yes
 _LIBC_COMPILER_RT.sparc=	yes
 _LIBC_COMPILER_RT.sparc64=	yes
 _LIBC_COMPILER_RT.x86_64=	yes
@@ -794,6 +795,7 @@ CC_WNO_STRINGOP_TRUNCATION=	${${ACTIVE_CC} == "gcc" && ${HAVE_GCC:U0} >= 8:? -Wn
 .if \
     ${MACHINE_ARCH} == "i386"  || \
     ${MACHINE_ARCH} == "powerpc64" || \
+    ${MACHINE_ARCH} == "powerpc64le" || \
     ${MACHINE_ARCH} == "x86_64"
 LD_PACK_RELATIVE_RELOCS=	-Wl,-z,pack-relative-relocs
 LD_NOPACK_RELATIVE_RELOCS=	-Wl,-z,nopack-relative-relocs
@@ -1168,6 +1170,7 @@ MK${var:S/^NO//}:=	no
     (${MACHINE_ARCH} == "aarch64" && ${HAVE_GCC:U0} == 0) || \
     ${MACHINE_MIPS64} || \
     ${MACHINE_ARCH} == "powerpc64" || \
+    ${MACHINE_ARCH} == "powerpc64le" || \
     ${MACHINE_ARCH} == "riscv64" || \
     ${MACHINE_ARCH} == "sparc64" || \
     ${MACHINE_ARCH} == "x86_64"
@@ -1738,6 +1741,7 @@ _NEEDS_LIBCXX.aarch64eb=	yes
 _NEEDS_LIBCXX.i386=		yes
 _NEEDS_LIBCXX.powerpc=		yes
 _NEEDS_LIBCXX.powerpc64=	yes
+_NEEDS_LIBCXX.powerpc64le=	yes
 _NEEDS_LIBCXX.sparc=		yes
 _NEEDS_LIBCXX.sparc64=		yes
 _NEEDS_LIBCXX.x86_64=		yes

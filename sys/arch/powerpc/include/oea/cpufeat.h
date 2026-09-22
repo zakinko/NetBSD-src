@@ -55,7 +55,8 @@ void	cpu_model_init(void);
 extern unsigned long oeacpufeat;
 
 #define oea_mapiodev(addr, size) ((oeacpufeat & OEACPU_NOBAT) ? \
-			mapiodev((paddr_t)(addr), (size), 0) : (void *)(addr))
+			mapiodev((paddr_t)(addr), (size), 0) : \
+			(void *)(uintptr_t)(addr))
 
 #endif
 

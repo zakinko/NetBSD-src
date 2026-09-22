@@ -167,7 +167,9 @@
 #define	KERNELN_SEGMENT(s)	VSID_MAKE(s, KERNEL_VSIDBITS)
 /* XXXSL: need something here that will never be mapped */
 #define	EMPTY_SEGMENT		VSID_MAKE(0, 0xffffe)
+#ifndef _LP64
 #define	USER_ADDR		((void *)(USER_SR << ADDR_SR_SHFT))
+#endif
 
 /*
  * Some system constants
@@ -187,6 +189,13 @@
 #ifdef _LP64
 #define	VM_MIN_KERNEL_ADDRESS	((vaddr_t) 0xffffffUL << 40) /* top 1TB */
 #define	VM_MAX_KERNEL_ADDRESS	((vaddr_t) -32768)
+/*
+ * The segment below the kernel, as it is with segment registers, where
+ * USER_SR is 12 and KERNEL_SR is 13.  Keeping that relationship means
+ * the va < VM_MIN_KERNEL_ADDRESS tests elsewhere still read the window
+ * as user space, which is what it maps.
+ */
+#define	USER_ADDR		((void *)(VM_MIN_KERNEL_ADDRESS - SEGMENT_LENGTH))
 #else
 #define	VM_MIN_KERNEL_ADDRESS	((vaddr_t) (KERNEL_SR << ADDR_SR_SHFT))
 #define	VM_MAX_KERNEL_ADDRESS	(VM_MIN_KERNEL_ADDRESS + 2*SEGMENT_LENGTH)

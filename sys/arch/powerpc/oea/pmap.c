@@ -872,6 +872,8 @@ pmap_pte_insert(int ptegidx, struct pte *pvo_pt)
 #if defined(PMAP_OEA64)
 #define	KERNEL_SEGMENT_ESID \
 	((register_t)(VM_MIN_KERNEL_ADDRESS >> ADDR_SR_SHFT) << STE_ESID_SHFT)
+#define	USER_WINDOW_ESID \
+	((register_t)((vaddr_t)USER_ADDR >> ADDR_SR_SHFT) << STE_ESID_SHFT)
 
 /*
  * The primary group is selected by the low five bits of the ESID and
@@ -884,6 +886,29 @@ pmap_steg(struct pmap *pm, register_t esid, unsigned int group)
 	    (group == 0 ? esid : ~esid) & STE_ESID_MASK;
 
 	return &pm->pm_steg_table[idx].st[0];
+}
+
+/* 12.12.2.1: everything but the valid bit, then a sync, then the bit. */
+static void
+pmap_ste_enter(volatile struct ste *ste, register_t ste_hi, register_t vsid)
+{
+
+	ste->ste_hi = ste_hi;
+	ste->ste_lo = vsid << STE_VSID_SHFT;
+	SYNC();
+	ste->ste_hi = ste_hi | STE_VALID;
+}
+
+/* 12.12.2.3: clear the valid bit, then flush the entry from the SLB. */
+static void
+pmap_ste_remove(volatile struct ste *ste)
+{
+	const register_t esid = (ste->ste_hi & STE_ESID) >> STE_ESID_SHFT;
+
+	ste->ste_hi &= ~STE_VALID;
+	SYNC();
+	SLBIE(esid << ADDR_SR_SHFT);
+	SYNC();
 }
 
 /*
@@ -928,10 +953,7 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 			if ((ste->ste_hi & STE_VALID) != 0)
 				continue;
 
-			ste->ste_hi = ste_hi;
-			ste->ste_lo = vsid << STE_VSID_SHFT;
-			SYNC();
-			ste->ste_hi = ste_hi | STE_VALID;
+			pmap_ste_enter(ste, ste_hi, vsid);
 			done = 1;
 			goto out;
 		}
@@ -947,22 +969,16 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 		const unsigned int slot = (pm->pm_ste_evictions + i) & 0xf;
 
 		ste = pmap_steg(pm, esid, slot >> 3) + (slot & 7);
+		if ((ste->ste_hi & STE_ESID) == USER_WINDOW_ESID)
+			continue;	/* copyin() is using it */
 		if (pm != pmap_kernel() ||
 		    (ste->ste_hi & STE_ESID) != KERNEL_SEGMENT_ESID)
 			break;
 	}
 	pm->pm_ste_evictions++;
 
-	/* 12.12.2.2: invalidate, flush from the SLB, then rewrite. */
-	esid = (ste->ste_hi & STE_ESID) >> STE_ESID_SHFT;
-	ste->ste_hi &= ~STE_VALID;
-	SYNC();
-	SLBIE(esid << ADDR_SR_SHFT);
-	SYNC();
-	ste->ste_hi = ste_hi;
-	ste->ste_lo = vsid << STE_VSID_SHFT;
-	SYNC();
-	ste->ste_hi = ste_hi | STE_VALID;
+	pmap_ste_remove(ste);
+	pmap_ste_enter(ste, ste_hi, vsid);
 	done = 1;
 
  out:
@@ -970,6 +986,94 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 	PMAP_UNLOCK();
 
 	return done;
+}
+/*
+ * Map the segment holding uva where the kernel can reach it, for
+ * copyin() and copyout().  With segment registers one of them is
+ * reserved for this; here the window is a segment of its own, and the
+ * entry that maps it goes into the table like any other -- except that
+ * pmap_ste_spill() leaves it alone while it is in use.
+ */
+vaddr_t
+pmap_setusr(vaddr_t uva)
+{
+	struct pcb * const pcb = curpcb;
+	struct pmap * const pm = pcb->pcb_pm;
+	volatile struct ste *ste;
+	register_t msr;
+	unsigned int group, i;
+
+	KASSERT(pcb->pcb_kmapsr == 0);
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	for (group = 0; group < 2; group++) {
+		ste = pmap_steg(pm, USER_WINDOW_ESID >> STE_ESID_SHFT, group);
+		for (i = 0; i < 8; i++, ste++) {
+			if ((ste->ste_hi & STE_VALID) != 0)
+				continue;
+			pmap_ste_enter(ste,
+			    USER_WINDOW_ESID | STE_PRKEY | STE_NOEXEC,
+			    va_to_vsid(pm, uva));
+			goto found;
+		}
+	}
+	/*
+	 * Both groups are full, so one entry has to go; whatever it was
+	 * will be entered again by the next segment fault on it.  Not
+	 * the kernel's own, though -- we are running in it.
+	 */
+	ste = pmap_steg(pm, USER_WINDOW_ESID >> STE_ESID_SHFT, 0);
+	for (i = 0; i < 8; i++, ste++) {
+		if ((ste->ste_hi & STE_ESID) != KERNEL_SEGMENT_ESID)
+			break;
+	}
+	pmap_ste_remove(ste);
+	pmap_ste_enter(ste, USER_WINDOW_ESID | STE_PRKEY | STE_NOEXEC,
+	    va_to_vsid(pm, uva));
+	pm->pm_ste_evictions++;
+
+ found:
+	pcb->pcb_kmapsr = (vaddr_t)USER_ADDR >> ADDR_SR_SHFT;
+	pcb->pcb_umapsr = uva >> ADDR_SR_SHFT;
+
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
+
+	return (vaddr_t)USER_ADDR;
+}
+
+vaddr_t
+pmap_unsetusr(void)
+{
+	struct pcb * const pcb = curpcb;
+	struct pmap * const pm = pcb->pcb_pm;
+	volatile struct ste *ste;
+	register_t msr;
+	unsigned int group, i;
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	for (group = 0; group < 2; group++) {
+		ste = pmap_steg(pm, USER_WINDOW_ESID >> STE_ESID_SHFT, group);
+		for (i = 0; i < 8; i++, ste++) {
+			if ((ste->ste_hi & STE_VALID) == 0 ||
+			    (ste->ste_hi & STE_ESID) != USER_WINDOW_ESID)
+				continue;
+			pmap_ste_remove(ste);
+			goto done;
+		}
+	}
+ done:
+	pcb->pcb_kmapsr = 0;
+	pcb->pcb_umapsr = 0;
+
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
+
+	return 0;
 }
 #endif /* PMAP_OEA64 */
 

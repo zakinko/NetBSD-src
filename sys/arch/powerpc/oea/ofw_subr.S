@@ -51,6 +51,8 @@
 	/* Client SR save area */
 	.lcomm	clsrsave,64,4
 
+	.lcomm	clasrsave,8,8
+
 	/* MSR used in OpenFirmware */
 	.globl	ofwmsr
 	.comm	ofwmsr,4,4
@@ -183,6 +185,24 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 #endif /* EFIKA_OFW_WORKAROUNDS */
 #endif /* PPC_OEA */
 
+#if defined(PPC_OEA64)
+	mfspr	%r0,SPR_ASR		/* save current segment table */
+	lis	%r4,clasrsave@ha
+	stptr	%r0,clasrsave@l(%r4)
+
+	lis	%r4,_C_LABEL(ofw_pmap)@ha
+	addi	%r4,%r4,_C_LABEL(ofw_pmap)@l
+	ldptr	%r0,PM_STEG(%r4)	/* OFW's, if it has one yet */
+	cmpptri	%r0,0
+	beq	2f
+	ori	%r0,%r0,1		/* ASR[63]: search this table */
+	sync
+	mtspr	SPR_ASR,%r0
+	slbia				/* SLB caches the old table */
+	sync
+	isync
+2:
+#else
 	lis	%r4,clsrsave@ha		/* save current SRs */
 	addi	%r4,%r4,clsrsave@l
 	li	%r5,0
@@ -206,6 +226,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	cmpwi	%r5,0
 	bne	1b
 2:
+#endif /* PPC_OEA64 */
 	/* curcpu()->ci_battable = &ofw_battable */
 	GET_CPUINFO(%r4)
 	lis	%r5,_C_LABEL(ofw_battable)@ha
@@ -233,6 +254,15 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	addi	%r5,%r5,_C_LABEL(battable)@l
 	stw	%r5,CI_BATTABLE(%r4)
 
+#if defined(PPC_OEA64)
+	lis	%r4,clasrsave@ha	/* restore our segment table */
+	ldptr	%r0,clasrsave@l(%r4)
+	sync
+	mtspr	SPR_ASR,%r0
+	slbia
+	sync
+	isync
+#else
 	lis	%r4,clsrsave@ha		/* restore saved SRs */
 	addi	%r4,%r4,clsrsave@l
 	li	%r5,0
@@ -242,6 +272,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	addis	%r5,%r5,0x10000000@h
 	cmpwi	%r5,0
 	bne	1b
+#endif /* PPC_OEA64 */
 
 #if defined (PPC_OEA) || defined (PPC_OEA64_BRIDGE)
 #ifdef EFIKA_OFW_WORKAROUNDS

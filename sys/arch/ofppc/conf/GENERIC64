@@ -1,3 +1,8 @@
 # $NetBSD: GENERIC64,v 1.1 2014/02/28 05:52:56 matt Exp $
 include "arch/ofppc/conf/GENERIC"
 include "arch/ofppc/conf/std.ofppc64"
+
+# std.ofppc64 asks for COMPAT_NETBSD32, but the machine dependent half of it
+# does not exist for powerpc yet -- only netbsd32_sigcode.S is there, so
+# cpu_getmcontext32() and the rest are undefined at link time.
+no options 	COMPAT_NETBSD32

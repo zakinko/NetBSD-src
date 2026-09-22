@@ -3807,6 +3807,33 @@ pmap_bootstrap2(void)
 		(32 - __builtin_clz(pmap_pteg_mask >> 11)))
 	    : "memory");
 #endif
+
+#if defined(PMAP_OEA64)
+	/*
+	 * The segment table is one page, on a page boundary, holding 32
+	 * groups of eight entries (12.4.1.2).  ASR bits 0:51 are its real
+	 * address and bit 63 asks the processor to search it.
+	 *
+	 * XXX Only the kernel has one.  pmap_pinit() does not give a pmap
+	 * XXX its own table and cpu_switchto() does not swap the ASR, so
+	 * XXX a user process has nowhere for its segments to go yet.
+	 */
+	pmap_kernel()->pm_steg_table =
+	    (void *)(uintptr_t)pmap_boot_find_memory(PAGE_SIZE, PAGE_SIZE, 0);
+#if defined(DIAGNOSTIC) || defined(DEBUG) || defined(PMAPCHECK)
+	if ((uintptr_t)pmap_kernel()->pm_steg_table + PAGE_SIZE >
+	    PMAP_DIRECT_MAPPED_LEN)
+		panic("pmap_bootstrap: segment table (%p) is not direct "
+		    "mapped", pmap_kernel()->pm_steg_table);
+#endif
+	memset(pmap_kernel()->pm_steg_table, 0, PAGE_SIZE);
+	__asm volatile("sync; mtspr %0,%1; isync"
+	    :
+	    : "n"(SPR_ASR),
+	      "r"((uintptr_t)pmap_kernel()->pm_steg_table | 1)
+	    : "memory");
+#endif
+
 	tlbia();
 
 #if defined(PMAPDEBUG)

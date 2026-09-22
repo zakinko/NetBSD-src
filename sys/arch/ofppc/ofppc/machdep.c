@@ -473,7 +473,7 @@ ofppc_init_comcons(int isa_node)
 static void
 of_set_palette(void *cookie, int index, int r, int g, int b)
 {
-	int ih = (int)cookie;
+	int ih = (int)(uintptr_t)cookie;
 
 	OF_call_method_1("color!", ih, 4, r, g, b, index);
 }
@@ -517,7 +517,7 @@ copy_disp_props(device_t dev, int node, prop_dictionary_t dict)
 		aprint_debug("found edid\n");
 	}
 
-	gfb_cb.gcc_cookie = (void *)console_instance;
+	gfb_cb.gcc_cookie = (void *)(uintptr_t)console_instance;
 	gfb_cb.gcc_set_mapreg = of_set_palette;
 	cmap_cb = (uint64_t)(uintptr_t)&gfb_cb;
 	prop_dictionary_set_uint64(dict, "cmap_callback", cmap_cb);

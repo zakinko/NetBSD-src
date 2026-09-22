@@ -423,7 +423,7 @@ copy_disp_props(device_t dev, int node, prop_dictionary_t dict)
 	}
 
 	if (have_palette) {
-		gfb_cb.gcc_cookie = (void *)console_instance;
+		gfb_cb.gcc_cookie = (void *)(uintptr_t)console_instance;
 		gfb_cb.gcc_set_mapreg = of_set_palette;
 		cmap_cb = (uint64_t)(uintptr_t)&gfb_cb;
 		prop_dictionary_set_uint64(dict, "cmap_callback", cmap_cb);
@@ -446,7 +446,7 @@ copy_disp_props(device_t dev, int node, prop_dictionary_t dict)
 
 	if (have_backlight) {
 
-		gpc_backlight.gpc_cookie = (void *)console_instance;
+		gpc_backlight.gpc_cookie = (void *)(uintptr_t)console_instance;
 		gpc_backlight.gpc_set_parameter = of_set_backlight;
 		gpc_backlight.gpc_get_parameter = of_get_backlight;
 		gpc_backlight.gpc_upd_parameter = NULL;
@@ -454,7 +454,7 @@ copy_disp_props(device_t dev, int node, prop_dictionary_t dict)
 		prop_dictionary_set_uint64(dict, "backlight_callback",
 		    backlight_cb);
 
-		gpc_brightness.gpc_cookie = (void *)console_instance;
+		gpc_brightness.gpc_cookie = (void *)(uintptr_t)console_instance;
 		gpc_brightness.gpc_set_parameter = of_set_brightness;
 		gpc_brightness.gpc_get_parameter = of_get_brightness;
 		gpc_brightness.gpc_upd_parameter = of_upd_brightness;
@@ -509,7 +509,7 @@ add_model_specifics(prop_dictionary_t dict)
 static void
 of_set_palette(void *cookie, int index, int r, int g, int b)
 {
-	int ih = (int)cookie;
+	int ih = (int)(uintptr_t)cookie;
 
 	OF_call_method_1("color!", ih, 4, r, g, b, index);
 }
@@ -526,7 +526,7 @@ of_get_backlight(void *cookie, int *state)
 static int
 of_set_backlight(void *cookie, int state)
 {
-	int ih = (int)cookie;
+	int ih = (int)(uintptr_t)cookie;
 
 	KASSERT(state >= 0 && state <= 1);
 
@@ -556,7 +556,7 @@ of_get_brightness(void *cookie, int *level)
 static int
 of_set_brightness(void *cookie, int level)
 {
-	int ih = (int)cookie;
+	int ih = (int)(uintptr_t)cookie;
 
 	KASSERT(level >= 0 && level <= 255);
 
@@ -569,7 +569,7 @@ of_set_brightness(void *cookie, int level)
 static int
 of_upd_brightness(void *cookie, int delta)
 {
-	int ih = (int)cookie;
+	int ih = (int)(uintptr_t)cookie;
 
 	if (brightness_level < 0)
 		return ENODEV;

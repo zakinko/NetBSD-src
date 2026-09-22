@@ -188,9 +188,10 @@ gt_cfprint(void *aux, const char *pnp)
 		if (mva->mva_unit != MVA_UNIT_DEFAULT)
 			aprint_normal(" unit %d", mva->mva_unit);
 		if (mva->mva_offset != MVA_OFFSET_DEFAULT) {
-			aprint_normal(" offset 0x%04x", mva->mva_offset);
+			aprint_normal(" offset %#04" PRIxBUSSIZE,
+			    mva->mva_offset);
 			if (mva->mva_size > 0)
-				aprint_normal("-0x%04x",
+				aprint_normal("-%#04" PRIxBUSSIZE,
 				    mva->mva_offset + mva->mva_size - 1);
 		}
 		if (mva->mva_irq != MVA_IRQ_DEFAULT)

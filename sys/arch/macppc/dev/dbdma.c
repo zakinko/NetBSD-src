@@ -45,7 +45,8 @@ dbdma_start(dbdma_regmap_t *dmap, dbdma_command_t *commands)
 	unsigned long addr = vtophys((vaddr_t)commands);
 
 	if (addr & 0xf)
-		panic("dbdma_start command structure not 16-byte aligned %08x %08x", (uint32_t)commands, (uint32_t)addr);
+		panic("dbdma_start command structure not 16-byte aligned "
+		    "%p %#lx", commands, addr);
 
 	dmap->d_intselect = 0xff;  /* Endian magic - clear out interrupts */
 	DBDMA_ST4_ENDIAN(&dmap->d_control, 
@@ -117,12 +118,12 @@ dbdma_pause(dbdma_regmap_t *dmap)
 dbdma_command_t	*
 dbdma_alloc(int size, void **fp)
 {
-	u_int buf;
+	uintptr_t buf;
 
-	buf = (u_int)kmem_alloc(size + 0x0f, KM_SLEEP);
+	buf = (uintptr_t)kmem_alloc(size + 0x0f, KM_SLEEP);
 	if (fp != NULL) {
-	 *fp = (void *)buf;
-        }
+		*fp = (void *)buf;
+	}
 	buf = (buf + 0x0f) & ~0x0f;
 
 	return (dbdma_command_t *)buf;

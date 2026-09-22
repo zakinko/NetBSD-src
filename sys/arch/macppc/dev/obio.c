@@ -236,10 +236,11 @@ obio_attach(device_t parent, device_t self, void *aux)
 	sc->sc_tag = pa->pa_memt;
 	error = bus_space_map (pa->pa_memt, ca.ca_baseaddr, map_size, 0, &bsh);
 	if (error)
-		panic(": failed to map mac-io %#x", ca.ca_baseaddr);
+		panic(": failed to map mac-io %#" PRIxBUSADDR,
+		    ca.ca_baseaddr);
 	sc->sc_bh = bsh;
 
-	printf(": addr 0x%x\n", ca.ca_baseaddr);
+	printf(": addr %#" PRIxBUSADDR "\n", ca.ca_baseaddr);
 
 	/* Enable internal modem (KeyLargo) */
 	if (PCI_PRODUCT(pa->pa_id) == PCI_PRODUCT_APPLE_KEYLARGO) {
@@ -542,13 +543,15 @@ obio_setup_gpios(struct obio_softc *sc, int node)
 			/* frequency gpio is not needed, we use cpu's DFS */
 			use_dfs = 1;
 		} else if (strcmp(name, "indicatorLED-gpio") == 0) {
-			led_attach("indicator", (void *)(gpio_base + reg[0]),
+			led_attach("indicator",
+			    (void *)(uintptr_t)(gpio_base + reg[0]),
 			    gpio_get, gpio_set);
 		} else {
 			/* attach a sysctl node */
 			if (sysctl_createv(NULL, 0, NULL, &me,
 			    CTLFLAG_READWRITE, CTLTYPE_INT, name, NULL,
-			    sysctl_gpio, 1, (void *)(reg[0] + gpio_base), 0, CTL_HW,
+			    sysctl_gpio, 1,
+			    (void *)(uintptr_t)(reg[0] + gpio_base), 0, CTL_HW,
 			    gpio->sysctl_num, CTL_CREATE, CTL_EOL) != 0) {
 			    	printf("failed to create %s node\n", name);
 			}
@@ -790,7 +793,7 @@ static int
 sysctl_gpio(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
-	int reg = (int)node.sysctl_data;
+	int reg = (int)(uintptr_t)node.sysctl_data;
 	uint32_t val, ret;
 	DPRINTF("%s: reg %x\n", __func__, reg);
 	val = obio_read_1(reg);
@@ -808,7 +811,7 @@ static int
 sysctl_level(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
-	int reg = (int)node.sysctl_data;
+	int reg = (int)(uintptr_t)node.sysctl_data;
 	uint32_t val;
 	val = obio_read_4(reg);
 	DPRINTF("%s: reg %x %08x\n", __func__, reg, val);
@@ -822,7 +825,7 @@ static int
 sysctl_pwm(SYSCTLFN_ARGS)
 {
 	struct sysctlnode node = *rnode;
-	int which = (int)node.sysctl_data;
+	int which = (int)(uintptr_t)node.sysctl_data;
 	uint32_t pwm;
 
 	pwm = obio_get_pwm(which);
@@ -861,7 +864,7 @@ SYSCTL_SETUP(sysctl_ams_setup, "sysctl obio subtree setup")
 static int
 gpio_get(void *cookie)
 {
-	uint32_t reg = (uint32_t)cookie;
+	uint32_t reg = (uint32_t)(uintptr_t)cookie;
 
 	return ((obio_read_1(reg) & GPIO_LEVEL) != 0);
 }
@@ -869,7 +872,7 @@ gpio_get(void *cookie)
 static void
 gpio_set(void *cookie, int val)
 {
-	uint32_t reg = (uint32_t)cookie;
+	uint32_t reg = (uint32_t)(uintptr_t)cookie;
 	uint8_t gpio = obio_read_1(reg);
 
 	if (val)  {

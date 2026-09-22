@@ -563,7 +563,9 @@ _bus_dmamap_sync(bus_dma_tag_t t, bus_dmamap_t map, bus_addr_t offset, bus_size_
 
 #ifdef DIAGNOSTIC
 	if (offset + len > map->dm_mapsize)
-		panic("%s: ops %#x mapsize %u: bad offset (%u) and/or length (%u)", __func__, ops, map->dm_mapsize, offset, len);
+		panic("%s: ops %#x mapsize %" PRIuBUSSIZE ": bad offset "
+		    "(%#" PRIxBUSADDR ") and/or length (%" PRIuBUSSIZE ")",
+		    __func__, ops, map->dm_mapsize, offset, len);
 #endif
 
 	/*

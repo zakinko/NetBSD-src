@@ -728,6 +728,10 @@ cpu_setup(device_t self, struct cpu_info *ci)
 	}
 #endif
 
+#if !defined(_ARCH_PPC64)
+	/*
+	 * The parts below are 32-bit only, and so is hid0 itself.
+	 */
 	switch (vers) {
 	case IBM750FX:
 	case IBM750GX:
@@ -758,6 +762,7 @@ cpu_setup(device_t self, struct cpu_info *ci)
 	case MPC603e:
 		hid0 |= HID0_ABE;
 	}
+#endif /* !_ARCH_PPC64 */
 
 #if defined(_ARCH_PPC64) || defined(PPC_OEA64_BRIDGE)
 #if defined(PPC_OEA64_BRIDGE)
@@ -814,7 +819,12 @@ cpu_setup(device_t self, struct cpu_info *ci)
 	} else
 #endif
 	{
+#if defined(_ARCH_PPC64)
+		snprintb(hidbuf, sizeof hidbuf, bitmask,
+		    hid64_0 & 0xffffffff);
+#else
 		snprintb(hidbuf, sizeof hidbuf, bitmask, hid0);
+#endif
 		aprint_normal_dev(self, "HID0 %s, powersave: %d\n",
 		    hidbuf, powersave);
 	}

@@ -77,7 +77,11 @@ ${SYSTEM_FIRST_OBJ}: ${SYSTEM_FIRST_SFILE} assym.h
 ##
 ## (5) link settings
 ##
+.if ${MACHINE_ARCH} == "powerpc64"
+KERNLDSCRIPT?=	${POWERPC}/conf/kern64.ldscript
+.else
 KERNLDSCRIPT?=	${POWERPC}/conf/kern.ldscript
+.endif
 TEXTADDR?=	0x100000
 LINKFORMAT=	-N
 

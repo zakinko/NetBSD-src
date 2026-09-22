@@ -54,9 +54,9 @@ __KERNEL_RCSID(0, "$NetBSD: sig_machdep.c,v 1.55 2023/12/20 15:29:06 thorpej Exp
 #include <powerpc/pcb.h>
 #include <powerpc/psl.h>
 
-/* Assert that the sizes of these two structures are multiples of 16. */
-CTASSERT((sizeof(siginfo_t) & (CALLFRAMELEN-1)) == 0);
-CTASSERT((sizeof(ucontext_t) & (CALLFRAMELEN-1)) == 0);
+/* Pushing either of these must leave the stack aligned. */
+CTASSERT((sizeof(siginfo_t) & STACK_ALIGNBYTES) == 0);
+CTASSERT((sizeof(ucontext_t) & STACK_ALIGNBYTES) == 0);
 
 /*
  * Send a signal to process.

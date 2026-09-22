@@ -196,11 +196,25 @@ struct switchframe {
  * Call frame for PowerPC used during fork.
  */
 #define	CALLFRAMELEN	sizeof(struct callframe)
+#ifdef _LP64
+struct callframe {
+	__register_t cf_sp;
+	__register_t cf_cr;
+	__register_t cf_lr;
+#if !defined(_CALL_ELF) || _CALL_ELF == 1
+	__register_t cf_reserved[2];	/* compiler and link editor */
+#endif
+	__register_t cf_toc;
+	__register_t cf_r30;
+	__register_t cf_r31;
+};
+#else
 struct callframe {
 	__register_t cf_sp;
 	__register_t cf_lr;
 	__register_t cf_r30;
 	__register_t cf_r31;
 };
+#endif /* _LP64 */
 
 #endif	/* _POWERPC_FRAME_H_ */

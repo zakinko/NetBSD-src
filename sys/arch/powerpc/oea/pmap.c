@@ -487,6 +487,7 @@ extern struct evcnt pmap_evcnt_idlezeroed_pages;
 #define	TLBSYNC()	__asm volatile("tlbsync" ::: "memory")
 #endif
 #define	SYNC()		__asm volatile("sync" ::: "memory")
+#define	SLBIE(va)	__asm volatile("slbie %0" :: "r"(va) : "memory")
 #define	EIEIO()		__asm volatile("eieio" ::: "memory")
 #define	DCBST(va)	__asm volatile("dcbst 0,%0" :: "r"(va) : "memory")
 #define	MFMSR()		mfmsr()
@@ -868,6 +869,110 @@ pmap_pte_insert(int ptegidx, struct pte *pvo_pt)
 	return -1;
 }
 
+#if defined(PMAP_OEA64)
+#define	KERNEL_SEGMENT_ESID \
+	((register_t)(VM_MIN_KERNEL_ADDRESS >> ADDR_SR_SHFT) << STE_ESID_SHFT)
+
+/*
+ * The primary group is selected by the low five bits of the ESID and
+ * the secondary by their complement (12.4.1.3).
+ */
+static volatile struct ste *
+pmap_steg(struct pmap *pm, register_t esid, unsigned int group)
+{
+	const unsigned int idx =
+	    (group == 0 ? esid : ~esid) & STE_ESID_MASK;
+
+	return &pm->pm_steg_table[idx].st[0];
+}
+
+/*
+ * Segment table spill handler.
+ *
+ * A segment table miss raises an ISI, or a DSI with DSISR[10] set, and
+ * leaves it to us to enter the segment.  The groups the hardware will
+ * search, and the order an entry may be written in, are fixed by the
+ * architecture; see 12.4.1.3 and 12.12.2 of "PowerPC Architecture"
+ * (First Edition, May 1993).  Which entry to sacrifice when both groups
+ * are full is not, and is chosen here.
+ */
+int
+pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
+{
+	volatile struct ste *ste;
+	register_t esid, vsid, ste_hi, msr;
+	unsigned int group, i;
+	int done = 0;
+
+	esid = addr >> ADDR_SR_SHFT;
+	vsid = va_to_vsid(pm, addr);
+
+	/*
+	 * A segment is no-execute until a fetch faults in it; OEA64 has
+	 * no per-segment count of executable mappings to ask instead.
+	 */
+	ste_hi = (esid << STE_ESID_SHFT) | STE_PRKEY;
+	if (!isi_p)
+		ste_hi |= STE_NOEXEC;
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	/*
+	 * Primary group first, then secondary.  An invalid entry in
+	 * either can just be filled in (12.12.2.1).
+	 */
+	for (group = 0; group < 2; group++) {
+		ste = pmap_steg(pm, esid, group);
+		for (i = 0; i < 8; i++, ste++) {
+			if ((ste->ste_hi & STE_VALID) != 0)
+				continue;
+
+			ste->ste_hi = ste_hi;
+			ste->ste_lo = vsid << STE_VSID_SHFT;
+			SYNC();
+			ste->ste_hi = ste_hi | STE_VALID;
+			done = 1;
+			goto out;
+		}
+	}
+
+	/*
+	 * Both groups are full, so one entry has to go.  Rotating on the
+	 * eviction count gives each of the sixteen a turn without any
+	 * state of its own; skip the kernel's first segment, since the
+	 * code doing the evicting may well be running in it.
+	 */
+	for (i = 0; i < 16; i++) {
+		const unsigned int slot = (pm->pm_ste_evictions + i) & 0xf;
+
+		ste = pmap_steg(pm, esid, slot >> 3) + (slot & 7);
+		if (pm != pmap_kernel() ||
+		    (ste->ste_hi & STE_ESID) != KERNEL_SEGMENT_ESID)
+			break;
+	}
+	pm->pm_ste_evictions++;
+
+	/* 12.12.2.2: invalidate, flush from the SLB, then rewrite. */
+	esid = (ste->ste_hi & STE_ESID) >> STE_ESID_SHFT;
+	ste->ste_hi &= ~STE_VALID;
+	SYNC();
+	SLBIE(esid << ADDR_SR_SHFT);
+	SYNC();
+	ste->ste_hi = ste_hi;
+	ste->ste_lo = vsid << STE_VSID_SHFT;
+	SYNC();
+	ste->ste_hi = ste_hi | STE_VALID;
+	done = 1;
+
+ out:
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
+
+	return done;
+}
+#endif /* PMAP_OEA64 */
+
 /*
  * Spill handler.
  *
@@ -1243,7 +1348,11 @@ pmap_release(pmap_t pm)
 	KASSERT(pm->pm_stats.wired_count == 0);
 	
 	PMAP_LOCK();
+#if defined(PMAP_OEA64)
+	if (pm->pm_vsid == 0)
+#else
 	if (pm->pm_sr[0] == 0)
+#endif
 		panic("pmap_release");
 	idx = pm->pm_vsid & (NPMAPS-1);
 	mask = 1 << (idx % VSID_NBPW);
@@ -2146,6 +2255,12 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 	 * Be careful when checking VM_MAX_KERNEL_ADDRESS; you don't
 	 * want to wrap around to 0.
 	 */
+#if !defined(PMAP_OEA64)
+	/*
+	 * The shortcuts below are all 32-bit ones.  The 64-bit OEA has
+	 * no BATs and no fixed segments, so there is nothing to look in
+	 * before the HTAB; skip straight to it.
+	 */
 	if (pm == pmap_kernel() &&
 	    (va < VM_MIN_KERNEL_ADDRESS ||
 	     (KERNEL2_SR < NSEGREG - 1 && VM_MAX_KERNEL_ADDRESS <= va))) {
@@ -2174,10 +2289,9 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 		/*
 		 * We still check the HTAB...
 		 */
-#elif defined(PMAP_OEA64)
-#error PPC_OEA64 not supported
 #endif /* PPC_OEA */
 	}
+#endif /* !PMAP_OEA64 */
 	
 	msr = pmap_interrupts_off();
 	pvo = pmap_pvo_find_va(pm, va & ~ADDR_POFF, NULL);
@@ -2676,11 +2790,11 @@ pmap_pteg_check(void)
 void
 pmap_print_mmuregs(void)
 {
-	int i;
 #if defined (PMAP_OEA) || defined (PMAP_OEA64_BRIDGE)
 	u_int cpuvers;
 #endif
 #ifndef PMAP_OEA64
+	int i;
 	vaddr_t addr;
 	register_t soft_sr[16];
 #endif

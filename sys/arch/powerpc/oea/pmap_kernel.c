@@ -65,6 +65,7 @@ powerpc_mmap_flags(paddr_t pa)
 	return flags;
 }
 
+#if !defined(PPC_OEA64)
 struct vm_page *
 pmap_alloc_poolpage(int flags)
 {
@@ -83,6 +84,7 @@ pmap_alloc_poolpage(int flags)
 	return uvm_pagealloc_strat(NULL, 0, NULL, flags, UVM_PGA_STRAT_ONLY,
 	    VM_FREELIST_DIRECT_MAPPED);
 }
+#endif /* !PPC_OEA64 */
 
 #ifdef PMAP_NEEDS_FIXUP
 #include <powerpc/instr.h>

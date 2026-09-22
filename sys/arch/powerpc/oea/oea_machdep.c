@@ -137,9 +137,11 @@ oea_init(void (*handler)(void))
 	extern int dsi601trap[], dsi601size[];
 #endif
 	extern int decrint[], decrsize[];
+#ifndef PPC_OEA64
 	extern int tlbimiss[], tlbimsize[];
 	extern int tlbdlmiss[], tlbdlmsize[];
 	extern int tlbdsmiss[], tlbdsmsize[];
+#endif
 #if defined(DDB) || defined(KGDB)
 	extern int ddblow[], ddbsize[];
 #endif
@@ -248,6 +250,8 @@ oea_init(void (*handler)(void))
 			size = (size_t)decrsize;
 			memcpy((void *)exc, decrint, size);
 			break;
+#ifndef PPC_OEA64
+		/* The software TLB miss exceptions are a 603 facility. */
 		case EXC_IMISS:
 			size = (size_t)tlbimsize;
 			memcpy((void *)exc, tlbimiss, size);
@@ -260,6 +264,7 @@ oea_init(void (*handler)(void))
 			size = (size_t)tlbdsmsize;
 			memcpy((void *)exc, tlbdsmiss, size);
 			break;
+#endif
 		case EXC_PERF:
 			size = (size_t)trapsize;
 			memcpy((void *)exc, trapcode, size);

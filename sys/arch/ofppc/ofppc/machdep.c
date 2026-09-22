@@ -90,6 +90,7 @@ struct genfb_colormap_callback gfb_cb;
 #define	DPRINTF while (0) printf
 #endif
 
+#ifndef PPC_OEA64
 /*
  * Scan the device tree for ranges, and return them as bitmap 0..15
  */
@@ -129,12 +130,15 @@ ranges_bitmap(int node, uint16_t bitmap)
 	}
 	return bitmap;
 }
+#endif /* PPC_OEA64 */
 
 void
 initppc(u_int startkernel, u_int endkernel, char *args)
 {
 	int node, i;
+#ifndef PPC_OEA64
 	uint16_t bitmap;
+#endif
 
 	node = OF_finddevice("/");
 	if (node != -1) {
@@ -146,6 +150,11 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 	}
 	model_init();
 
+#ifndef PPC_OEA64
+	/*
+	 * No BATs on the 64-bit OEA; oea_mapiodev() maps what is
+	 * needed instead, as it does on any machine without them.
+	 */
 	if ((oeacpufeat & OEACPU_NOBAT) == 0) {
 		node = OF_finddevice("/");
 
@@ -171,6 +180,7 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 			oea_iobat_add(0xfe000000, BAT_BL_16M);
 		}
 	}
+#endif /* PPC_OEA64 */
 
 #if defined(MULTIPROCESSOR)
 	int l;

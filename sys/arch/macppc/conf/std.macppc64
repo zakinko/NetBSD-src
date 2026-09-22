@@ -1,0 +1,18 @@
+#	$NetBSD$
+#
+# Standard/required options for NetBSD/macppc with an LP64 kernel.
+#
+# std.macppc.g5 carries the hardware side.  The 970 implements the
+# 64-bit bridge, which is how the 32-bit G5 kernel runs; PPC_OEA64 is
+# the segment table instead, which is what an LP64 kernel needs --
+# vmparam.h hides the segment registers under _LP64 and lays out the
+# address space for a segment table.
+
+no options 	PPC_OEA64_BRIDGE
+options 	PPC_OEA64
+no makeoptions	PPC_ARCH_MODE
+makeoptions	PPC_ARCH_MODE="ppc64"
+makeoptions	LP64="yes"
+
+no options 	EXEC_ELF32
+options 	EXEC_ELF64	# (native) ELF64 binary support

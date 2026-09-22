@@ -1,0 +1,11 @@
+#	$NetBSD$
+#
+# PowerMac G5 with an LP64 kernel.
+#
+
+include	"arch/macppc/conf/POWERMAC_G5"
+
+include	"arch/macppc/conf/std.macppc64"
+
+# COMPAT_NETBSD32 wants a machine dependent half that powerpc does not
+# have; see the note in ofppc's GENERIC64.

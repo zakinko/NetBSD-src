@@ -888,7 +888,15 @@ pmap_steg(struct pmap *pm, register_t esid, unsigned int group)
 	return &pm->pm_steg_table[idx].st[0];
 }
 
-/* 12.12.2.1: everything but the valid bit, then a sync, then the bit. */
+/*
+ * 12.12.2.1: everything but the valid bit, then a sync, then the bit.
+ *
+ * Both words are assigned, never or-ed into.  12.12.2.2 says the fields
+ * are set to their new values and says nothing about the old ones, so a
+ * read-modify-write reads as faithful -- and leaves the keys of whoever
+ * had the entry before.  That is not hypothetical: it shipped elsewhere
+ * and had to be fixed, with Ks left set on a kernel segment.
+ */
 static void
 pmap_ste_enter(volatile struct ste *ste, register_t ste_hi, register_t vsid)
 {
@@ -933,12 +941,15 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 	vsid = va_to_vsid(pm, addr);
 
 	/*
-	 * A segment is no-execute until a fetch faults in it; OEA64 has
-	 * no per-segment count of executable mappings to ask instead.
+	 * Figure 53 gives an STE V, T, Ks and Kp and says the rest is
+	 * reserved, so there is no no-execute here to set: a segment
+	 * table machine leaves execute permission to the page.  The
+	 * tree defines STE_NOEXEC at bit 60, which is where the later
+	 * SLB entry puts N, but the First Edition does not, and psim
+	 * reading it that way is not a second source -- it is the
+	 * simulator this port was tested against.
 	 */
 	ste_hi = (esid << STE_ESID_SHFT) | STE_PRKEY;
-	if (!isi_p)
-		ste_hi |= STE_NOEXEC;
 
 	PMAP_LOCK();
 	msr = pmap_interrupts_off();
@@ -1014,7 +1025,7 @@ pmap_setusr(vaddr_t uva)
 			if ((ste->ste_hi & STE_VALID) != 0)
 				continue;
 			pmap_ste_enter(ste,
-			    USER_WINDOW_ESID | STE_PRKEY | STE_NOEXEC,
+			    USER_WINDOW_ESID | STE_PRKEY,
 			    va_to_vsid(pm, uva));
 			goto found;
 		}
@@ -1030,7 +1041,7 @@ pmap_setusr(vaddr_t uva)
 			break;
 	}
 	pmap_ste_remove(ste);
-	pmap_ste_enter(ste, USER_WINDOW_ESID | STE_PRKEY | STE_NOEXEC,
+	pmap_ste_enter(ste, USER_WINDOW_ESID | STE_PRKEY,
 	    va_to_vsid(pm, uva));
 	pm->pm_ste_evictions++;
 
@@ -3814,18 +3825,14 @@ pmap_bootstrap2(void)
 	 * groups of eight entries (12.4.1.2).  ASR bits 0:51 are its real
 	 * address and bit 63 asks the processor to search it.
 	 *
-	 * XXX Only the kernel has one.  pmap_pinit() does not give a pmap
-	 * XXX its own table and cpu_switchto() does not swap the ASR, so
-	 * XXX a user process has nowhere for its segments to go yet.
+	 * The allocations above test that they landed below
+	 * PMAP_DIRECT_MAPPED_LEN.  There is no such test here because
+	 * here it cannot fail: oea/pmap.h defines that constant only for
+	 * the 32-bit segment register cases, and powerpc/pmap.h then
+	 * supplies (~0UL), so on OEA64 every address is below it.
 	 */
 	pmap_kernel()->pm_steg_table =
 	    (void *)(uintptr_t)pmap_boot_find_memory(PAGE_SIZE, PAGE_SIZE, 0);
-#if defined(DIAGNOSTIC) || defined(DEBUG) || defined(PMAPCHECK)
-	if ((uintptr_t)pmap_kernel()->pm_steg_table + PAGE_SIZE >
-	    PMAP_DIRECT_MAPPED_LEN)
-		panic("pmap_bootstrap: segment table (%p) is not direct "
-		    "mapped", pmap_kernel()->pm_steg_table);
-#endif
 	memset(pmap_kernel()->pm_steg_table, 0, PAGE_SIZE);
 	__asm volatile("sync; mtspr %0,%1; isync"
 	    :

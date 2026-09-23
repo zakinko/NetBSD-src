@@ -1,0 +1,11 @@
+#	$NetBSD$
+#
+# PowerMac G5 with an LP64 kernel, reloading the SLB in software.
+#
+# GENERIC64 is the same machine built for the segment table instead;
+# see std.macppc64.slb for which of the two the 970 is.
+#
+
+include	"arch/macppc/conf/POWERMAC_G5"
+
+include	"arch/macppc/conf/std.macppc64.slb"

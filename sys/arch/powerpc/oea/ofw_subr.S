@@ -186,6 +186,15 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 #endif /* PPC_OEA */
 
 #if defined(PPC_OEA64)
+	/*
+	 * There are no segment registers to save here, so swap the
+	 * segment table instead.  Book III 2.01, 9.1.1: bits 0:51 of the
+	 * ASR are the real address of the table and bit 63 says whether
+	 * the processor should search it.  Appendix L of the First
+	 * Edition allows the change only if the instructions after the
+	 * mtspr read the same in both address spaces, which is why the
+	 * SLB is flushed on either side.
+	 */
 	mfspr	%r0,SPR_ASR		/* save current segment table */
 	lis	%r4,clasrsave@ha
 	stptr	%r0,clasrsave@l(%r4)
@@ -202,6 +211,31 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	sync
 	isync
 2:
+#elif defined(PPC_OEA64_SLB)
+	/*
+	 * Nothing to save: no segment registers, and no table to point
+	 * at.  Name the pmap instead, so that a segment taken while Open
+	 * Firmware runs is resolved from ofw_pmap, and empty the SLB,
+	 * whose entries describe the address space being left.  Entry 0
+	 * stays -- slbia does not touch it (Chapter 4), and it maps the
+	 * instruction after the slbia.
+	 */
+	GET_CPUINFO(%r4)
+	lis	%r5,_C_LABEL(ofw_pmap)@ha
+	addi	%r5,%r5,_C_LABEL(ofw_pmap)@l
+	stptr	%r5,CI_SLBPM(%r4)
+	isync
+	slbia
+	isync
+	GET_CPUINFO(%r4)
+	ldptr	%r4,CI_SLB(%r4)
+	addi	%r4,%r4,SLB_SIZEOF	/* entry 0 is the kernel's */
+	li	%r5,SLB_NENTRIES-1
+	mtctr	%r5
+	li	%r5,0
+1:	streg	%r5,SLB_E(%r4)
+	addi	%r4,%r4,SLB_SIZEOF
+	bdnz	1b
 #else
 	lis	%r4,clsrsave@ha		/* save current SRs */
 	addi	%r4,%r4,clsrsave@l
@@ -262,6 +296,23 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	slbia
 	sync
 	isync
+#elif defined(PPC_OEA64_SLB)
+	/* And back, the same way round. */
+	GET_CPUINFO(%r4)
+	li	%r5,0
+	stptr	%r5,CI_SLBPM(%r4)
+	isync
+	slbia
+	isync
+	GET_CPUINFO(%r4)
+	ldptr	%r4,CI_SLB(%r4)
+	addi	%r4,%r4,SLB_SIZEOF	/* entry 0 is the kernel's */
+	li	%r5,SLB_NENTRIES-1
+	mtctr	%r5
+	li	%r5,0
+1:	streg	%r5,SLB_E(%r4)
+	addi	%r4,%r4,SLB_SIZEOF
+	bdnz	1b
 #else
 	lis	%r4,clsrsave@ha		/* restore saved SRs */
 	addi	%r4,%r4,clsrsave@l

@@ -41,6 +41,7 @@ __KERNEL_RCSID(0, "$NetBSD: oea_machdep.c,v 1.88 2026/03/30 10:27:45 jmcneill Ex
 #include "opt_kgdb.h"
 #include "opt_multiprocessor.h"
 #include "opt_ppcarch.h"
+#include "opt_ppcparam.h"
 #endif
 
 #include <sys/param.h>
@@ -129,6 +130,12 @@ void
 oea_init(void (*handler)(void))
 {
 	extern int trapcode[], trapsize[];
+#if defined(PPC_OEA64_SLB)
+	extern int dsegtrap[], dsegsize[];
+	extern int isegtrap[], isegsize[];
+	extern char cpu_slbstk[][INTSTK];
+	extern struct slb cpu_slb[][SLB_NENTRIES];
+#endif
 	extern int sctrap[], scsize[];
 	extern int alitrap[], alisize[];
 	extern int dsitrap[], dsisize[];
@@ -294,6 +301,28 @@ oea_init(void (*handler)(void))
 #endif
 	}
 
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * Book III 2.01, Figure 29 puts Data Segment at 0x380 and
+	 * Instruction Segment at 0x480, between the stops the loop above
+	 * makes.  There is room for them: with OEACPU_NOBAT set -- which
+	 * cpu_features_probe() does for every 64-bit PVR it knows --
+	 * 0x300 gets alitrap rather than dsitrap, and 0x400 gets
+	 * trapcode, neither of which reaches the next half page.
+	 */
+	memcpy((void *)(exc_base + EXC_DSEG), dsegtrap, (size_t)dsegsize);
+	memcpy((void *)(exc_base + EXC_ISEG), isegtrap, (size_t)isegsize);
+
+	/*
+	 * And the stack they stand on.  Both handlers are entered with
+	 * translation off, so this has to be set before the first
+	 * segment interrupt, which is as soon as it is turned on --
+	 * cpu_attach_common() is far too late for this processor.
+	 */
+	ci->ci_slbstk = cpu_slbstk[ci->ci_cpuid];
+	ci->ci_slb = cpu_slb[ci->ci_cpuid];
+#endif
+
 	/*
 	 * Install a branch absolute to trap0 to force a panic.
 	 */
@@ -388,7 +417,14 @@ oea_init(void (*handler)(void))
 	}
 
 #ifdef PPC_OEA64_BRIDGE
-	if ((oeacpufeat & OEACPU_64_BRIDGE) == 0) {
+	/*
+	 * Not "no bridge" but "32-bit": what follows replaces rfid and
+	 * mtmsrd with the forms a 32-bit processor implements.  The two
+	 * were set together until the probe learnt to tell the segment
+	 * table generation from the SLB one, and a 620 has rfid without
+	 * having the bridge of Book III 2.01, 9.1.
+	 */
+	if ((oeacpufeat & OEACPU_64) == 0) {
 		for (int *ip = (int *)exc_base;
 		     (uintptr_t)ip <= exc_base + EXC_LAST;
 		     ip++) {
@@ -909,7 +945,14 @@ oea_install_extint_vec(void (*handler)(void), u_int vector)
 	__syncicache((void *)extint_call, sizeof extint_call[0]);
 	memcpy((void *)exc_exi_base, extint, (size_t)extsize);
 #ifdef PPC_OEA64_BRIDGE
-	if ((oeacpufeat & OEACPU_64_BRIDGE) == 0) {
+	/*
+	 * Not "no bridge" but "32-bit": what follows replaces rfid and
+	 * mtmsrd with the forms a 32-bit processor implements.  The two
+	 * were set together until the probe learnt to tell the segment
+	 * table generation from the SLB one, and a 620 has rfid without
+	 * having the bridge of Book III 2.01, 9.1.
+	 */
+	if ((oeacpufeat & OEACPU_64) == 0) {
 		for (int *ip = (int *)exc_exi_base;
 		     (uintptr_t)ip <= exc_exi_base + (size_t)extsize;
 		     ip++) {
@@ -993,6 +1036,20 @@ oea_startup(const char *model)
 	 * the bufpages are allocated in case they overlap since it's not
 	 * fatal if we can't allocate these.
 	 */
+#ifndef _LP64
+	/*
+	 * 0xDEAC0000 + 0x30000 holds back 0xDEAC0000 through 0xDEAEFFFF.
+	 * Why that range was chosen is not recorded; powerpc/proc.h
+	 * initialises md_utf to (void *)0xdeadbeef, which falls inside
+	 * it, but nothing here says the two are connected.
+	 *
+	 * What is clear is that the reservation only makes sense where
+	 * the range is inside the kernel's address space, which is what
+	 * the test below asks: KERNEL_SR == 13 means the kernel starts
+	 * at 0xD0000000.  An LP64 kernel starts at the top terabyte, so
+	 * there is nothing here to reserve, and vmparam.h keeps the
+	 * segment registers the test reads under #ifndef _LP64.
+	 */
 	if (KERNEL_SR == 13 || KERNEL2_SR == 14) {
 		int error;
 		minaddr = 0xDEAC0000;
@@ -1004,6 +1061,7 @@ oea_startup(const char *model)
 			printf("oea_startup: failed to allocate DEAD "
 			    "ZONE: error=%d\n", error);
 	}
+#endif
  
 	minaddr = 0;
 

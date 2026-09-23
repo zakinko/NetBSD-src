@@ -253,6 +253,14 @@ ENTRY(cpu_switchto)
 	ldptr	%r3,PCB_PM(%r4)
 	stptr	%r3,CI_CURPM(%r7)	/* and maybe a new pmap */
 #if defined(PPC_OEA64)
+	/*
+	 * Book III 2.01, 9.1.1: ASR bits 0:51 hold the real address of
+	 * the segment table and bit 63 asks for it to be searched.  The
+	 * SLB is a non-coherent cache of the table it is leaving, so it
+	 * goes; Appendix L requires that the instructions after the
+	 * mtspr translate the same either way, which is what the bolted
+	 * entries in every table are for.
+	 */
 	ldptr	%r0,PM_STEG(%r3)	/* and its segment table */
 	ori	%r0,%r0,1		/* ASR[63]: search it */
 	sync
@@ -260,6 +268,33 @@ ENTRY(cpu_switchto)
 	slbia				/* the SLB caches the old table */
 	sync
 	isync
+#endif
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * Nothing to reload: the next address space's segments come back
+	 * through segment interrupts.  slbia drops all of them but entry
+	 * 0, which holds the kernel and which its Programming Note
+	 * (Chapter 4, p.42) requires to map the instruction after the
+	 * slbia while translation is on.
+	 *
+	 * The shadow says what the SLB holds, and slbia leaves the fields
+	 * of everything it invalidated undefined, so it is emptied here
+	 * too -- clearing slb_e is enough, the valid bit being in it.
+	 * Table 1 asks for a context synchronizing instruction on either
+	 * side of the slbia.
+	 */
+	isync
+	slbia
+	isync
+	ldptr	%r6,CI_SLB(%r7)		/* not r0: rA of 0 means zero */
+	addi	%r6,%r6,SLB_SIZEOF	/* entry 0 stays */
+	li	%r5,SLB_NENTRIES-1
+	mtctr	%r5
+	li	%r5,0
+1:
+	streg	%r5,SLB_E(%r6)
+	addi	%r6,%r6,SLB_SIZEOF
+	bdnz	1b
 #endif
 
 	/*
@@ -349,7 +384,7 @@ _ENTRY(softint_cleanup)
 #if defined(PPC_IBM4XX) || defined(PPC_BOOKE)
 	wrtee	%r0			/* restore EE */
 #endif
-#if defined(PPC_OEA) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64)
+#if defined(PPC_OEA) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB) || defined(PPC_OEA64)
 	mtmsr	%r0
 	isync
 #endif

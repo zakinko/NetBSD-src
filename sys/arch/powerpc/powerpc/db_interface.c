@@ -27,7 +27,7 @@ __KERNEL_RCSID(0, "$NetBSD: db_interface.c,v 1.63 2026/02/25 05:34:42 skrll Exp 
 #include <powerpc/pte.h>
 #include <powerpc/psl.h>
 
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/spr.h>
 #include <powerpc/oea/bat.h>
 #include <powerpc/oea/cpufeat.h>
@@ -76,7 +76,7 @@ db_regs_t ddb_regs;
 void ddb_trap(void);				/* Call into trap_subr.S */
 int ddb_trap_glue(struct trapframe *);		/* Called from trap_subr.S */
 #ifdef DDB
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 static void db_show_bat(db_expr_t, bool, db_expr_t, const char *);
 static void db_show_mmu(db_expr_t, bool, db_expr_t, const char *);
 #endif /* PPC_OEA || PPC_OEA64 || PPC_OEA64_BRIDGE */
@@ -106,7 +106,7 @@ static void db_mach_cpu(db_expr_t, bool, db_expr_t, const char *);
 #endif	/* MULTIPROCESSOR */
 
 const struct db_command db_machine_command_table[] = {
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 	{ DDB_ADD_CMD("bat",	db_show_bat,		0,
 	  "Print BAT register translations", NULL,NULL) },
 	{ DDB_ADD_CMD("mmu",	db_show_mmu,		0,
@@ -308,7 +308,7 @@ kdb_trap(int type, void *v)
 }
 
 #ifdef DDB
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 static void
 print_battranslation(struct bat *bat, unsigned int blidx)
 {
@@ -475,7 +475,7 @@ db_show_mmu(db_expr_t addr, bool have_addr, db_expr_t count, const char *modif)
 	__asm volatile ("mfsdr1 %0" : "=r"(sdr1));
 	db_printf("sdr1\t\t0x%08lx\n", sdr1);
 
-#if defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE)
+#if defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 	if (oeacpufeat & (OEACPU_64|OEACPU_64_BRIDGE)) {
 		__asm volatile ("mfasr %0" : "=r"(sdr1));
 		db_printf("asr\t\t0x%08lx\n", sdr1);

@@ -118,7 +118,8 @@ extern paddr_t msgbuf_paddr;
 static struct mem_region *mem, *avail;
 static u_int mem_cnt, avail_cnt;
 
-#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_BRIDGE)
+#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_BRIDGE) && \
+    !defined(PMAP_OEA64_SLB)
 # define	PMAP_OEA 1
 #endif
 
@@ -138,6 +139,8 @@ static u_int mem_cnt, avail_cnt;
 #define	PMAPNAME(name)	pmap64_##name
 #elif defined(PMAP_OEA64_BRIDGE)
 #define	PMAPNAME(name)	pmap64bridge_##name
+#elif defined(PMAP_OEA64_SLB)
+#define	PMAPNAME(name)	pmap64slb_##name
 #else
 #error unknown variant for pmap
 #endif
@@ -496,7 +499,7 @@ extern struct evcnt pmap_evcnt_idlezeroed_pages;
 #define	MFSRIN(va)	mfsrin(va)
 #define	MFTB()		mfrtcltbl()
 
-#if defined(DDB) && !defined(PMAP_OEA64)
+#if defined(DDB) && !defined(PMAP_OEA64) && !defined(PMAP_OEA64_SLB)
 static inline register_t
 mfsrin(vaddr_t va)
 {
@@ -504,7 +507,7 @@ mfsrin(vaddr_t va)
 	__asm volatile ("mfsrin %0,%1" : "=r"(sr) : "r"(va));
 	return sr;
 }
-#endif	/* DDB && !PMAP_OEA64 */
+#endif	/* DDB && !PMAP_OEA64 && !PMAP_OEA64_SLB */
 
 #if defined (PMAP_OEA64_BRIDGE)
 extern void mfmsr64 (register64_t *result);
@@ -563,7 +566,8 @@ tlbia(void)
 		EIEIO();
 		SYNC();
 	}
-#elif defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE)
+#elif defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE) || \
+      defined (PMAP_OEA64_SLB)
 	/* This is specifically for the 970, 970UM v1.6 pp. 140. */
 	for (i = 0; i <= (char *)0xFF000; i += 0x00001000) {
 		TLBIEL(i);
@@ -619,7 +623,8 @@ pmap_pte_to_va(volatile const struct pte *pt)
 	/* PPC Bits 10-19  PPC64 Bits 42-51 */
 #if defined(PMAP_OEA)
 	va = ((pt->pte_hi >> PTE_VSID_SHFT) ^ (ptaddr / sizeof(struct pteg))) & 0x3ff;
-#elif defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE)
+#elif defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE) || \
+      defined (PMAP_OEA64_SLB)
 	va = ((pt->pte_hi >> PTE_VSID_SHFT) ^ (ptaddr / sizeof(struct pteg))) & 0x7ff;
 #endif
 	va <<= ADDR_PIDX_SHFT;
@@ -627,7 +632,7 @@ pmap_pte_to_va(volatile const struct pte *pt)
 	/* PPC Bits 4-9  PPC64 Bits 36-41 */
 	va |= (pt->pte_hi & PTE_API) << ADDR_API_SHFT;
 
-#if defined(PMAP_OEA64)
+#if defined(PMAP_OEA64) || defined(PMAP_OEA64_SLB)
 	/* PPC63 Bits 0-35 */
 	/* va |= VSID_TO_SR(pt->pte_hi >> PTE_VSID_SHFT) << ADDR_SR_SHFT; */
 #elif defined(PMAP_OEA) || defined(PMAP_OEA64_BRIDGE)
@@ -730,7 +735,8 @@ pmap_pte_create(struct pte *pt, const struct pmap *pm, vaddr_t va, register_t pt
 	pt->pte_hi = (va_to_vsid(pm, va) << PTE_VSID_SHFT)
 	    | (((va & ADDR_PIDX) >> (ADDR_API_SHFT - PTE_API_SHFT)) & PTE_API);
 	pt->pte_lo = pte_lo;
-#elif defined (PMAP_OEA64_BRIDGE) || defined (PMAP_OEA64)
+#elif defined (PMAP_OEA64_BRIDGE) || defined (PMAP_OEA64) || \
+      defined (PMAP_OEA64_SLB)
 	pt->pte_hi = ((u_int64_t)va_to_vsid(pm, va) << PTE_VSID_SHFT)
 	    | (((va & ADDR_PIDX) >> (ADDR_API_SHFT - PTE_API_SHFT)) & PTE_API);
 	pt->pte_lo = (u_int64_t) pte_lo;
@@ -877,7 +883,9 @@ pmap_pte_insert(int ptegidx, struct pte *pvo_pt)
  * The kernel's segments have to be in whichever table is current, since
  * cpu_switchto() changes the ASR with the kernel running and the next
  * instruction fetch has to be translated.  With segment registers this
- * does not arise: KERNEL_SR is simply never reloaded on a switch.
+ * does not arise: cpu_switchto() reloads only USER_SR (locore_subr.S,
+ * the single mtsr in SWITCHFRAME_RESTORE's caller), so the segment the
+ * kernel runs in survives the switch untouched.
  *
  * pmap_bootstrap() works out how far up they go once it has taken the
  * memory it needs.
@@ -942,12 +950,13 @@ pmap_ste_remove(volatile struct ste *ste)
 /*
  * Segment table spill handler.
  *
- * A segment table miss raises an ISI, or a DSI with DSISR[10] set, and
- * leaves it to us to enter the segment.  The groups the hardware will
+ * A segment table miss raises an ISI, or a DSI with DSISR_NOTFOUND set,
+ * and leaves it to us to enter the segment.  The groups the hardware will
  * search, and the order an entry may be written in, are fixed by the
  * architecture; see 12.4.1.3 and 12.12.2 of "PowerPC Architecture"
  * (First Edition, May 1993).  Which entry to sacrifice when both groups
- * are full is not, and is chosen here.
+ * are full is not -- the First Edition says nothing about replacing an
+ * entry -- and is chosen here.
  */
 int
 pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
@@ -969,7 +978,18 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 	 * reading it that way is not a second source -- it is the
 	 * simulator this port was tested against.
 	 */
+	/*
+	 * 12.10.1 builds the protection key as
+	 *	Key <- (Kp & MSR_PR) | (Ks & ~MSR_PR)
+	 * so Ks is what the kernel is judged by, and Figure 67 gives
+	 * Key 0 read/write however the PP bits read -- PP 00, no access
+	 * under Key 1, becomes read/write.  A kernel segment therefore
+	 * needs Ks set or the page protection does nothing, which is why
+	 * the 32-bit code sets both keys on KERNEL_SR.
+	 */
 	ste_hi = (esid << STE_ESID_SHFT) | STE_PRKEY;
+	if (pm == pmap_kernel())
+		ste_hi |= STE_SUKEY;
 
 	PMAP_LOCK();
 	msr = pmap_interrupts_off();
@@ -1023,10 +1043,12 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 }
 /*
  * Map the segment holding uva where the kernel can reach it, for
- * copyin() and copyout().  With segment registers one of them is
- * reserved for this; here the window is a segment of its own, and the
- * entry that maps it goes into the table like any other -- except that
- * pmap_ste_spill() leaves it alone while it is in use.
+ * copyin() and copyout().  Reaching another address space this way is
+ * the operating system's business; the architecture describes no such
+ * window.  With segment registers one of them is reserved for it; here
+ * the window is a segment of its own, and the entry that maps it goes
+ * into the table like any other -- except that pmap_ste_spill() leaves
+ * it alone while it is in use.
  */
 vaddr_t
 pmap_setusr(vaddr_t uva)
@@ -1124,7 +1146,8 @@ pmap_steg_bolt(struct pmap *pm)
 		for (i = 0; i < 8; i++, ste++) {
 			if ((ste->ste_hi & STE_VALID) != 0)
 				continue;
-			pmap_ste_enter(ste, (esid << STE_ESID_SHFT) | STE_PRKEY,
+			pmap_ste_enter(ste,
+			    (esid << STE_ESID_SHFT) | STE_SUKEY | STE_PRKEY,
 			    va_to_vsid(pmap_kernel(), esid << ADDR_SR_SHFT));
 			break;
 		}
@@ -1134,6 +1157,330 @@ pmap_steg_bolt(struct pmap *pm)
 	}
 }
 #endif /* PMAP_OEA64 */
+
+#if defined(PMAP_OEA64_SLB)
+/*
+ * From POWER4 and the 970 on, the processor does not reload the SLB from
+ * a table in memory; a miss raises an Instruction or Data Segment
+ * interrupt and software writes the entry with slbmte (4.4.2).
+ *
+ * 4.4.1 guarantees at least 32 entries and says the real number is
+ * implementation dependent.  Using only what is guaranteed costs a few
+ * entries on a machine that has more and is right on every machine.
+ *
+ * Entry 0 is the one slbia leaves alone, and the note on slbia says to
+ * put the slbia and the instruction after it in the segment that entry
+ * maps; so it holds the kernel and nothing else is allocated there.  The
+ * window copyin() maps user memory through takes the last entry, where a
+ * kernel miss cannot evict it mid-copy.
+ */
+#define	SLB_KERNEL	0
+#define	SLB_WINDOW	(SLB_NENTRIES - 1)
+
+/*
+ * What the SLB should contain, so that a context switch can put it back
+ * without faulting each segment in again.  The kernel's copy is per-CPU
+ * because it describes the mappings that CPU is running on; a pmap's is
+ * per-pmap because it describes that address space.
+ */
+extern struct slb cpu_slb[][SLB_NENTRIES];
+/*
+ * Which entry to take next when none is free.  Unlike the shadow this
+ * is not per-CPU, and does not need to be: two processors reaching it
+ * at once pick the same number and each writes that entry of its own
+ * SLB, which is a worse choice of victim and nothing else.  Which entry
+ * to sacrifice is not in the architecture at all -- 4.4.1 says only
+ * that the entries exist -- so any answer is allowed to be a poor one.
+ */
+static unsigned int pmap_slb_next = SLB_KERNEL + 1;
+
+/*
+ * Build the two registers slbmte takes (Figure 25).  Figure 15 gives
+ * five fields besides the VSID, and this sets two of them:
+ *
+ *	Ks, Kp	the protection keys; 12.10.1 builds the key the
+ *		access is judged by out of them and MSR_PR
+ *	N	clear, as the segment table generation leaves its
+ *		STE_NOEXEC clear.  The per-segment accounting that
+ *		would set this one -- pvo_set_exec() and
+ *		pvo_clear_exec(), raising and lowering SR_NOEXEC --
+ *		is compiled only for the generations that have
+ *		segment registers, so no 64-bit kernel enforces
+ *		no-execute today.  That is the state of the tree,
+ *		not a decision taken here.  The page has an N of
+ *		its own as well (Figure 17, bit 61 of the second
+ *		doubleword), which this tree does not define; a
+ *		per-page answer would go there rather than here
+ *	L	clear, meaning 4KB virtual pages.  4.4.1 requires
+ *		the same value of L in every entry carrying a given
+ *		VSID, which holds trivially while nothing sets it;
+ *		large pages would have to change that together with
+ *		the page table
+ *	C	clear.  slbie has to be given the same class the
+ *		entry was made with or the processor may not
+ *		invalidate what it was asked to, and there is
+ *		nothing to gain here from telling entries apart
+ */
+static void
+pmap_slb_set(struct slb *slb, register_t vsid, register_t esid,
+    unsigned int index, bool kernel)
+{
+	register_t v;
+
+	v = vsid << SLBV_VSID_SHFT;
+	v |= SLBV_PRKEY;
+	if (kernel)
+		v |= SLBV_SUKEY;	/* 12.10.1: Ks is the kernel's key */
+
+	slb->slb_v = v;
+	slb->slb_e = (esid << SLBE_ESID_SHFT) | SLBE_VALID | index;
+}
+
+/*
+ * The ordinary case, where the entry describes the address space it
+ * belongs to and the VSID comes from the ESID being mapped.
+ */
+static void
+pmap_slb_make(struct slb *slb, struct pmap *pm, register_t esid,
+    unsigned int index)
+{
+
+	pmap_slb_set(slb, va_to_vsid(pm, esid << ADDR_SR_SHFT), esid, index,
+	    pm == pmap_kernel());
+}
+
+/*
+ * Install one.  Chapter 7 note 13: an slbmte that changes the mapping of
+ * an ESID must be preceded by an slbie, and that holds even when the SLB
+ * no longer has the entry, because the translation may still be in
+ * lookaside information the architecture does not name.  Nothing is
+ * needed between the two, but Table 1 wants a context synchronizing
+ * instruction on either side of both, so the pair carries its own.
+ */
+static void
+pmap_slb_enter(const struct slb *slb, register_t old_e)
+{
+#if defined(DIAGNOSTIC) || defined(DEBUG) || defined(PMAPCHECK)
+	register_t was;
+
+	/*
+	 * The shadow says what the entry held; ask the processor and
+	 * make sure.  Nothing else notices when the two drift apart --
+	 * the slbie below would then be aimed at the wrong segment --
+	 * and this is the only place the answer is known.
+	 */
+	__asm volatile("slbmfee %0,%1" : "=r"(was)
+	    : "r"(slb->slb_e & SLBE_INDEX));
+	if (was != old_e)
+		panic("pmap_slb_enter: entry %u holds %#lx, not %#lx",
+		    (unsigned int)(slb->slb_e & SLBE_INDEX),
+		    (unsigned long)was, (unsigned long)old_e);
+#endif
+
+	__asm volatile("isync" ::: "memory");
+	if (old_e & SLBE_VALID) {
+		/*
+		 * slbie takes the ESID in 0:35 and the class in 36, and
+		 * the class must match the one the entry was made with.
+		 * Masking with SLBE_ESID drops the valid bit, which sits
+		 * where the class does, so this asks for class 0 -- which
+		 * is what every entry here is made with.  Start using the
+		 * class and this line has to change with it.
+		 */
+		__asm volatile("slbie %0" :: "r"(old_e & SLBE_ESID)
+		    : "memory");
+	}
+	__asm volatile("slbmte %0,%1" :: "r"(slb->slb_v), "r"(slb->slb_e)
+	    : "memory");
+	__asm volatile("isync" ::: "memory");
+}
+
+/*
+ * What this processor's SLB holds.  It does not depend on the pmap:
+ * there is one SLB, whatever address space is current, and a switch
+ * empties it rather than swapping it.
+ */
+static struct slb *
+pmap_slb_shadow(void)
+{
+
+	return cpu_slb[cpu_number()];
+}
+
+/*
+ * Leaving an address space.  slbia invalidates every entry except entry
+ * 0 and leaves their other fields undefined, so the shadow has to be
+ * emptied with it; what the next address space needs will fault in.
+ *
+ * Entry 0 survives, and has to: the Programming Note on slbia says that
+ * with MSR_IR set, software keeps the instruction after the slbia from
+ * taking an Instruction Segment interrupt by placing both in the segment
+ * entry 0 maps.  That is the kernel's segment, which is why entry 0 is
+ * reserved for it.
+ *
+ * Table 1 asks for a context synchronizing instruction before and after
+ * slbia, Table 2 for one after; isync on both sides satisfies each.
+ */
+static void
+pmap_slb_switch(void)
+{
+	struct slb * const shadow = pmap_slb_shadow();
+	register_t msr;
+	unsigned int i;
+
+	/*
+	 * A segment interrupt taken between the slbia and the shadow
+	 * being emptied would read a shadow that no longer describes the
+	 * SLB.  The handler runs with interrupts already off, so this is
+	 * the only caller that has to turn them off itself.
+	 */
+	msr = pmap_interrupts_off();
+
+	__asm volatile("isync" ::: "memory");
+	__asm volatile("slbia" ::: "memory");
+	__asm volatile("isync" ::: "memory");
+
+	for (i = SLB_KERNEL + 1; i < SLB_NENTRIES; i++)
+		shadow[i].slb_e = 0;
+	pmap_slb_next = SLB_KERNEL + 1;
+
+	pmap_interrupts_restore(msr);
+}
+
+/*
+ * Answer a segment fault: work out the mapping, choose an entry, and
+ * write it.
+ *
+ * 4.4.1 requires that no two entries translate the same effective
+ * address, so the search for an entry already holding this ESID covers
+ * every slot before a free one is considered.  Stopping at the first
+ * free slot would leave a second copy behind it.
+ *
+ * Entry 0 and the copyin window are never chosen; the rest are taken in
+ * turn.  Which one to sacrifice is not in the architecture, so this is a
+ * choice, not a rule -- round robin needs no state beyond the cursor and
+ * gives every entry a turn.
+ */
+int
+pmap_slb_fault(struct pmap *pm, vaddr_t va)
+{
+	struct slb * const shadow = pmap_slb_shadow();
+	const register_t esid = va >> ADDR_SR_SHFT;
+	const register_t want = esid << SLBE_ESID_SHFT;
+	unsigned int i, index = SLB_NENTRIES;
+	register_t old_e;
+
+	/*
+	 * Every entry, including the two that are reserved: 4.4.1 is
+	 * about what the SLB holds, not about which entries this code
+	 * is willing to take.  An ESID that entry 0 or the window
+	 * already translates must be refreshed where it is.
+	 */
+	for (i = 0; i < SLB_NENTRIES; i++) {
+		if ((shadow[i].slb_e & SLBE_VALID) == 0)
+			continue;
+		if ((shadow[i].slb_e & SLBE_ESID) == want) {
+			index = i;		/* ours already; refresh it */
+			break;
+		}
+	}
+
+	/* A free one, from the entries that may be taken. */
+	if (index == SLB_NENTRIES) {
+		for (i = SLB_KERNEL + 1; i < SLB_WINDOW; i++) {
+			if ((shadow[i].slb_e & SLBE_VALID) == 0) {
+				index = i;
+				break;
+			}
+		}
+	}
+
+	if (index == SLB_NENTRIES) {
+		index = pmap_slb_next;
+		pmap_slb_next++;
+		if (pmap_slb_next == SLB_WINDOW)
+			pmap_slb_next = SLB_KERNEL + 1;
+	}
+
+	old_e = shadow[index].slb_e;
+	pmap_slb_make(&shadow[index], pm, esid, index);
+	pmap_slb_enter(&shadow[index], old_e);
+
+	return 1;
+}
+
+#define	USER_WINDOW_ESID	((register_t)((vaddr_t)USER_ADDR >> ADDR_SR_SHFT))
+
+/*
+ * Map one user segment where the kernel can reach it, for copyin() and
+ * copyout().  USER_ADDR is the effective address set aside for it, and
+ * SLB_WINDOW the entry: reserved, so that a segment fault taken during
+ * the copy cannot choose it as its victim and pull the window out from
+ * under the copy.
+ *
+ * This is the one entry whose VSID does not belong to the ESID it
+ * carries.  That is what a window is.
+ */
+vaddr_t
+pmap_setusr(vaddr_t uva)
+{
+	struct pcb * const pcb = curpcb;
+	struct pmap * const pm = pcb->pcb_pm;
+	struct slb * const shadow = pmap_slb_shadow();
+	register_t msr, old_e;
+
+	KASSERT(pcb->pcb_kmapsr == 0);
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	old_e = shadow[SLB_WINDOW].slb_e;
+	pmap_slb_set(&shadow[SLB_WINDOW], va_to_vsid(pm, uva),
+	    USER_WINDOW_ESID, SLB_WINDOW, false);
+	pmap_slb_enter(&shadow[SLB_WINDOW], old_e);
+
+	pcb->pcb_kmapsr = USER_WINDOW_ESID;
+	pcb->pcb_umapsr = uva >> ADDR_SR_SHFT;
+
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
+
+	return (vaddr_t)USER_ADDR;
+}
+
+/*
+ * Take it down again.  slbie, not just a clear shadow: slbmte does not
+ * reach the lookaside information the implementation may be keeping
+ * (Chapter 4, the Programming Note on slbmte), so the entry has to be
+ * invalidated properly for the segment to stop translating.  Table 1
+ * asks for a context synchronizing instruction on either side.
+ */
+vaddr_t
+pmap_unsetusr(void)
+{
+	struct pcb * const pcb = curpcb;
+	struct slb * const shadow = pmap_slb_shadow();
+	register_t msr, old_e;
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	old_e = shadow[SLB_WINDOW].slb_e;
+	if (old_e & SLBE_VALID) {
+		__asm volatile("isync" ::: "memory");
+		__asm volatile("slbie %0" :: "r"(old_e & SLBE_ESID)
+		    : "memory");
+		__asm volatile("isync" ::: "memory");
+	}
+	shadow[SLB_WINDOW].slb_e = 0;
+	pcb->pcb_kmapsr = 0;
+
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
+
+	return 0;
+}
+#endif /* PMAP_OEA64_SLB */
 
 /*
  * Spill handler.
@@ -1520,7 +1867,7 @@ pmap_release(pmap_t pm)
 	KASSERT(pm->pm_stats.wired_count == 0);
 	
 	PMAP_LOCK();
-#if defined(PMAP_OEA64)
+#if defined(PMAP_OEA64) || defined(PMAP_OEA64_SLB)
 	if (pm->pm_vsid == 0)
 #else
 	if (pm->pm_sr[0] == 0)
@@ -2222,6 +2569,22 @@ pmap_enter(pmap_t pm, vaddr_t va, paddr_t pa, vm_prot_t prot, u_int flags)
 	 * We need to know if this page can be executable
 	 */
 	flags |= (prot & VM_PROT_EXECUTE);
+#if defined(PMAP_OEA64) || defined(PMAP_OEA64_SLB)
+	/*
+	 * A page with no execute permission gets the PTE's own No-execute
+	 * bit (Figure 17, bit 61 of the second doubleword).  The 32-bit
+	 * generations answer this per segment instead, in pvo_set_exec()
+	 * and pvo_clear_exec(); neither 64-bit generation has segment
+	 * registers to hold that answer, and the page table does not
+	 * depend on which of the two this is.
+	 *
+	 * flags, not prot: the line above folds prot's execute bit into
+	 * it, and the syncicache test further down reads flags as the
+	 * answer to whether this page is executed.
+	 */
+	if ((flags & VM_PROT_EXECUTE) == 0)
+		pte_lo |= PTE_N;
+#endif
 
 	/*
 	 * Record mapping for later back-translation and pte spilling.
@@ -2431,7 +2794,7 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 	 * Be careful when checking VM_MAX_KERNEL_ADDRESS; you don't
 	 * want to wrap around to 0.
 	 */
-#if !defined(PMAP_OEA64)
+#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_SLB)
 	/*
 	 * The shortcuts below are all 32-bit ones.  The 64-bit OEA has
 	 * no BATs and no fixed segments, so there is nothing to look in
@@ -2707,6 +3070,16 @@ pmap_activate(struct lwp *l)
 	if (l == curlwp) {
 		/* Store pointer to new current pmap. */
 		curpm = pmap;
+#if defined(PMAP_OEA64_SLB)
+		/*
+		 * The SLB still describes the address space being left.
+		 * Unlike the segment registers, which the return to user
+		 * space rewrites one by one, there is nothing here to
+		 * rewrite: empty it and let the segments this address
+		 * space touches fault back in.
+		 */
+		pmap_slb_switch();
+#endif
 	}
 }
 
@@ -2969,7 +3342,7 @@ pmap_print_mmuregs(void)
 #if defined (PMAP_OEA) || defined (PMAP_OEA64_BRIDGE)
 	u_int cpuvers;
 #endif
-#ifndef PMAP_OEA64
+#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_SLB)
 	int i;
 	vaddr_t addr;
 	register_t soft_sr[16];
@@ -2984,7 +3357,7 @@ pmap_print_mmuregs(void)
 	cpuvers = MFPVR() >> 16;
 #endif
 	__asm volatile ("mfsdr1 %0" : "=r"(sdr1));
-#ifndef PMAP_OEA64
+#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_SLB)
 	addr = 0;
 	for (i = 0; i < 16; i++) {
 		soft_sr[i] = MFSRIN(addr);
@@ -3018,7 +3391,7 @@ pmap_print_mmuregs(void)
 #endif
 
 	printf("SDR1:\t%#" _PRIxpa "\n", sdr1);
-#ifndef PMAP_OEA64
+#if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_SLB)
 	printf("SR[]:\t");
 	for (i = 0; i < 4; i++)
 		printf("0x%08lx,   ", soft_sr[i]);
@@ -3879,7 +4252,8 @@ pmap_bootstrap2(void)
 	    :
 	    : "r"((uintptr_t)pmap_pteg_table | (pmap_pteg_mask >> 10))
 	    : "memory");
-#elif defined(PMAP_OEA64) || defined(PMAP_OEA64_BRIDGE)
+#elif defined(PMAP_OEA64) || defined(PMAP_OEA64_BRIDGE) || \
+      defined(PMAP_OEA64_SLB)
 	__asm volatile("sync; mtsdr1 %0; isync"
 	    :
 	    : "r"((uintptr_t)pmap_pteg_table |
@@ -3945,6 +4319,33 @@ pmap_bootstrap2(void)
 	    : "n"(SPR_ASR),
 	      "r"((uintptr_t)pmap_kernel()->pm_steg_table | 1)
 	    : "memory");
+#endif
+
+#if defined(PMAP_OEA64_SLB)
+	/*
+	 * Entry 0, the one slbia does not touch.  Its Programming Note
+	 * (Chapter 4, p.42) is the whole reason it is reserved: with
+	 * MSR_IR set, the instruction after an slbia is kept from taking
+	 * an Instruction Segment interrupt by putting both in the
+	 * segment entry 0 maps.  Entry 0 is given ESID 0, the first 256MB
+	 * of the effective address space, and the kernel lies inside it:
+	 * an ofppc64 GENERIC64 links .text at 0x100000 and ends its data
+	 * below 0x840000.  A kernel that outgrew the segment would have
+	 * to put the slbia somewhere else, so this is worth knowing.
+	 *
+	 * Nothing else needs bolting.  The segment table generation has
+	 * to bolt every segment its fault handler walks, because that
+	 * handler runs with translation on; this one is entered with IR
+	 * and DR 0 (Figure 28) and reaches everything by real address,
+	 * so it can fault on nothing.
+	 */
+	{
+		struct slb *shadow = cpu_slb[cpu_number()];
+
+		pmap_slb_make(&shadow[SLB_KERNEL], pmap_kernel(), 0,
+		    SLB_KERNEL);
+		pmap_slb_enter(&shadow[SLB_KERNEL], 0);
+	}
 #endif
 
 	tlbia();

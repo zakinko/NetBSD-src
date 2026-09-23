@@ -49,7 +49,7 @@ __KERNEL_RCSID(0, "$NetBSD: bus_space.c,v 1.40 2026/06/17 15:08:54 rkujawa Exp $
 
 #include <uvm/uvm.h>
 
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/spr.h>
 #include <powerpc/oea/bat.h>
 #include <powerpc/oea/cpufeat.h>

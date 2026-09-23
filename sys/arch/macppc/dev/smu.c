@@ -247,9 +247,8 @@ smu_setup_doorbell(struct smu_softc *sc)
 	sc->sc_cmd = malloc(4096, M_DEVBUF, M_WAITOK);
 	sc->sc_cmd_paddr = vtophys((vaddr_t) sc->sc_cmd);
 
-	DPRINTF("%s: cmd vaddr 0x%x paddr 0x%x\n",
-	    __func__, (unsigned int) sc->sc_cmd,
-	    (unsigned int) sc->sc_cmd_paddr);
+	DPRINTF("%s: cmd vaddr %p paddr %#" PRIxPADDR "\n",
+	    __func__, sc->sc_cmd, sc->sc_cmd_paddr);
 
 	if (OF_getprop(sc->sc_node, "platform-doorbell-buff",
 	        &node, sizeof(node)) <= 0)
@@ -763,7 +762,7 @@ smu_iicbus_exec(void *cookie, i2c_op_t op, i2c_addr_t addr, const void *send,
 	struct smu_cmd cmd;
 	int retries, ret;
 
-	DPRINTF("%s: op %x addr %x send_len %d recv_len %d\n",
+	DPRINTF("%s: op %x addr %x send_len %zu recv_len %zu\n",
 	    __func__, op, addr, send_len, recv_len);
 
 	cmd.cmd = SMU_CMD_I2C;

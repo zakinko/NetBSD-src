@@ -14,7 +14,7 @@
 #include <powerpc/booke/pmap.h>
 #elif defined(PPC_IBM4XX)
 #include <powerpc/ibm4xx/pmap.h>
-#elif defined(PPC_OEA) || defined (PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#elif defined(PPC_OEA) || defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/pmap.h>
 #elif defined(_KERNEL)
 #error unknown PPC variant

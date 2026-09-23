@@ -177,9 +177,16 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 		}
 	}
 
+#if !defined(PPC_OEA64) && !defined(PPC_OEA64_SLB)
 	/*
 	 * Initialize BAT mappings for our I/O regions.  Note,
 	 * on the 601, we use segment mappings under the covers.
+	 *
+	 * 12.7 defines Block Address Translation without tying it to a
+	 * word size, but no implementation this runs on has the
+	 * registers: cpu_features_probe() sets OEACPU_NOBAT for every
+	 * 64-bit PVR it knows.  oea_mapiodev() maps what is needed
+	 * instead, as it does on any machine without them.
 	 */
 #ifdef PPC_OEA601
 	if ((mfpvr() >> 16 ) == MPC601) {
@@ -200,6 +207,7 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 		    0xfe000000, BAT_BL_8M,	/* Grackle IO */
 		    0);
 	}
+#endif /* !PPC_OEA64 && !PPC_OEA64_SLB */
 
 	ofwoea_initppc(startkernel, endkernel, args);
 }

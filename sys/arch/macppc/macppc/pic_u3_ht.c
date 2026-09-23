@@ -232,7 +232,7 @@ setup_u3_ht(uint32_t addr, uint32_t len, int bigendian, int cirq)
 
 	/* up to 128 interrupt sources, plus IPI */
 	pic->pic_numintrs = IPI_VECTOR + 1;
-	pic->pic_cookie = (void *) addr;
+	pic->pic_cookie = (void *)(uintptr_t)addr;
 	pic->pic_enable_irq = u3_ht_enable_irq;
 	pic->pic_reenable_irq = u3_ht_enable_irq;
 	pic->pic_disable_irq = u3_ht_disable_irq;
@@ -352,7 +352,8 @@ setup_u3_ht_workarounds(struct u3_ht_ops *u3_ht)
 		nirq = in32rb(base + 0x04);
 		nirq = (nirq >> 16) & 0xff;
 
-		DPRINTF("dev %08x nirq %d pos %08x\n", (uint32_t)base, nirq, (uint32_t)pos);
+		DPRINTF("dev %p nirq %d pos %02x\n", __UNVOLATILE(base),
+		    nirq, pos);
 		DPRINTF("devreg %08x\n", in32rb(dev_reg + PCI_ID_REG));
 		for (i = 0; i <= nirq; i++) {
 			out8rb(base + 0x02, 0x10 + (i << 1));

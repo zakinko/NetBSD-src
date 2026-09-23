@@ -948,7 +948,7 @@ pmu_i2c_exec(void *cookie, i2c_op_t op, i2c_addr_t addr, const void *_send,
 		DPRINTF("resp3(%d): %2x %2x %2x ", len, resp[0], resp[1],
 			resp[2]);
 		if ((len - 2) != recv_len) {
-			DPRINTF("%s: %s(%d) - got %d\n",
+			DPRINTF("%s: %s(%zu) - got %d\n",
 			    device_xname(sc->sc_dev),
 			    __func__, recv_len, len - 2);
 			return -1;
@@ -966,7 +966,7 @@ pmu_i2c_exec(void *cookie, i2c_op_t op, i2c_addr_t addr, const void *_send,
 			memcpy(dptr, recv, recv_len);
 		}	
 		len = clen + 7;
-		DPRINTF("pmu_i2c_exec(%02x, %d)\n", addr, send_len);
+		DPRINTF("pmu_i2c_exec(%02x, %zu)\n", addr, send_len);
 
 		if (sc->sc_is_rackmac) delay(20000);
 		len = pmu_send(sc, PMU_I2C_CMD, len, command, 16, resp);

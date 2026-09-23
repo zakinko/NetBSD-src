@@ -91,7 +91,7 @@ extern const pcu_ops_t fpu_ops;
  * List of PowerPC architectures that support FPUs.
  * PPC_IBM440 covers only the 440 with the FPU.
  */
-#if defined(PPC_OEA) || defined (PPC_OEA64) || defined (PPC_OEA64_BRIDGE) || \
+#if defined(PPC_OEA) || defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB) || \
     defined(PPC_IBM440)
 #define PPC_HAVE_FPU
 

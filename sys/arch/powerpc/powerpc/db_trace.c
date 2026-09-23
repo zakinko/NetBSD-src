@@ -46,7 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD: db_trace.c,v 1.63 2023/04/13 06:39:23 riastradh Exp 
 #include <powerpc/pcb.h>
 #include <powerpc/psl.h>
 #include <powerpc/spr.h>
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/spr.h>
 #elif defined(PPC_IBM4XX)
 #include <powerpc/ibm4xx/spr.h>

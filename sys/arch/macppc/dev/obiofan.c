@@ -172,7 +172,7 @@ obiofan_update(void *cookie)
 		spins = (spin - sc->sc_count[i]) & 0xffff;
 		sc->sc_rpm[i] = spins * 60 / diff;
 		sc->sc_count[i] = spin;
-		DPRINTF("%s %lld %d\n", __func__, diff, spins);
+		DPRINTF("%s %lld %d\n", __func__, (long long)diff, spins);
 	}
 	sc->sc_stamp = now;
 	callout_schedule(&sc->sc_callout, mstohz(5000));

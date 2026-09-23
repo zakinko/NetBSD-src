@@ -154,7 +154,8 @@ pmap_remove_all(struct pmap *pmap)
 	return false;
 }
 
-#if (defined(PPC_OEA) + defined(PPC_OEA64) + defined(PPC_OEA64_BRIDGE)) != 1
+#if (defined(PPC_OEA) + defined(PPC_OEA64) + defined(PPC_OEA64_BRIDGE) \
+    + defined(PPC_OEA64_SLB)) != 1
 #define	PMAP_NEEDS_FIXUP
 #endif
 
@@ -171,6 +172,14 @@ bool pmap_clear_bit(struct vm_page *, int);
 void pmap_real_memory(paddr_t *, psize_t *);
 void pmap_procwr(struct proc *, vaddr_t, size_t);
 int pmap_pte_spill(pmap_t, vaddr_t, bool);
+#ifdef PPC_OEA64_SLB
+/*
+ * Called from the Data and Instruction Segment vectors, which is why it
+ * is not static: nothing in C calls it.  pmap_pte_spill() above is here
+ * for the same reason, from the DSI vector.
+ */
+int pmap_slb_fault(pmap_t, vaddr_t);
+#endif
 int pmap_ste_spill(pmap_t, vaddr_t, bool);
 void pmap_pinit(pmap_t);
 
@@ -246,7 +255,7 @@ pmap_setup64bridge(void)
 
 bool pmap_pageidlezero (paddr_t);
 void pmap_syncicache (paddr_t, psize_t);
-#ifdef PPC_OEA64
+#if defined(PPC_OEA64) || defined(PPC_OEA64_SLB)
 vaddr_t pmap_setusr (vaddr_t);
 vaddr_t pmap_unsetusr (void);
 #endif

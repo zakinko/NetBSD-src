@@ -1,0 +1,22 @@
+#	$NetBSD$
+#
+# Standard/required options for NetBSD/macppc with an LP64 kernel on a
+# processor that reloads the SLB in software.
+#
+# This is what a 970 actually is.  From POWER4 and the 970 on, a
+# reference to a segment the SLB does not hold raises a Data or
+# Instruction Segment interrupt and the operating system writes the
+# entry with slbmte (Book III 2.01, 4.4.1); there is no segment table
+# for the processor to walk, and the 970FX user's manual says of that
+# part that its ASR takes no part in address translation.
+#
+# std.macppc64 selects PPC_OEA64, the hardware-walked segment table of
+# the First Edition, 12.4.1.  That is the older 64-bit generation --
+# the 620, POWER3 and RS64 -- and it builds here but cannot run on this
+# machine.  The two differ only in how a segment is found; the page
+# table, the interrupts and everything above are shared.
+
+include "arch/macppc/conf/std.macppc64"
+
+no options 	PPC_OEA64
+options 	PPC_OEA64_SLB

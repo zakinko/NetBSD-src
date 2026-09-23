@@ -1045,7 +1045,15 @@ zscninit(struct consdev *cp)
 
 	if (OF_getprop(obio, "assigned-addresses", reg, sizeof(reg)) < 12)
 		return;
-	zs_conschan = (void *)(reg[2] + zs_offset);
+	/*
+	 * assigned-addresses is five cells per entry -- phys.hi,
+	 * phys.mid, phys.lo, size.hi, size.lo -- and the PCI binding to
+	 * IEEE 1275, 2.2.1.1, makes phys.mid the high 32 bits of the
+	 * address and phys.lo the low 32.  Only reg[2], the low half,
+	 * has ever been read here.  If zs does not appear on a machine
+	 * whose console is above 4GB, this is the line to doubt.
+	 */
+	zs_conschan = (void *)(uintptr_t)(reg[2] + zs_offset);
 }
 
 #if PMAC_G5

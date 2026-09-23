@@ -99,7 +99,7 @@ struct trapframe {
 	struct reg_sans_pc tf_ureg;
 	struct clockframe tf_cf;
 	uint32_t tf_exc;
-#if defined(PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE)
+#if defined(PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 	__register_t tf_dar;
 	__register_t tf_pad0[2];
 	uint32_t tf_dsisr;
@@ -123,7 +123,7 @@ struct trapframe32 {
 	struct reg_sans_pc32 tf_ureg;
 	struct clockframe32 tf_cf;
 	uint32_t tf_exc;
-#if defined(PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE)
+#if defined(PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 	__register32_t tf_dar;
 	__register32_t tf_pad0[2];
 	uint32_t tf_dsisr;
@@ -197,6 +197,21 @@ struct switchframe {
  */
 #define	CALLFRAMELEN	sizeof(struct callframe)
 #ifdef _LP64
+/*
+ * The 64-bit ABIs put more in the frame than the 32-bit one, and they
+ * do not agree with each other.  ELFv1 (the PowerPC Processor ABI
+ * Supplement, "Function Calling Sequence") reserves two doublewords
+ * between the link register save area and the TOC pointer; ELFv2 (the
+ * Power Architecture 64-Bit ELF V2 ABI, 2.2.2 "Stack Frame") drops them
+ * and makes the minimum frame 32 bytes rather than 48.  gcc says which
+ * it is building for with _CALL_ELF, absent on the older one.
+ *
+ * The offsets matter because both ABIs put the link register save area
+ * at 16(r1), where a callee stores its return address.  With the 32-bit
+ * layout that offset lands on cf_r30, which holds the argument a forked
+ * lwp is about to be handed; with the layout above, genassym gives
+ * CFRAME_LR 16 and CFRAME_R30 48, so they no longer collide.
+ */
 struct callframe {
 	__register_t cf_sp;
 	__register_t cf_cr;

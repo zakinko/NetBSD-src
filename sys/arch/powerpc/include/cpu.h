@@ -124,6 +124,30 @@ struct cpu_info {
     ((defined(MODULAR) || defined(_MODULE)) && !defined(_LP64))
 	char *ci_intstk;
 #endif
+#ifdef PPC_OEA64_SLB
+	/*
+	 * A segment interrupt arrives with translation off (Book III
+	 * 2.01, Figure 28), so its handler cannot use ci_intstk, which
+	 * is a virtual address -- and on this kernel ci_intstk is not
+	 * even here, the conditional above it being for IBM4XX.  This
+	 * one is reached by its real address; ddb keeps ddbstk for the
+	 * same reason, but one CPU at a time is enough for ddb and not
+	 * for this.
+	 */
+	char *ci_slbstk;
+	/*
+	 * What this processor's SLB holds.  cpu_switchto() empties it
+	 * with the slbia, so it is reached from assembly.
+	 */
+	struct slb *ci_slb;
+	/*
+	 * Which pmap a supervisor-mode segment interrupt resolves
+	 * against; null is the kernel's.  openfirmware_trampoline() puts
+	 * ofw_pmap here for the duration of a call, which is what the
+	 * segment table generation does by loading its ASR.
+	 */
+	struct pmap *ci_slbpm;
+#endif
 
 	register_t ci_savearea[CPUSAVE_SIZE];
 #if defined(PPC_BOOKE) || \

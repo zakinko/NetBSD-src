@@ -49,7 +49,7 @@ __KERNEL_RCSID(0, "$NetBSD: clock.c,v 1.19 2024/10/19 12:34:09 jmcneill Exp $");
 
 #include <powerpc/psl.h>
 #include <powerpc/spr.h>
-#if defined (PPC_OEA) || defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/spr.h>
 #elif defined (PPC_BOOKE)
 #include <powerpc/booke/spr.h>

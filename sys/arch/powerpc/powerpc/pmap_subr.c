@@ -46,7 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD: pmap_subr.c,v 1.30 2020/07/06 10:31:24 rin Exp $");
 
 #include <uvm/uvm.h>
 
-#if defined (PPC_OEA) || defined (PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA) || defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/vmparam.h>
 #ifdef ALTIVEC
 #include <powerpc/altivec.h>

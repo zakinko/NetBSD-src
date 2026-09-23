@@ -152,8 +152,11 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 
 #ifndef PPC_OEA64
 	/*
-	 * No BATs on the 64-bit OEA; oea_mapiodev() maps what is
-	 * needed instead, as it does on any machine without them.
+	 * 12.7 defines Block Address Translation without tying it to a
+	 * word size, but no implementation this runs on has the
+	 * registers: cpu_features_probe() sets OEACPU_NOBAT for every
+	 * 64-bit PVR it knows.  oea_mapiodev() maps what is needed
+	 * instead, as it does on any machine without them.
 	 */
 	if ((oeacpufeat & OEACPU_NOBAT) == 0) {
 		node = OF_finddevice("/");

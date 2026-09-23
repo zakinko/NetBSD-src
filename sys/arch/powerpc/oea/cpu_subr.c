@@ -288,6 +288,28 @@ struct cpu_info cpu_info[1] = {
 };
 #endif /*MULTIPROCESSOR*/
 
+#ifdef PPC_OEA64_SLB
+/*
+ * One real-mode stack per processor, for the Data and Instruction
+ * Segment handlers.  They are entered with IR and DR 0 (Book III 2.01,
+ * Figure 28) and so cannot use a stack named by a virtual address.
+ *
+ * ddbstk in trap_subr.S is a single stack for the same reason; one is
+ * enough there because only one processor is ever in ddb, and is not
+ * enough here.  INTSTK is the size the ports already give an interrupt
+ * stack, and 16 is the alignment the ABI requires of a stack pointer.
+ */
+char cpu_slbstk[__arraycount(cpu_info)][INTSTK] __aligned(16);
+
+/*
+ * And what that processor's SLB holds.  Nothing else records it: the
+ * architecture gives slbmfee and slbmfev to read an entry back, but no
+ * way to ask which entries are in use, and slbia leaves the fields of
+ * everything it invalidates undefined (Chapter 4, p.42).
+ */
+struct slb cpu_slb[__arraycount(cpu_info)][SLB_NENTRIES];
+#endif
+
 int cpu_altivec;
 register_t cpu_psluserset;
 register_t cpu_pslusermod;
@@ -309,13 +331,50 @@ cpu_features_probe(void)
 	pvr = mfpvr();
 	vers = pvr >> 16;
 
-	if ((vers >= IBMRS64II && vers <= IBM970GX) || vers == MPC620 ||
-	    vers == IBMCELL || vers == IBMPOWER6P5) {
+	switch (vers) {
+	/*
+	 * The processor walks a segment table for itself (First
+	 * Edition, 12.4.1).  These cannot be picked out by a range:
+	 * IBMPOWER4 sits at 0x0035 among the RS64 numbers and
+	 * IBMPOWER3 at 0x0040 after the 970s.
+	 */
+	case MPC620:
+	case IBMRS64II:
+	case IBMRS64IIIp:
+	case IBMRS64IIIi:
+	case IBMRS64IV:
+	case IBMPOWER3:
+	case IBMPOWER3II:
+		oeacpufeat |= OEACPU_64;
+		oeacpufeat |= OEACPU_NOBAT;
+		oeacpufeat |= OEACPU_STAB;
+		break;
+
+	/*
+	 * Software reloads the SLB (Book III 2.01, 4.4.1).  The bridge
+	 * belongs here as well: it is the optional facility of 9.1,
+	 * "Bridge to SLB Architecture", and the word does not appear in
+	 * the First Edition.
+	 */
+	case IBMPOWER4:
+	case IBMPOWER4II:
+	case IBM970:
+	case IBM970FX:
+	case IBM970MP:
+	case IBM970GX:
+	case IBMPOWER5GR:
+	case IBMPOWER5GS:
+	case IBMPOWER6:
+	case IBMPOWER6P5:
+	case IBMCELL:
 		oeacpufeat |= OEACPU_64;
 		oeacpufeat |= OEACPU_64_BRIDGE;
 		oeacpufeat |= OEACPU_NOBAT;
+		oeacpufeat |= OEACPU_SLB;
+		break;
+	}
 
-	} else if (vers == MPC601) {
+	if (vers == MPC601) {
 		oeacpufeat |= OEACPU_601;
 
 	} else if (MPC745X_P(vers)) {
@@ -545,6 +604,16 @@ cpu_attach_common(device_t self, int id)
 #endif
 
 	ci->ci_cpuid = id;
+#ifdef PPC_OEA64_SLB
+	/*
+	 * The boot processor's is already set, in oea_init(): a segment
+	 * interrupt can arrive as soon as translation is on, which is
+	 * well before this.  Setting it again costs nothing and keeps
+	 * the two paths from having to agree about which CPU is which.
+	 */
+	ci->ci_slbstk = cpu_slbstk[id];
+	ci->ci_slb = cpu_slb[id];
+#endif
 	ci->ci_idepth = -1;
 	ci->ci_dev = self;
 	ci->ci_idlespin = cpu_idlespin;
@@ -820,6 +889,11 @@ cpu_setup(device_t self, struct cpu_info *ci)
 #endif
 	{
 #if defined(_ARCH_PPC64)
+		/*
+		 * snprintb() takes 32 bits and this bitmask describes
+		 * the low half, the same way the branch above prints
+		 * one; HID0 is 64 bits wide here.
+		 */
 		snprintb(hidbuf, sizeof hidbuf, bitmask,
 		    hid64_0 & 0xffffffff);
 #else

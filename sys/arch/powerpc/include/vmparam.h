@@ -68,7 +68,7 @@ extern const char __USRSTACK;		/* let the linker resolve it */
 #include <powerpc/booke/vmparam.h>
 #elif defined(PPC_IBM4XX)
 #include <powerpc/ibm4xx/vmparam.h>
-#elif defined(PPC_OEA) || defined (PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#elif defined(PPC_OEA) || defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #include <powerpc/oea/vmparam.h>
 #elif defined(_KERNEL)
 #error unknown PPC variant

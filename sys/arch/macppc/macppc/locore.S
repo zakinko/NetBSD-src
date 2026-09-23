@@ -164,7 +164,14 @@ __start:
 	bl	_C_LABEL(main)
 	b	_C_LABEL(OF_exit)
 
-#if defined (PPC_OEA64_BRIDGE)
+/*
+ * HID4 is one of the 970's own registers -- spr.h has it as
+ *	SPR_HID4 0x3f4  ..6. 970 HID4
+ * and the 970FX user's manual describes it -- not a bridge mode
+ * facility.  failsafe.c asks for these whenever PMAC_G5 is set, so cut
+ * them the same way it does.
+ */
+#if defined (PMAC_G5)
 /* Return all 64 bits of HID4 */
 	.text
 	.globl _C_LABEL(mfhid4)

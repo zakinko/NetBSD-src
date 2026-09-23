@@ -2112,7 +2112,8 @@ snapper_init(struct snapper_softc *sc, int node)
 		 * offset from mac-io's base address
 		 */
 		addr &= 0x7fff;
-		DPRINTF(" 0x%x %s %s %08x\n", gpio, name, audio_gpio, addr);
+		DPRINTF(" 0x%x %s %s %08" PRIxBUSSIZE "\n", gpio, name, audio_gpio,
+		    addr);
 
 		/* gpio5 */
 		if (strcmp(audio_gpio, "headphone-mute") == 0 ||
@@ -2183,16 +2184,16 @@ snapper_init(struct snapper_softc *sc, int node)
 
 	if (owaddr != -1) snapper_setup_ow(sc);
 
-	DPRINTF(" headphone-mute %x\n", headphone_mute);
-	DPRINTF(" lineout-mute %x\n", lineout_mute);
-	DPRINTF(" amp-mute %x\n", amp_mute);
-	DPRINTF(" headphone-detect %x\n", headphone_detect);
+	DPRINTF(" headphone-mute %" PRIxBUSSIZE "\n", headphone_mute);
+	DPRINTF(" lineout-mute %" PRIxBUSSIZE "\n", lineout_mute);
+	DPRINTF(" amp-mute %" PRIxBUSSIZE "\n", amp_mute);
+	DPRINTF(" headphone-detect %" PRIxBUSSIZE "\n", headphone_detect);
 	DPRINTF(" headphone-detect active %x\n", headphone_detect_active);
 	DPRINTF(" headphone-detect intr %x\n", headphone_detect_intr);
-	DPRINTF(" lineout-detect %x\n", lineout_detect);
+	DPRINTF(" lineout-detect %" PRIxBUSSIZE "\n", lineout_detect);
 	DPRINTF(" lineout-detect active %x\n", lineout_detect_active);
 	DPRINTF(" lineout-detect intr %x\n", lineout_detect_intr);
-	DPRINTF(" audio-hw-reset %x\n", audio_hw_reset);
+	DPRINTF(" audio-hw-reset %" PRIxBUSSIZE "\n", audio_hw_reset);
 
 	if (headphone_detect_intr != -1) {
 		snprintf(intr_xname, sizeof(intr_xname), "%s headphone",

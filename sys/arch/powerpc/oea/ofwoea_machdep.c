@@ -206,7 +206,15 @@ ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
 	pmap_bootstrap(startkernel, endkernel);
 
 /* as far as I can tell, the pmap_setup_seg0 stuff is horribly broken */
-#if defined(PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+/*
+ * The bridge is the optional facility of Book III 2.01, 9.1 "Bridge to
+ * SLB Architecture", which lets a 64-bit processor keep using the 32-bit
+ * segment registers.  Every branch below is inside "if (oeacpufeat &
+ * OEACPU_64_BRIDGE)", and pmap_setup_segment0_map() exists only for the
+ * bridge, so this is not for PPC_OEA64: naming the function there does
+ * not even compile.
+ */
+#if defined (PPC_OEA64_BRIDGE)
 #if defined (PMAC_G5)
 	/* Mapin 1st 256MB segment 1:1, also map in mem needed to access OFW*/
 	if (oeacpufeat & OEACPU_64_BRIDGE) {
@@ -264,7 +272,7 @@ ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
 	if (oeacpufeat & OEACPU_64_BRIDGE)
 		pmap_setup_segment0_map(0, 0xf4000000, 0xf4000000, 0x1000, 0x0);
 #endif /* PMAC_G5 */
-#endif /* PPC_OEA64 || PPC_OEA64_BRIDGE */
+#endif /* PPC_OEA64_BRIDGE */
 
 	/* Now enable translation (and machine checks/recoverable interrupts) */
 	__asm __volatile ("sync; mfmsr %0; ori %0,%0,%1; mtmsr %0; isync"

@@ -190,10 +190,10 @@
 #define	VM_MIN_KERNEL_ADDRESS	((vaddr_t) 0xffffffUL << 40) /* top 1TB */
 #define	VM_MAX_KERNEL_ADDRESS	((vaddr_t) -32768)
 /*
- * The segment below the kernel, as it is with segment registers, where
- * USER_SR is 12 and KERNEL_SR is 13.  Keeping that relationship means
- * the va < VM_MIN_KERNEL_ADDRESS tests elsewhere still read the window
- * as user space, which is what it maps.
+ * The window copyin() maps user memory through, one segment below the
+ * kernel.  That is where it sits with segment registers -- USER_SR is
+ * 12 and KERNEL_SR is 13 -- and keeping the same shape means the two
+ * cases can be read side by side.
  */
 #define	USER_ADDR		((void *)(VM_MIN_KERNEL_ADDRESS - SEGMENT_LENGTH))
 #else

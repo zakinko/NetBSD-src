@@ -3,10 +3,17 @@
 # Standard/required options for NetBSD/macppc with an LP64 kernel.
 #
 # std.macppc.g5 carries the hardware side.  The 970 implements the
-# 64-bit bridge, which is how the 32-bit G5 kernel runs; PPC_OEA64 is
-# the segment table instead, which is what an LP64 kernel needs --
-# vmparam.h hides the segment registers under _LP64 and lays out the
-# address space for a segment table.
+# 64-bit bridge, which is how the 32-bit G5 kernel runs.  PPC_OEA64 is
+# the hardware-walked segment table instead, which is what builds an
+# LP64 kernel today -- vmparam.h hides the segment registers under
+# _LP64 and lays the address space out for a table.
+#
+# It will not run on this machine.  The 970 reloads the SLB in
+# software (970FX user's manual) and its ASR takes no part in address
+# translation, so a kernel that expects the processor to walk a table
+# has nobody to walk it.  This configuration exists to build the
+# shared code for a second port; running a G5 needs SLB support that
+# NetBSD does not have yet.
 
 no options 	PPC_OEA64_BRIDGE
 options 	PPC_OEA64

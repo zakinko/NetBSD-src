@@ -99,6 +99,8 @@ struct pteg {
 #define	PTE_G		0x00000008	/* guarded region (not on 601) */
 #define	PTE_WIMG	(PTE_W|PTE_I|PTE_M|PTE_G)
 #define	PTE_IG		(PTE_I|PTE_G)
+#define	PTE_N		0x00000004	/* 61    No-execute page */
+#define	PTE_AC		0x00000200	/* 54    Address Compare */
 #define	PTE_PP		0x00000003
 #define	PTE_SO		0x00000000	/* Super. Only       (U: XX, S: RW) */
 #define	PTE_SW		0x00000001	/* Super. Write-Only (U: RO, S: RW) */
@@ -107,6 +109,11 @@ struct pteg {
 #define	PTE_RW		PTE_BW
 #define	PTE_RO		PTE_BR
 
+/*
+ * Not a bit of the PTE.  pmap_attr_fetch() and its friends keep this
+ * per page in software; it shares a value with PTE_AC and never meets
+ * it, because nothing stores it into a PTE.
+ */
 #define	PTE_EXEC	0x00000200	/* pseudo bit; page is exec */
 
 /*
@@ -123,7 +130,7 @@ struct pteg {
 #endif /* PMAP_OEA64 */
 #define	ADDR_POFF	0x00000fff
 
-#ifdef PMAP_OEA64
+#if defined(PMAP_OEA64) || defined(PMAP_OEA64_SLB) || defined(PPC_OEA64_SLB)
 /*
  * Segment Table Element
  */
@@ -156,8 +163,59 @@ struct steg {
 #define	SR_VSID_SHFT	STE_VSID_SHFT	/* compatibility with PPC_OEA */
 #define	SR_VSID_WIDTH	STE_VSID_WIDTH	/* compatibility with PPC_OEA */
 
+/*
+ * PPC_OEA64_SLB as well as PMAP_OEA64_SLB: struct pmap holds a
+ * pm_slb[SLB_NENTRIES], so every file that sees struct pmap needs
+ * these, not only the one that is the SLB pmap.
+ */
+#if defined(PMAP_OEA64_SLB) || defined(PPC_OEA64_SLB)
+/*
+ * Segment Lookaside Buffer Entry
+ *
+ * For implementations that leave the SLB to software rather than walking
+ * a segment table.  Book III 2.01 Figure 15 gives the entry; slbmte
+ * takes it in two registers (Figure 25), so the fields are named for the
+ * register they arrive in rather than for the 94-bit entry they make up.
+ *
+ * Figure 15 numbers the bits from the most significant, as the rest of
+ * this file does:
+ *
+ *	 0:35	ESID	36 V	37:88 VSID
+ *	89 Ks	90 Kp	91 N	92 L	93 C
+ */
+#ifndef	_LOCORE
+struct slb {
+	register_t slb_v;		/* VSID and the keys */
+	register_t slb_e;		/* ESID, valid, and the index */
+};
+#endif	/* _LOCORE */
+
+/*
+ * How many entries there are.  4.4.1 guarantees at least 32 and leaves
+ * any more to the implementation, so 32 is the number that is true of
+ * every processor; using it means the software copy never describes an
+ * entry the SLB does not have.
+ */
+#define	SLB_NENTRIES	32
+
+/* slb_v, the RS of slbmte: Figure 25, VSID 0:51 then the keys */
+#define	SLBV_VSID	(~0xfffL)	/* 0:51  Virtual Segment ID */
+#define	SLBV_VSID_SHFT	12		/*       52 bits, so 12 below */
+#define	SLBV_SUKEY	0x00000800	/* 52    Super-state protection */
+#define	SLBV_PRKEY	0x00000400	/* 53    User-state protection */
+#define	SLBV_NOEXEC	0x00000200	/* 54    No-execute segment */
+#define	SLBV_LARGE	0x00000100	/* 55    Large virtual pages */
+#define	SLBV_CLASS	0x00000080	/* 56    Class, for slbie */
+
+/* slb_e, the RB of slbmte: Figure 25, ESID 0:35 and the slot to write */
+#define	SLBE_ESID	(~0xfffffffL)	/* 0:35  Effective Segment ID */
+#define	SLBE_ESID_SHFT	28		/*       36 bits, so 28 below */
+#define	SLBE_VALID	0x08000000	/* 36    Entry is valid */
+#define	SLBE_INDEX	0x00000fff	/* 52:63 Which entry slbmte writes */
+#endif /* PMAP_OEA64_SLB */
+
 #define	SR_KEY_LEN	9		/* 64 groups of 8 segment entries */
-#else	/* !defined(PMAP_OEA64) */
+#else	/* !PMAP_OEA64 && !PMAP_OEA64_SLB */
 
 /*
  * Segment registers

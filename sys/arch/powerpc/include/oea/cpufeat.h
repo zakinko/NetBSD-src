@@ -47,6 +47,15 @@
 #define OEACPU_HIGHSPRG		(1 << 5)
 #define OEACPU_ALTIVEC		(1 << 6)
 #define OEACPU_XBSEN		(1 << 7)	/* BATS > 256MB */
+/*
+ * Which of the two 64-bit address translations the processor has.
+ * The 620, POWER3 and RS64 walk a segment table themselves (First
+ * Edition, 12.4.1); from POWER4 and the 970 on the processor raises a
+ * segment interrupt and software reloads the SLB (Book III 2.01,
+ * 4.4.1).  OEACPU_64 is set for both and does not tell them apart.
+ */
+#define OEACPU_STAB		(1 << 8)	/* 12.4.1 segment table */
+#define OEACPU_SLB		(1 << 9)	/* 4.4.1 software-reloaded SLB */
 
 #ifdef _KERNEL
 void	cpu_features_probe(void);

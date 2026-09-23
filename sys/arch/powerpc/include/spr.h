@@ -88,7 +88,8 @@ mtspr32(const int reg, uint32_t val)
 	__asm volatile("mtspr %0,%1" : : "K"(reg), "r"(val));
 }
 
-#if (defined(PPC_OEA) + defined(PPC_OEA64) + defined(PPC_OEA64_BRIDGE)) > 1
+#if (defined(PPC_OEA) + defined(PPC_OEA64) + defined(PPC_OEA64_BRIDGE) \
+    + defined(PPC_OEA64_SLB)) > 1
 static __inline uint64_t
 mfspr(int reg)
 {
@@ -107,7 +108,7 @@ mfspr(int reg)
 } )
 #else /* PPC_OEA + PPC_OEA64 + PPC_OEA64_BRIDGE != 1 */
 
-#if defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE)
+#if defined(PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #define mfspr(r) mfspr64(r)
 #define mtspr(r,v) mtspr64(r,v)
 #else

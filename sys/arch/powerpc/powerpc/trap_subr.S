@@ -62,7 +62,7 @@
 #define RESTORE_VRSAVE(tf,b)
 #endif
 
-#if defined (PPC_OEA64) || defined (PPC_OEA64_BRIDGE)
+#if defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #define	RFI	rfid
 #else
 #define	RFI	rfi
@@ -103,6 +103,18 @@
 	lis	t0,_C_LABEL(kernel_pmap_)@ha;				\
 	ldreg	t0,_C_LABEL(kernel_pmap_)+PM_STEG@l(t0);		\
 	mtasr	t0
+
+#elif defined(PPC_OEA64_SLB)
+
+/*
+ * Nothing to load either.  There are no segment registers, and the SLB
+ * is not reloaded on a switch: cpu_switchto() empties it, entry 0 --
+ * which slbia does not touch -- still holds the kernel, and whatever
+ * the next address space touches comes back through a segment
+ * interrupt.
+ */
+#define RESTORE_USER_SRS(t0,t1)
+#define RESTORE_KERN_SRS(t0,t1)
 
 #elif defined(PPC_MPC8XX)
 
@@ -351,6 +363,166 @@ dsitrap_fix_dbat7:
 	bla	disitrap
 #endif
 _C_LABEL(dsisize) = .-_C_LABEL(dsitrap)
+
+#if defined(PPC_OEA64_SLB)
+/*
+ * Segment interrupts, Book III 2.01 5.5.4 and 5.5.6.
+ *
+ * A miss in the SLB raises one of these rather than being resolved by
+ * the processor: Data Segment at 0x380 with the address in the DAR, and
+ * Instruction Segment at 0x480 with it in SRR0 (Figure 29 for the
+ * vectors).  Figure 28 gives IR and DR as 0 on entry, so we arrive with
+ * translation off and the ordinary kernel stack -- a virtual address --
+ * is not reachable.  Borrow the per-CPU save area the DSI handler uses
+ * for the same reason.
+ */
+/* LINTSTUB: Var: int dsegcode[1], dsegsize[1]; */
+	.globl	_C_LABEL(dsegtrap),_C_LABEL(dsegsize)
+_C_LABEL(dsegtrap):
+	mtsprg1	%r1
+	GET_CPUINFO(%r1)
+	streg	%r28,(CI_DISISAVE+CPUSAVE_R28)(%r1)
+	streg	%r29,(CI_DISISAVE+CPUSAVE_R29)(%r1)
+	streg	%r30,(CI_DISISAVE+CPUSAVE_R30)(%r1)
+	streg	%r31,(CI_DISISAVE+CPUSAVE_R31)(%r1)
+	mfsprg1	%r1
+	mflr	%r28			/* save LR; r28 is already saved */
+	mfcr	%r29			/* save CR */
+	mfdar	%r31			/* 5.5.4: the address that missed */
+#if defined(DISTANT_KERNEL)
+	lis	%r30,slbtrap_common@ha
+	addi	%r30,%r30,slbtrap_common@l
+	mtlr	%r30
+	blrl
+#else
+	bla	slbtrap_common
+#endif
+_C_LABEL(dsegsize) = .-_C_LABEL(dsegtrap)
+
+/* LINTSTUB: Var: int isegcode[1], isegsize[1]; */
+	.globl	_C_LABEL(isegtrap),_C_LABEL(isegsize)
+_C_LABEL(isegtrap):
+	mtsprg1	%r1
+	GET_CPUINFO(%r1)
+	streg	%r28,(CI_DISISAVE+CPUSAVE_R28)(%r1)
+	streg	%r29,(CI_DISISAVE+CPUSAVE_R29)(%r1)
+	streg	%r30,(CI_DISISAVE+CPUSAVE_R30)(%r1)
+	streg	%r31,(CI_DISISAVE+CPUSAVE_R31)(%r1)
+	mfsprg1	%r1
+	mflr	%r28			/* save LR; r28 is already saved */
+	mfcr	%r29			/* save CR */
+	mfsrr0	%r31			/* 5.5.6: the fetch that missed */
+#if defined(DISTANT_KERNEL)
+	lis	%r30,slbtrap_common@ha
+	addi	%r30,%r30,slbtrap_common@l
+	mtlr	%r30
+	blrl
+#else
+	bla	slbtrap_common
+#endif
+_C_LABEL(isegsize) = .-_C_LABEL(isegtrap)
+#endif /* PPC_OEA64_SLB */
+
+#if defined(PPC_OEA64_SLB)
+/*
+ * Both vectors arrive here with the faulting address in r31, CR in r29,
+ * and r28-r31 already in the per-CPU save area.
+ *
+ * Translation is off (Figure 28), so the ordinary kernel stack cannot be
+ * used and neither can anything reached through it; ci_slbstk is a real
+ * address kept for this.  The kernel itself is direct mapped at a low
+ * address, so a call to C reaches its target.
+ *
+ * pmap_slb_fault() carries the isync Chapter 7 Table 1 asks for on
+ * either side of slbmte, so there is none here.
+ */
+#define	SLBFRAME	(CALLFRAMELEN + ((14*SZREG + 15) & ~15))
+slbtrap_common:
+	mtsprg1	%r1			/* save SP */
+	mfsrr1	%r30			/* MSR_PR says whose address space */
+	mtcr	%r30
+	bt	MSR_PR,1f
+	/*
+	 * Supervisor mode.  Normally the kernel's, but Open Firmware
+	 * runs privileged with its own VSIDs, so ci_slbpm names the pmap
+	 * to use while it does.
+	 */
+	GET_CPUINFO(%r3)
+	ldptr	%r3,CI_SLBPM(%r3)
+	cmpptri	%r3,0
+	bne	2f
+	lis	%r3,_C_LABEL(kernel_pmap_)@ha
+	addi	%r3,%r3,_C_LABEL(kernel_pmap_)@l
+	b	2f
+1:	GET_CPUINFO(%r3)
+	ldptr	%r3,CI_CURPM(%r3)
+2:	mr	%r4,%r31		/* the address that missed */
+
+	GET_CPUINFO(%r30)		/* stand on the real-mode stack */
+	ldptr	%r1,CI_SLBSTK(%r30)
+	addi	%r1,%r1,INTSTK-SLBFRAME
+
+	/*
+	 * Everything the call is allowed to destroy.  r28-r31 are in the
+	 * save area already and r1 is in SPRG1; the rest has nowhere
+	 * else to be, and the instruction the RFI returns to is still
+	 * using it.  r2 is here because a call through a global entry
+	 * point reloads the TOC.
+	 */
+	streg	%r0,(CALLFRAMELEN+0*SZREG)(%r1)
+	streg	%r2,(CALLFRAMELEN+1*SZREG)(%r1)
+	streg	%r5,(CALLFRAMELEN+2*SZREG)(%r1)
+	streg	%r6,(CALLFRAMELEN+3*SZREG)(%r1)
+	streg	%r7,(CALLFRAMELEN+4*SZREG)(%r1)
+	streg	%r8,(CALLFRAMELEN+5*SZREG)(%r1)
+	streg	%r9,(CALLFRAMELEN+6*SZREG)(%r1)
+	streg	%r10,(CALLFRAMELEN+7*SZREG)(%r1)
+	streg	%r11,(CALLFRAMELEN+8*SZREG)(%r1)
+	streg	%r12,(CALLFRAMELEN+9*SZREG)(%r1)
+	mfctr	%r30
+	streg	%r30,(CALLFRAMELEN+10*SZREG)(%r1)
+	mfxer	%r30
+	streg	%r30,(CALLFRAMELEN+11*SZREG)(%r1)
+	/* r3 and r4 are the arguments, and are saved last of all. */
+	streg	%r3,(CALLFRAMELEN+12*SZREG)(%r1)
+	streg	%r4,(CALLFRAMELEN+13*SZREG)(%r1)
+
+#if defined(DISTANT_KERNEL)
+	lis	%r31,_C_LABEL(pmap_slb_fault)@ha
+	addi	%r31,%r31,_C_LABEL(pmap_slb_fault)@l
+	mtlr	%r31
+	blrl
+#else
+	bla	_C_LABEL(pmap_slb_fault)
+#endif
+
+	ldreg	%r0,(CALLFRAMELEN+0*SZREG)(%r1)
+	ldreg	%r2,(CALLFRAMELEN+1*SZREG)(%r1)
+	ldreg	%r5,(CALLFRAMELEN+2*SZREG)(%r1)
+	ldreg	%r6,(CALLFRAMELEN+3*SZREG)(%r1)
+	ldreg	%r7,(CALLFRAMELEN+4*SZREG)(%r1)
+	ldreg	%r8,(CALLFRAMELEN+5*SZREG)(%r1)
+	ldreg	%r9,(CALLFRAMELEN+6*SZREG)(%r1)
+	ldreg	%r10,(CALLFRAMELEN+7*SZREG)(%r1)
+	ldreg	%r11,(CALLFRAMELEN+8*SZREG)(%r1)
+	ldreg	%r12,(CALLFRAMELEN+9*SZREG)(%r1)
+	ldreg	%r30,(CALLFRAMELEN+10*SZREG)(%r1)
+	mtctr	%r30
+	ldreg	%r30,(CALLFRAMELEN+11*SZREG)(%r1)
+	mtxer	%r30
+	ldreg	%r3,(CALLFRAMELEN+12*SZREG)(%r1)
+	ldreg	%r4,(CALLFRAMELEN+13*SZREG)(%r1)
+
+	mtlr	%r28			/* the LR the vector saved */
+	mtcr	%r29			/* restore CR */
+	GET_CPUINFO(%r1)
+	ldreg	%r28,(CI_DISISAVE+CPUSAVE_R28)(%r1)
+	ldreg	%r29,(CI_DISISAVE+CPUSAVE_R29)(%r1)
+	ldreg	%r30,(CI_DISISAVE+CPUSAVE_R30)(%r1)
+	ldreg	%r31,(CI_DISISAVE+CPUSAVE_R31)(%r1)
+	mfsprg1	%r1			/* restore SP */
+	RFI				/* retry the access */
+#endif /* PPC_OEA64_SLB */
 #endif /* !PPC_MPC8XX */
 
 #if defined(PPC_OEA601)

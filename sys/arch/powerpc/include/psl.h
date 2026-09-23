@@ -103,7 +103,7 @@
 #include "opt_ppcarch.h"
 #endif /* _KERNEL_OPT */
 
-#if defined(PPC_OEA) || defined (PPC_OEA64_BRIDGE) || defined (PPC_OEA64) \
+#if defined(PPC_OEA) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB) || defined (PPC_OEA64) \
     || defined(_MODULE)
 extern register_t cpu_psluserset, cpu_pslusermod, cpu_pslusermask;
 

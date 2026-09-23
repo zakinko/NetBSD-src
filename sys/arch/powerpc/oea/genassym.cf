@@ -56,14 +56,27 @@ define	FRAME_DSISR	offsetof(struct ktrapframe, ktf_tf.tf_dsisr)
 define	FRAME_VRSAVE	offsetof(struct ktrapframe, ktf_tf.tf_vrsave)
 define	FRAME_MQ	offsetof(struct ktrapframe, ktf_tf.tf_mq)
 
+ifdef PPC_OEA64_SLB
+define	CI_SLBSTK	offsetof(struct cpu_info, ci_slbstk)
+define	CI_SLB		offsetof(struct cpu_info, ci_slb)
+define	CI_SLBPM	offsetof(struct cpu_info, ci_slbpm)
+define	SLB_SIZEOF	sizeof(struct slb)
+define	SLB_E		offsetof(struct slb, slb_e)
+define	SLB_NENTRIES	SLB_NENTRIES
+endif
+
 ifdef PPC_OEA64
 define	PM_STEG		offsetof(struct pmap, pm_steg_table)
-else
+endif
+
+ifndef PPC_OEA64
+ifndef PPC_OEA64_SLB
 define	USER_SR		USER_SR
 define	KERNEL_SR	KERNEL_SR
 define	PM_SR		offsetof(struct pmap, pm_sr[0])
 define	PM_USRSR	offsetof(struct pmap, pm_sr[USER_SR])
 define	PM_KERNELSR	offsetof(struct pmap, pm_sr[KERNEL_SR])
+endif
 endif
 
 define	CI_BATTABLE	offsetof(struct cpu_info, ci_battable)

@@ -177,9 +177,10 @@ ibmcpc_conf_read(void *cookie, pcitag_t tag, int reg)
 {
 	pci_chipset_tag_t pc = cookie;
 	struct ibmcpc_softc *sc = cpc0;
-	u_int32_t daddr = (u_int32_t) pc->pc_data;
+	uintptr_t daddr = (uintptr_t)pc->pc_data;
 	pcireg_t data;
-	u_int32_t bus, dev, func, x, devfn;
+	u_int32_t bus, dev, func, devfn;
+	uintptr_t x;
 
 	if ((unsigned int)reg >= PCI_CONF_SIZE)
 		return (pcireg_t) -1;
@@ -193,6 +194,13 @@ ibmcpc_conf_read(void *cookie, pcitag_t tag, int reg)
 
 	devfn = PCI_DEVFN(dev, func);
 
+	/*
+	 * The PCI binding to IEEE 1275, 2.2.1.1, lays a configuration
+	 * address out as
+	 *	npt000ss bbbbbbbb dddddfff rrrrrrrr
+	 * so the device and function go above the register number, and
+	 * the bus number above those.
+	 */
 	if (bus == 0) {
 
 		if (devfn == 0x0) {
@@ -216,9 +224,10 @@ ibmcpc_conf_write(void *cookie, pcitag_t tag, int reg, pcireg_t data)
 {
 	pci_chipset_tag_t pc = cookie;
 	struct ibmcpc_softc *sc = cpc0;
-	int32_t *daddr = pc->pc_data;
+	uintptr_t daddr = (uintptr_t)pc->pc_data;
 	u_int32_t bus, dev, func;
-	u_int32_t x, devfn;
+	u_int32_t devfn;
+	uintptr_t x;
 
 	if ((unsigned int)reg >= PCI_CONF_SIZE)
 		return;
@@ -235,9 +244,9 @@ ibmcpc_conf_write(void *cookie, pcitag_t tag, int reg, pcireg_t data)
 		if (devfn == 0x0) {
 			goto done;
 		}
-		x = (u_int32_t) daddr + ((devfn << 8) | reg);
+		x = daddr + ((devfn << 8) | reg);
 	} else
-		x = (u_int32_t) daddr + ((devfn << 8) | reg) + (bus << 16) +
+		x = daddr + ((devfn << 8) | reg) + (bus << 16) +
 		    0x01000000UL;
 
 	out32rb(x, data);

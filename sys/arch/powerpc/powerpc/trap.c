@@ -144,7 +144,7 @@ trap(struct trapframe *tf)
 			va |= pcb->pcb_umapsr << ADDR_SR_SHFT;
 			map = &p->p_vmspace->vm_map;
 		}
-#if defined(DIAGNOSTIC) && !defined(PPC_OEA64)
+#if defined(DIAGNOSTIC) && !defined(PPC_OEA64) && !defined(PPC_OEA64_SLB)
 		else if (__predict_false((va >> ADDR_SR_SHFT) == USER_SR)) {
 			printf("trap: kernel %s DSI trap @ %#lx by %#lx"
 			    " (DSISR %#x): USER_SR unset\n",

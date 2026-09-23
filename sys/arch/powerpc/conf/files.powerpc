@@ -3,7 +3,7 @@
 defflag	opt_altivec.h	ALTIVEC K_ALTIVEC PPC_HAVE_SPE
 defflag	opt_openpic.h	OPENPIC_DISTRIBUTE
 defparam opt_ppcparam.h	L2CR_CONFIG L3CR_CONFIG INTSTK CLOCKBASE VERBOSE_INITPPC PPC_CPU_FREQ
-defflag	opt_ppcarch.h	PPC_OEA PPC_OEA601 PPC_OEA64 PPC_OEA64_BRIDGE PPC_MPC8XX PPC_IBM4XX PPC_IBM403 PPC_IBM440 PPC_IBMESPRESSO PPC_BOOKE
+defflag	opt_ppcarch.h	PPC_OEA PPC_OEA601 PPC_OEA64 PPC_OEA64_BRIDGE PPC_OEA64_SLB PPC_MPC8XX PPC_IBM4XX PPC_IBM403 PPC_IBM440 PPC_IBMESPRESSO PPC_BOOKE
 defflag opt_ppccache.h	CACHE_PROTO_MEI
 defflag	opt_ppcopts.h	PPC_NO_UNALIGNED
 defflag opt_pmap.h	PMAPDEBUG PMAPCHECK PMAPCOUNTERS PMAP_MINIMALTLB PMAP_TLBDEBUG
@@ -16,7 +16,7 @@ file	arch/powerpc/powerpc/kgdb_machdep.c		kgdb
 file	arch/powerpc/powerpc/kobj_machdep.c		modular
 file	arch/powerpc/powerpc/lock_stubs.S
 file	arch/powerpc/powerpc/openpic.c			openpic
-file	arch/powerpc/powerpc/pmap_subr.c		ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601
+file	arch/powerpc/powerpc/pmap_subr.c		ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601
 file	arch/powerpc/powerpc/powerpc_machdep.c
 file	arch/powerpc/powerpc/process_machdep.c
 file	arch/powerpc/powerpc/setfault.S
@@ -34,7 +34,7 @@ file	arch/powerpc/powerpc/db_trace.c			ddb
 file	arch/powerpc/powerpc/fpu.c
 file	arch/powerpc/powerpc/intr_stubs.c		ppc_booke
 
-file	uvm/pmap/pmap_pvt.c				modular | (ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601)
+file	uvm/pmap/pmap_pvt.c				modular | (ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601)
 
 # IBM 4xx Family files (40x)
 file	arch/powerpc/ibm4xx/pmap.c			ppc_ibm4xx
@@ -46,15 +46,16 @@ file	arch/powerpc/ibm4xx/copyoutstr.c		ppc_ibm4xx
 # MPC (Motorola PowerPC) 6xx Family files (60x,74x,75x,74xx), IBM 970 family (bridge mode??)
 #
 defparam opt_oea.h EXTMAP_RANGES=20
-file	arch/powerpc/oea/altivec.c			(ppc_oea |ppc_oea64 | ppc_oea64_bridge) & altivec
-file	arch/powerpc/oea/cpu_subr.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601
-file	arch/powerpc/oea/cpu_speedctl.c			ppc_oea64 | ppc_oea64_bridge
-file	arch/powerpc/oea/oea_machdep.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601
+file	arch/powerpc/oea/altivec.c			(ppc_oea |ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb) & altivec
+file	arch/powerpc/oea/cpu_subr.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601
+file	arch/powerpc/oea/cpu_speedctl.c			ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb
+file	arch/powerpc/oea/oea_machdep.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601
 file	arch/powerpc/oea/pmap.c				ppc_oea | ppc_oea601
 file	arch/powerpc/oea/pmap64.c			ppc_oea64
 file	arch/powerpc/oea/pmap64_bridge.c		ppc_oea64_bridge
-file	arch/powerpc/oea/pmap_kernel.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601
-file	arch/powerpc/powerpc/trap.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea601
+file	arch/powerpc/oea/pmap64_slb.c			ppc_oea64_slb
+file	arch/powerpc/oea/pmap_kernel.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601
+file	arch/powerpc/powerpc/trap.c			ppc_oea | ppc_oea64 | ppc_oea64_bridge | ppc_oea64_slb | ppc_oea601
 
 # PPC BookE (MPC85xx) Family files
 file	arch/powerpc/booke/booke_machdep.c		ppc_booke

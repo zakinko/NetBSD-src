@@ -252,6 +252,15 @@ ENTRY(cpu_switchto)
 	stptr	%r4,CI_CURPCB(%r7)	/* using a new pcb */
 	ldptr	%r3,PCB_PM(%r4)
 	stptr	%r3,CI_CURPM(%r7)	/* and maybe a new pmap */
+#if defined(PPC_OEA64)
+	ldptr	%r0,PM_STEG(%r3)	/* and its segment table */
+	ori	%r0,%r0,1		/* ASR[63]: search it */
+	sync
+	mtspr	SPR_ASR,%r0
+	slbia				/* the SLB caches the old table */
+	sync
+	isync
+#endif
 
 	/*
 	 * Now restore the register state.

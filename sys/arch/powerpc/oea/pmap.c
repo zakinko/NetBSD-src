@@ -870,10 +870,30 @@ pmap_pte_insert(int ptegidx, struct pte *pvo_pt)
 }
 
 #if defined(PMAP_OEA64)
-#define	KERNEL_SEGMENT_ESID \
-	((register_t)(VM_MIN_KERNEL_ADDRESS >> ADDR_SR_SHFT) << STE_ESID_SHFT)
 #define	USER_WINDOW_ESID \
 	((register_t)((vaddr_t)USER_ADDR >> ADDR_SR_SHFT) << STE_ESID_SHFT)
+
+/*
+ * The kernel's segments have to be in whichever table is current, since
+ * cpu_switchto() changes the ASR with the kernel running and the next
+ * instruction fetch has to be translated.  With segment registers this
+ * does not arise: KERNEL_SR is simply never reloaded on a switch.
+ *
+ * pmap_bootstrap() works out how far up they go once it has taken the
+ * memory it needs.
+ */
+static register_t pmap_steg_bolted;
+
+/*
+ * An entry the kernel put there for itself in pmap_steg_bolt(), which no
+ * eviction may take: the code doing the evicting is running in it.
+ */
+static bool
+pmap_ste_bolted_p(volatile struct ste *ste)
+{
+	return ((ste->ste_hi & STE_ESID) >> STE_ESID_SHFT) <=
+	    pmap_steg_bolted;
+}
 
 /*
  * The primary group is selected by the low five bits of the ESID and
@@ -982,10 +1002,13 @@ pmap_ste_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 		ste = pmap_steg(pm, esid, slot >> 3) + (slot & 7);
 		if ((ste->ste_hi & STE_ESID) == USER_WINDOW_ESID)
 			continue;	/* copyin() is using it */
-		if (pm != pmap_kernel() ||
-		    (ste->ste_hi & STE_ESID) != KERNEL_SEGMENT_ESID)
-			break;
+		if (pmap_ste_bolted_p(ste))
+			continue;	/* the kernel is running in it */
+		break;
 	}
+	if (i == 16)
+		panic("pmap_ste_spill: both groups for ESID %#lx are "
+		    "spoken for", (unsigned long)esid);
 	pm->pm_ste_evictions++;
 
 	pmap_ste_remove(ste);
@@ -1037,9 +1060,11 @@ pmap_setusr(vaddr_t uva)
 	 */
 	ste = pmap_steg(pm, USER_WINDOW_ESID >> STE_ESID_SHFT, 0);
 	for (i = 0; i < 8; i++, ste++) {
-		if ((ste->ste_hi & STE_ESID) != KERNEL_SEGMENT_ESID)
+		if (!pmap_ste_bolted_p(ste))
 			break;
 	}
+	if (i == 8)
+		panic("pmap_setusr: the window's group is all bolted");
 	pmap_ste_remove(ste);
 	pmap_ste_enter(ste, USER_WINDOW_ESID | STE_PRKEY,
 	    va_to_vsid(pm, uva));
@@ -1085,6 +1110,28 @@ pmap_unsetusr(void)
 	PMAP_UNLOCK();
 
 	return 0;
+}
+
+static void
+pmap_steg_bolt(struct pmap *pm)
+{
+	register_t esid;
+
+	for (esid = 0; esid <= pmap_steg_bolted; esid++) {
+		volatile struct ste *ste = pmap_steg(pm, esid, 0);
+		unsigned int i;
+
+		for (i = 0; i < 8; i++, ste++) {
+			if ((ste->ste_hi & STE_VALID) != 0)
+				continue;
+			pmap_ste_enter(ste, (esid << STE_ESID_SHFT) | STE_PRKEY,
+			    va_to_vsid(pmap_kernel(), esid << ADDR_SR_SHFT));
+			break;
+		}
+		if (i == 8)
+			panic("pmap_steg_bolt: primary group for ESID %#lx "
+			    "is full", (unsigned long)esid);
+	}
 }
 #endif /* PMAP_OEA64 */
 
@@ -1414,6 +1461,16 @@ pmap_pinit(pmap_t pm)
 		hash &= PTE_VSID >> PTE_VSID_SHFT;
 		pmap_vsid_bitmap[n] |= mask;
 		pm->pm_vsid = hash;
+#if defined(PMAP_OEA64)
+		/*
+		 * pmap_pool_alloc() takes a page from the direct mapped
+		 * freelist, so what it returns is also the real address
+		 * the ASR wants.
+		 */
+		pm->pm_steg_table = pmap_pool_alloc(NULL, PR_WAITOK);
+		memset(pm->pm_steg_table, 0, PAGE_SIZE);
+		pmap_steg_bolt(pm);
+#endif
 #if defined (PMAP_OEA) || defined (PMAP_OEA64_BRIDGE)
 		for (i = 0; i < 16; i++)
 			pm->pm_sr[i] = VSID_MAKE(i, hash) | SR_PRKEY |
@@ -1475,6 +1532,10 @@ pmap_release(pmap_t pm)
 
 	KASSERT(pmap_vsid_bitmap[idx] & mask);
 	pmap_vsid_bitmap[idx] &= ~mask;
+#if defined(PMAP_OEA64)
+	pmap_pool_free(NULL, pm->pm_steg_table);
+	pm->pm_steg_table = NULL;
+#endif
 	PMAP_UNLOCK();
 }
 
@@ -3442,6 +3503,13 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 	 */
 	kernelstart = trunc_page(kernelstart);
 	kernelend = round_page(kernelend);
+#if defined(PMAP_OEA64)
+	/*
+	 * Where the bolted segments start from; pmap_bootstrap2() raises
+	 * this to cover the tables once it has taken the memory for them.
+	 */
+	pmap_steg_bolted = kernelend;
+#endif
 	for (mp = avail, i = 0; i < avail_cnt; i++, mp++) {
 		s = round_page(mp->start);
 		mp->size -= (s - mp->start);
@@ -3833,7 +3901,45 @@ pmap_bootstrap2(void)
 	 */
 	pmap_kernel()->pm_steg_table =
 	    (void *)(uintptr_t)pmap_boot_find_memory(PAGE_SIZE, PAGE_SIZE, 0);
+	/*
+	 * 12.4.1.1: the table may not be at 0, 0x1000 or 0x2000, which
+	 * hold interrupt vectors.  pmap_boot_find_memory() takes from
+	 * the bottom of memory and has no reason to avoid them.
+	 */
+	switch ((uintptr_t)pmap_kernel()->pm_steg_table) {
+	case 0:
+	case 0x1000:
+	case 0x2000:
+		panic("pmap_bootstrap: segment table at %p is an interrupt "
+		    "vector page", pmap_kernel()->pm_steg_table);
+	}
 	memset(pmap_kernel()->pm_steg_table, 0, PAGE_SIZE);
+
+	/*
+	 * Everything the segment fault handler needs before it can take a
+	 * fault of its own: the kernel itself, the tables it walks, and
+	 * the table it writes into.  Taking the highest of them rather
+	 * than a constant keeps this right whatever the memory size makes
+	 * the hash table.  msgbuf is left out on purpose -- it is taken
+	 * from the top of memory and nothing touches it that early.
+	 */
+	if ((uintptr_t)pmap_pteg_table + pmap_pteg_cnt * sizeof(struct pteg) >
+	    (uintptr_t)pmap_steg_bolted)
+		pmap_steg_bolted = (uintptr_t)pmap_pteg_table +
+		    pmap_pteg_cnt * sizeof(struct pteg);
+	if ((uintptr_t)pmap_pvo_table +
+	    pmap_pteg_cnt * sizeof(pmap_pvo_table[0]) >
+	    (uintptr_t)pmap_steg_bolted)
+		pmap_steg_bolted = (uintptr_t)pmap_pvo_table +
+		    pmap_pteg_cnt * sizeof(pmap_pvo_table[0]);
+	if ((uintptr_t)pmap_kernel()->pm_steg_table + PAGE_SIZE >
+	    (uintptr_t)pmap_steg_bolted)
+		pmap_steg_bolted = (uintptr_t)pmap_kernel()->pm_steg_table +
+		    PAGE_SIZE;
+	pmap_steg_bolted = (pmap_steg_bolted - 1) >> ADDR_SR_SHFT;
+
+	pmap_steg_bolt(pmap_kernel());
+
 	__asm volatile("sync; mtspr %0,%1; isync"
 	    :
 	    : "n"(SPR_ASR),

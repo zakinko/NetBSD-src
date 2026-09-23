@@ -109,7 +109,7 @@ init_openpic(int pass_through)
 	 * we need to set its pic_cookie by hand
 	 */
 	if (opic != NULL)
-		opic->pic_cookie = (void *)pic_base;
+		opic->pic_cookie = (void *)(uintptr_t)pic_base;
 
 	return TRUE;
 }
@@ -215,7 +215,7 @@ OF_get_intr(int node, char *buf, int buflen, int *type)
 				if (OF_getprop(mio, "ranges", preg, 20) == 20)
 					picbase += preg[3];
 			}
-			pic = find_pic_by_cookie((void *)picbase);
+			pic = find_pic_by_cookie((void *)(uintptr_t)picbase);
 			if (pic != NULL) {
 				irq = intr[0];
 				if (buf != NULL) {

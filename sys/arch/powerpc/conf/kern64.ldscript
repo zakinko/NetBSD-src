@@ -3,6 +3,11 @@ OUTPUT_FORMAT("elf64-powerpc", "elf64-powerpc",
 	      "elf64-powerpc")
 OUTPUT_ARCH(powerpc:common64)
 ENTRY(_start)
+PHDRS
+{
+  text PT_LOAD FLAGS (5);	/* read, execute */
+  data PT_LOAD FLAGS (6);	/* read, write */
+}
 SECTIONS
 {
   /*  Read-only sections, merged into text segment.  Assumes the
@@ -26,7 +31,7 @@ SECTIONS
     /* .gnu.warning sections are handled specially by elf32.em.  */
     *(.gnu.warning)
     *(.glink)
-  } =0x60000000
+  } :text =0x60000000
   _etext = .;
   PROVIDE (__etext = .);
   PROVIDE (_etext = .);
@@ -38,13 +43,16 @@ SECTIONS
     *(.sdata2 .sdata2.* .gnu.linkonce.s2.*)
   }
   .sbss2          : { *(.sbss2 .sbss2.* .gnu.linkonce.sb2.*) }
-  .jcr            : { KEEP (*(.jcr)) }
+  .jcr            : { KEEP (*(.jcr)) } :text
+  /* 4.1 Program Loading: file offset and address congruent modulo the
+     page size, and the ABI sets 64 KB as the smallest it allows. */
+  . = ALIGN(0x10000);
   .data           :
   {
     _fdata = .;
     *(.data .data.* .gnu.linkonce.d.*)
     SORT(CONSTRUCTORS)
-  }
+  } :data
   .data1          : { *(.data1) }
   .toc1		  : ALIGN(8) { *(.toc1) }
   .opd		  : ALIGN(8) { KEEP (*(.opd)) }

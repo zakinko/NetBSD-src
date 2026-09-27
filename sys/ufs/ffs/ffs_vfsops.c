@@ -2535,7 +2535,7 @@ ffs_sbupdate(struct ufsmount *mp, int waitfor)
 #endif
 	if ((fs->fs_metackhash & CK_SUPERBLOCK) != 0)
 		bfs->fs_ckhash = ufs_rw32(ffs_sb_ckhash(bfs,
-		    (size_t)fs->fs_sbsize), UFS_MPNEEDSWAP(mp) != 0);
+		    (size_t)fs->fs_sbsize), UFS_MPNEEDSWAP(mp));
 
 	if (waitfor == MNT_WAIT)
 		error = bwrite(bp);

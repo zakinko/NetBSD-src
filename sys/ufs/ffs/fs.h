@@ -592,7 +592,7 @@ struct ocg {
 	ufs_rw32((cgp)->cg_old_boff, (ns))) + (cylno) * (fs)->fs_old_nrpos)
 
 #define	old_cg_blktot(cgp, ns) \
-    ((ufs_rw32((cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
+    ((ufs_rw32((uint32_t)(cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
       old_cg_blktot_old(cgp, ns) : old_cg_blktot_new(cgp, ns))
 #define	old_cg_blks(fs, cgp, cylno, ns) \
     ((ufs_rw32((cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
@@ -605,20 +605,20 @@ struct ocg {
     ((u_int8_t *)((u_int8_t *)(cgp) + \
 	ufs_rw32((cgp)->cg_freeoff, (ns))))
 #define	cg_chkmagic_new(cgp, ns) \
-    (ufs_rw32((cgp)->cg_magic, (ns)) == CG_MAGIC)
+    (ufs_rw32((uint32_t)(cgp)->cg_magic, (ns)) == CG_MAGIC)
 
 #define	cg_inosused_old(cgp, ns) \
     (((struct ocg *)(cgp))->cg_iused)
 #define	cg_blksfree_old(cgp, ns) \
     (((struct ocg *)(cgp))->cg_free)
 #define	cg_chkmagic_old(cgp, ns) \
-    (ufs_rw32(((struct ocg *)(cgp))->cg_magic, (ns)) == CG_MAGIC)
+    (ufs_rw32((uint32_t)((struct ocg *)(cgp))->cg_magic, (ns)) == CG_MAGIC)
 
 #define	cg_inosused(cgp, ns) \
-    ((ufs_rw32((cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
+    ((ufs_rw32((uint32_t)(cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
       cg_inosused_old(cgp, ns) : cg_inosused_new(cgp, ns))
 #define	cg_blksfree(cgp, ns) \
-    ((ufs_rw32((cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
+    ((ufs_rw32((uint32_t)(cgp)->cg_magic, (ns)) != CG_MAGIC) ? \
       cg_blksfree_old(cgp, ns) : cg_blksfree_new(cgp, ns))
 #define	cg_chkmagic(cgp, ns) \
     (cg_chkmagic_new(cgp, ns) || cg_chkmagic_old(cgp, ns))
@@ -647,9 +647,10 @@ struct ocg {
  * Cylinder group macros to locate things in cylinder groups.
  * They calc file system addresses of cylinder group data structures.
  */
-#define	cgbase(fs, c)	(((daddr_t)(fs)->fs_fpg) * (c))
+#define	cgbase(fs, c)	(((daddr_t)(fs)->fs_fpg) * (daddr_t)(c))
 #define	cgstart_ufs1(fs, c) \
-    (cgbase(fs, c) + (fs)->fs_old_cgoffset * ((c) & ~((fs)->fs_old_cgmask)))
+    (cgbase(fs, c) + \
+    (fs)->fs_old_cgoffset * ((daddr_t)(c) & ~(daddr_t)(fs)->fs_old_cgmask))
 #define	cgstart_ufs2(fs, c) cgbase((fs), (c))
 #define	cgstart(fs, c) ((fs)->fs_magic == FS_UFS2_MAGIC \
 			    ? cgstart_ufs2((fs), (c)) : cgstart_ufs1((fs), (c)))

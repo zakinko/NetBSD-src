@@ -367,6 +367,8 @@ pool_cache_t ffs_dinode2_cache;
 static void ffs_oldfscompat_read(struct fs *, struct ufsmount *, daddr_t);
 static void ffs_oldfscompat_write(struct fs *, struct ufsmount *);
 static void ffs_ckhash_mount(struct fs *);
+static void ffs_cg_ckhash_start(struct mount *, struct ufsmount *);
+static void ffs_cg_ckhash_stop(struct mount *, struct ufsmount *);
 
 /*
  * Called by main() when ffs is going to be mounted as root.
@@ -953,6 +955,8 @@ ffs_reload(struct mount *mp, kauth_cred_t cred, struct lwp *l)
 	}
 	ffs_oldfscompat_read(fs, ump, sblockloc);
 	ffs_ckhash_mount(fs);
+	/* The superblock read again may be the first with CK_CYLGRP. */
+	ffs_cg_ckhash_start(mp, ump);
 
 	mutex_enter(&ump->um_lock);
 	ump->um_maxfilesize = fs->fs_maxfilesize;
@@ -1622,6 +1626,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	for (i = 0; i < MAXQUOTAS; i++)
 		ump->um_quotas[i] = NULLVP;
 	spec_node_setmountedfs(devvp, mp);
+	ffs_cg_ckhash_start(mp, ump);
 	if (ronly == 0 && fs->fs_snapinum[0] != 0) {
 #ifndef FFS_NO_SNAPSHOT
 		ffs_snapshot_mount(mp);
@@ -1677,6 +1682,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 
 	return (0);
 out1:
+	ffs_cg_ckhash_stop(mp, ump);
 	kmem_free(fs->fs_csp, allocsbsize);
 out:
 #ifdef WAPBL
@@ -1723,6 +1729,37 @@ ffs_ckhash_mount(struct fs *fs)
 		fs->fs_metackhash &= CK_SUPPORTED;
 	} else
 		fs->fs_metackhash = 0;
+}
+
+/*
+ * A file system with CK_CYLGRP gets the copy-on-write handler that
+ * gives a cylinder group its check-hash as it is written, and the map
+ * of those changed under a log; see ffs_cg_ckhash_cow() and
+ * ffs_cg_ckhash_flush().  They stay until it is unmounted.
+ */
+static void
+ffs_cg_ckhash_start(struct mount *mp, struct ufsmount *ump)
+{
+	struct fs *fs = ump->um_fs;
+
+	if ((fs->fs_metackhash & CK_CYLGRP) == 0 || ump->um_cgdirty != NULL)
+		return;
+	ump->um_cgdirty = kmem_zalloc(
+	    howmany((size_t)fs->fs_ncg, 32) * sizeof(uint32_t), KM_SLEEP);
+	fscow_establish(mp, ffs_cg_ckhash_cow, ump);
+}
+
+static void
+ffs_cg_ckhash_stop(struct mount *mp, struct ufsmount *ump)
+{
+	struct fs *fs = ump->um_fs;
+
+	if (ump->um_cgdirty == NULL)
+		return;
+	fscow_disestablish(mp, ffs_cg_ckhash_cow, ump);
+	kmem_free(ump->um_cgdirty,
+	    howmany((size_t)fs->fs_ncg, 32) * sizeof(uint32_t));
+	ump->um_cgdirty = NULL;
 }
 
 /*
@@ -1893,6 +1930,8 @@ ffs_unmount(struct mount *mp, int mntflags)
 		return error;
 	}
 #endif /* WAPBL */
+
+	ffs_cg_ckhash_stop(mp, ump);
 
 	if (ump->um_devvp->v_type != VBAD)
 		spec_node_setmountedfs(ump->um_devvp, NULL);

@@ -80,6 +80,7 @@ __KERNEL_RCSID(0, "$NetBSD: ffs_alloc.c,v 1.175 2026/07/22 14:44:49 hannken Exp 
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/atomic.h>
 #include <sys/buf.h>
 #include <sys/cprng.h>
 #include <sys/kauth.h>
@@ -121,6 +122,7 @@ static void ffs_blkfree_common(struct ufsmount *, struct fs *, dev_t, struct buf
     daddr_t, long, bool);
 static void ffs_freefile_common(struct ufsmount *, struct fs *, dev_t, struct buf *, ino_t,
     int, bool);
+static inline void ffs_cg_changed(struct ufsmount *, u_int);
 
 /* if 1, changes in optimalization strategy are logged */
 int ffs_log_changeopt = 0;
@@ -1033,7 +1035,7 @@ ffs_fragextend(struct inode *ip, u_int cg, daddr_t bprev, int osize, int nsize)
 	fs->fs_fmod = 1;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	bdwrite(bp);
 	return (bprev);
 
@@ -1101,7 +1103,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 			    (long)(size - realsize), false);
 		}
 
-		ffs_cg_setckhash(fs, cgp);
+		ffs_cg_changed(ump, cg);
 		bdwrite(bp);
 		return (blkno);
 	}
@@ -1138,7 +1140,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 		ufs_add32(cgp->cg_frsum[i], 1, needswap);
 		ACTIVECG_CLR(fs, cg);
 		mutex_exit(&ump->um_lock);
-		ffs_cg_setckhash(fs, cgp);
+		ffs_cg_changed(ump, cg);
 		bdwrite(bp);
 		return (blkno);
 	}
@@ -1164,7 +1166,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 	blkno = cgbase(fs, cg) + bno;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	bdwrite(bp);
 	return blkno;
 
@@ -1420,7 +1422,7 @@ gotit:
 		fs->fs_cs(fs, cg).cs_ndir++;
 	}
 	mutex_exit(&ump->um_lock);
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	if (ibp != NULL) {
 		bwrite(ibp);
 		bwrite(bp);
@@ -1554,7 +1556,7 @@ ffs_blkalloc_ump(struct ufsmount *ump, daddr_t bno, long size)
 	fs->fs_fmod = 1;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	bdwrite(bp);
 	return 0;
 }
@@ -1599,7 +1601,7 @@ ffs_blkfree_cg(struct fs *fs, struct vnode *devvp, daddr_t bno, long size)
 
 	ffs_blkfree_common(ump, fs, dev, bp, bno, size, devvp_is_snapshot);
 
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	bdwrite(bp);
 }
 
@@ -2035,7 +2037,7 @@ ffs_freefile(struct mount *mp, ino_t ino, int mode)
 
 	ffs_freefile_common(ump, fs, dev, bp, ino, mode, false);
 
-	ffs_cg_setckhash(fs, cgp);
+	ffs_cg_changed(ump, cg);
 	bdwrite(bp);
 
 	return 0;
@@ -2163,18 +2165,108 @@ ffs_checkfreefile(struct fs *fs, struct vnode *devvp, ino_t ino)
 }
 
 /*
+ * Metadata check-hashes of cylinder groups.
+ *
+ * A cylinder group changed here does not get its check-hash at once:
+ * it may change many times before it is written.  It gets it as it is
+ * written, from ffs_cg_ckhash_cow().  That is a copy-on-write handler
+ * (fscow_establish(9)), which spec_strategy() runs before a write to
+ * the device, unless B_COWDONE says the handlers have run since the
+ * buffer was last written.  bread() with B_MODIFY runs them too and
+ * sets B_COWDONE, on a buffer that is dirty already as on any other;
+ * so ffs_cgread() clears B_COWDONE again, whether its caller goes on
+ * to change the cylinder group or releases it as it was.  The other
+ * handler, that of snapshots, then runs again at the write, and finds
+ * the block already copied.
+ *
+ * With a log, a changed cylinder group goes to the log first, which
+ * takes its contents without spec_strategy().  ffs_cg_changed() marks
+ * it, and the log flush gives it its check-hash first
+ * (ffs_cg_ckhash_flush(), from ffs_wapbl_sync_metadata()).
+ *
+ * So a cylinder group in the buffer cache may have a stale check-hash
+ * while its buffer is dirty, and only then.  One that is released
+ * clean after a change gets its check-hash on the spot
+ * (ffs_cg_setckhash()).
+ */
+
+/* A changed cylinder group is released for writing: mark it for the log. */
+static inline void
+ffs_cg_changed(struct ufsmount *ump, u_int cg)
+{
+
+	if (ump->um_cgdirty != NULL && ump->um_mountp->mnt_wapbl != NULL)
+		atomic_or_32(&ump->um_cgdirty[cg / 32], 1U << (cg % 32));
+}
+
+/*
+ * The copy-on-write handler of a file system with CK_CYLGRP: give a
+ * cylinder group its check-hash as it goes to disk.  Called with
+ * data_valid set from bread(), where there is nothing to do, and
+ * without it from spec_strategy() and from ffs_getblk(), whose callers
+ * write the buffer next.  B_READ is not looked at: a buffer keeps it
+ * from the read that filled it until it is first written.
+ */
+int
+ffs_cg_ckhash_cow(void *arg, struct buf *bp, bool data_valid)
+{
+	struct ufsmount *ump = arg;
+	struct fs *fs = ump->um_fs;
+	daddr_t fsb, cg;
+
+	if (data_valid || bp->b_vp == NULL || bp->b_vp->v_type != VBLK ||
+	    bp->b_bcount != fs->fs_cgsize)
+		return 0;
+	fsb = FFS_DBTOFSB(fs, bp->b_blkno);
+	cg = dtog(fs, fsb);
+	if (cg < 0 || cg >= fs->fs_ncg || fsb != cgtod(fs, cg) ||
+	    !cg_chkmagic((struct cg *)bp->b_data, UFS_FSNEEDSWAP(fs)))
+		return 0;
+	ffs_cg_setckhash(fs, (struct cg *)bp->b_data);
+	return 0;
+}
+
+/*
+ * The log is about to take the blocks of the transaction: give the
+ * cylinder groups changed in it their check-hashes.  No transaction
+ * can change them meanwhile.
+ */
+void
+ffs_cg_ckhash_flush(struct ufsmount *ump)
+{
+	struct fs *fs = ump->um_fs;
+	struct buf *bp;
+	uint32_t bits;
+	u_int i, j, cg;
+
+	for (i = 0; i < howmany((u_int)fs->fs_ncg, 32); i++) {
+		bits = atomic_swap_32(&ump->um_cgdirty[i], 0);
+		for (j = 0; bits != 0; j++, bits >>= 1) {
+			if ((bits & 1) == 0)
+				continue;
+			cg = i * 32 + j;
+			if (bread(ump->um_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
+			    (int)fs->fs_cgsize, B_MODIFY, &bp) != 0)
+				continue;
+			if (cg_chkmagic((struct cg *)bp->b_data,
+			    UFS_FSNEEDSWAP(fs)))
+				ffs_cg_setckhash(fs, (struct cg *)bp->b_data);
+			bdwrite(bp);
+		}
+	}
+}
+
+/*
  * Read cylinder group cg of the file system from its device devvp.
  * Everything that reads one from the device does so here, so that the
  * buffer cache holds none that was not checked.
  *
- * If the file system keeps check-hashes (CK_CYLGRP) and the block is
- * not in the buffer cache, its check-hash is verified.  One that is in
- * the cache is not: everything here that changes a cylinder group sets
- * its check-hash again (ffs_cg_setckhash) before releasing the buffer,
- * so the cache holds only whole cylinder groups and nothing needs to
- * hook the write to disk.  A bad one is refused with EIO and dropped
- * from the cache, and the callers go on as for any cylinder group they
- * cannot use; fsck_ffs has to repair it.
+ * If the file system keeps check-hashes, verify that of a cylinder
+ * group that comes from disk.  One found in the cache is not verified,
+ * nor one whose buffer is dirty (see above), which another thread may
+ * have read and changed meanwhile.  A bad one is refused with EIO and
+ * dropped from the cache, and the callers go on as for any cylinder
+ * group they cannot use; fsck_ffs has to correct it.
  */
 int
 ffs_cgread(struct fs *fs, struct vnode *devvp, u_int cg, int flags,
@@ -2196,7 +2288,15 @@ ffs_cgread(struct fs *fs, struct vnode *devvp, u_int cg, int flags,
 	error = bread(devvp, blkno, (int)fs->fs_cgsize, flags, &bp);
 	if (error)
 		return error;
-	if (fromdisk &&
+	/*
+	 * bread() has just run the copy-on-write handlers.  Have them
+	 * run again when this buffer is written: the caller may change
+	 * it, and if it was dirty its check-hash is still to be taken.
+	 */
+	if ((flags & B_MODIFY) != 0 && (fs->fs_metackhash & CK_CYLGRP) != 0)
+		bp->b_flags &= ~(u_int)B_COWDONE;
+	/* We hold the buffer busy, so BO_DELWRI cannot change. */
+	if (fromdisk && (bp->b_oflags & BO_DELWRI) == 0 &&
 	    cg_chkmagic((struct cg *)bp->b_data, UFS_FSNEEDSWAP(fs)) &&
 	    !ffs_cg_ckhash_ok(fs, (struct cg *)bp->b_data)) {
 		if (ratecheck(&lasttime, &interval))

@@ -92,6 +92,8 @@ int	ffs_alloc(struct inode *, daddr_t, daddr_t , int, int, kauth_cred_t,
 int	ffs_realloccg(struct inode *, daddr_t, daddr_t, daddr_t, int, int,
 		      int, kauth_cred_t, struct buf **, daddr_t *);
 int	ffs_valloc(struct vnode *, int, kauth_cred_t, ino_t *);
+int	ffs_cg_ckhash_cow(void *, struct buf *, bool);
+void	ffs_cg_ckhash_flush(struct ufsmount *);
 daddr_t	ffs_blkpref_ufs1(struct inode *, daddr_t, int, int, int32_t *);
 daddr_t	ffs_blkpref_ufs2(struct inode *, daddr_t, int, int, int64_t *);
 int	ffs_blkalloc(struct inode *, daddr_t, long);

@@ -29,7 +29,7 @@
 .\"
 .\"     @(#)fs.5	8.2 (Berkeley) 4/19/94
 .\"
-.Dd July 27, 2001
+.Dd November 26, 2026
 .Dt FS 5
 .Os
 .Sh NAME
@@ -162,7 +162,9 @@ struct fs {
 	int32_t	 fs_avgfilesize; /* expected average file size */
 	int32_t	 fs_avgfpdir;	 /* expected # of files per directory */
 	int32_t	 fs_save_cgsize; /* save real cg size to use fs_bsize */
-	int32_t	 fs_sparecon32[26]; /* reserved for future constants */
+	int32_t	 fs_sparecon32[24]; /* reserved for future constants */
+	uint32_t fs_ckhash;	    /* if CK_SUPERBLOCK, its check-hash */
+	uint32_t fs_metackhash;	    /* metadata check-hashes, see CK_ */
 	uint32_t fs_flags;	    /* see FS_ flags below */
 /* back to stuff that has been around a while (again) */
 	int32_t	 fs_contigsumsize; /* size of cluster summary array */

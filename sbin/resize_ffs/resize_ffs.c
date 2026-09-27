@@ -76,6 +76,8 @@ static int smallio;
 
 /* size of a cg, in bytes, rounded up to a frag boundary */
 static int cgblksz;
+/* The metadata check-hashes (CK_) the file system carries, if any. */
+static uint32_t ckhash;
 
 /* possible superblock localtions */
 static int search[] = SBLOCKSEARCH;
@@ -2041,6 +2043,10 @@ flush_cgs(void)
 			cgs[i]->cg_irotor = 0;
 			if (needswap)
 				ffs_cg_swap(cgs[i],cgs[i],newsb);
+			if ((ckhash & CK_CYLGRP) != 0)
+				cgs[i]->cg_ckhash = ufs_rw32(
+				    ffs_cg_ckhash(cgs[i],
+				    (size_t)newsb->fs_cgsize), needswap);
 			writeat(FFS_FSBTODB(newsb, cgtod(newsb, i)), cgs[i],
 			    cgblksz);
 		}
@@ -2077,6 +2083,9 @@ write_sbs(void)
 	memcpy(oldsb, newsb, SBLOCKSIZE);
 	if (needswap)
 		ffs_sb_swap(newsb,newsb);
+	if ((ckhash & CK_SUPERBLOCK) != 0)
+		newsb->fs_ckhash = ufs_rw32(ffs_sb_ckhash(newsb,
+		    (size_t)oldsb->fs_sbsize), needswap);
 	writeat(where /  DEV_BSIZE, newsb, SBLOCKSIZE);
 	for (i = 0; i < oldsb->fs_ncg; i++) {
 		progress_bar(special, "write sb",
@@ -2252,6 +2261,11 @@ main(int argc, char **argv)
 		errx(EXIT_FAILURE, "Bad magic number");
 	if (needswap)
 		ffs_sb_swap(oldsb,oldsb);
+	/* FS_METACKHASH is the bit of FS_DOQUOTA2. */
+	if (ffs_ckhash_present(oldsb)) {
+		ffs_ckhash_init();
+		ckhash = oldsb->fs_metackhash & CK_SUPPORTED;
+	}
 	if (oldsb->fs_magic == FS_UFS1_MAGIC &&
 	    (oldsb->fs_old_flags & FS_FLAGS_UPDATED) == 0) {
 		oldsb->fs_csaddr = oldsb->fs_old_csaddr;

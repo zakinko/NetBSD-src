@@ -29,7 +29,7 @@
 .\"
 .\"     @(#)tunefs.8	8.3 (Berkeley) 5/3/95
 .\"
-.Dd January 17, 2022
+.Dd November 26, 2026
 .Dt TUNEFS 8
 .Os
 .Sh NAME
@@ -159,6 +159,11 @@ can be used to enable/disable all types at once.
 After enabling a quota,
 .Xr fsck_ffs 8
 has to be run to compute the correct quota values.
+.Pp
+Quotas cannot be enabled on a file system with metadata check-hashes,
+as
+.Fx
+makes them: the two use the same flag in the superblock.
 .It Fl S Ar sectorsize
 changes the fsbtodb value in the superblock to reflect a particular
 physical sector size.

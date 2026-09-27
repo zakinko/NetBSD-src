@@ -3,7 +3,7 @@
 .include <bsd.own.mk>
 
 PROG=	fsirand
-SRCS=	fsirand.c ffs_bswap.c
+SRCS=	fsirand.c ffs_bswap.c ffs_ckhash.c
 MAN=	fsirand.8
 
 LDADD+=	-lutil

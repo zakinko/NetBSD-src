@@ -442,7 +442,13 @@ print_superblock(struct fs *fs, uint16_t *opostbl,
 		printf("fs_flags expanded ");
 	if (fs->fs_flags & FS_DOWAPBL)
 		printf("wapbl ");
-	if (fs->fs_flags & FS_DOQUOTA2)
+	if (ffs_ckhash_present(fs)) {
+		/* FS_METACKHASH is the bit of FS_DOQUOTA2. */
+		printf("check-hashes [%s%s%s ] ",
+		    (fs->fs_metackhash & CK_SUPERBLOCK) ? " superblock" : "",
+		    (fs->fs_metackhash & CK_CYLGRP) ? " cylinder-groups" : "",
+		    (fs->fs_metackhash & CK_INODE) ? " inodes" : "");
+	} else if (fs->fs_flags & FS_DOQUOTA2)
 		printf("quotas ");
 	if (fs->fs_flags & FS_TRIM)
 		printf("trim ");

@@ -4,7 +4,7 @@
 
 PROG=resize_ffs
 MAN=resize_ffs.8
-SRCS=resize_ffs.c ffs_bswap.c progress.c
+SRCS=resize_ffs.c ffs_bswap.c ffs_ckhash.c progress.c
 
 CPPFLAGS+=-I${NETBSDSRCDIR}/sbin/fsck
 

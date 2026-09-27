@@ -188,6 +188,9 @@ ffs_wapbl_sync_metadata(struct mount *mp, struct wapbl_dealloc *fdealloc)
 		    FFS_DBTOFSB(fs, wd->wd_blkno), wd->wd_len, -1);
 	}
 
+	if (ump->um_cgdirty != NULL)
+		ffs_cg_ckhash_flush(ump);
+
 	mutex_enter(&ump->um_lock);
 	if (fs->fs_fmod != 0) {
 		fs->fs_fmod = 0;

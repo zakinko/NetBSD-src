@@ -126,6 +126,7 @@ struct ufsmount {
 	const struct ufs_ops *um_ops;
 
 	void *um_discarddata;
+	uint32_t *um_cgdirty;			/* cgs to hash at log flush */
 };
 
 struct ufs_ops {

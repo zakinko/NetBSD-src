@@ -423,7 +423,21 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 	else
 		idesc->id_type = ADDR;
 	(void)ckinode(dp, idesc);
-	if (is_ufs2 && (!is_ufs2ea || doing2noea) &&
+	/*
+	 * Plain UFS2 as written by FreeBSD carries extended attributes
+	 * without the UFS2ea magic.  Clearing them here used to destroy
+	 * the attributes and every ACL with them, and set the file's
+	 * permissions to 0; FreeBSD's own fsck then found the file
+	 * system clean, so nothing ever reported the loss.  Keeping
+	 * them grants no access that clearing would have denied: the
+	 * kernel does not read extended attributes on plain UFS2, and
+	 * refuses to mount one with FS_POSIX1EACLS or FS_NFS4ACLS.
+	 * Their blocks are accounted below as for UFS2ea.  Converting
+	 * still clears them: -c no-ea as it always has, and -c ea
+	 * because the kernel then reads whatever they point to, which
+	 * on a file system from before UFS2ea may be a free block.
+	 */
+	if (is_ufs2 && ((doing2ea && !is_ufs2ea) || doing2noea) &&
 	    (iswap32(dp->dp2.di_extsize) != 0 ||
 	     iswap64(dp->dp2.di_extb[0]) != 0 ||
 	     iswap64(dp->dp2.di_extb[1]) != 0)) {
@@ -440,7 +454,7 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 		dp->dp2.di_mode &= iswap16(IFMT);
 		inodirty();
 	}
-	if (is_ufs2ea && iswap32(dp->dp2.di_extsize) > 0) {
+	if (is_ufs2 && iswap32(dp->dp2.di_extsize) > 0) {
 		int ret, offset;
 		idesc->id_type = ADDR;
 		ndb = howmany(iswap32(dp->dp2.di_extsize), sblock->fs_bsize);

@@ -367,6 +367,7 @@ pool_cache_t ffs_dinode2_cache;
 
 static void ffs_oldfscompat_read(struct fs *, struct ufsmount *, daddr_t);
 static void ffs_oldfscompat_write(struct fs *, struct ufsmount *);
+static void ffs_fbsd_metackhash(struct fs *);
 
 /*
  * Called by main() when ffs is going to be mounted as root.
@@ -756,6 +757,8 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		}
 #endif /* WAPBL */
 
+		if (!fs->fs_ronly)
+			ffs_fbsd_metackhash(fs);
 #ifdef QUOTA2
 		if (!fs->fs_ronly) {
 			error = ffs_quota2_mount(mp);
@@ -1613,6 +1616,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	}
 #endif /* WAPBL */
 	if (ronly == 0) {
+		ffs_fbsd_metackhash(fs);
 #ifdef QUOTA2
 		error = ffs_quota2_mount(mp);
 		if (error) {
@@ -1662,6 +1666,33 @@ out:
 		mp->mnt_data = NULL;
 	}
 	return (error);
+}
+
+/*
+ * FreeBSD sets 0x200, our FS_DOQUOTA2, as FS_METACKHASH: the kernel
+ * maintains the metadata check-hashes listed in fs_metackhash.  Its
+ * newfs sets it on every UFS2.  The quota2 header, fs_quota_magic
+ * through fs_quotafile[], lies in FreeBSD's fs_sparecon64[] and is
+ * zero there; a quota2 file system always has the magic and at least
+ * one quota type set.  We do not maintain the check-hashes, so clear
+ * the bit before a writable mount, which is what FreeBSD requires of
+ * a kernel that does not: its next mount then stops verifying them
+ * and its fsck rebuilds them.  Otherwise quota2 took the bit for its
+ * own and every writable mount failed with "invalid quota magic
+ * number".  A quota2 header that is damaged rather than absent is
+ * still left to ffs_quota2_mount() to refuse.
+ */
+static void
+ffs_fbsd_metackhash(struct fs *fs)
+{
+
+	if ((fs->fs_flags & FS_DOQUOTA2) != 0 &&
+	    fs->fs_quota_magic == 0 && fs->fs_quota_flags == 0 &&
+	    fs->fs_quotafile[USRQUOTA] == 0 &&
+	    fs->fs_quotafile[GRPQUOTA] == 0) {
+		fs->fs_flags &= ~FS_DOQUOTA2;
+		fs->fs_fmod = 1;
+	}
 }
 
 /*

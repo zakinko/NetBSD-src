@@ -248,7 +248,7 @@ ffs_cg_setckhash(const struct fs *fs, struct cg *cgp)
 	if ((fs->fs_metackhash & CK_CYLGRP) == 0)
 		return;
 	cgp->cg_ckhash = ufs_rw32(ffs_cg_ckhash(cgp, (size_t)fs->fs_cgsize),
-	    UFS_FSNEEDSWAP(fs) != 0);
+	    UFS_FSNEEDSWAP(fs));
 }
 
 /* Whether the cylinder group at cgp, as read, has a good check-hash. */
@@ -258,7 +258,7 @@ ffs_cg_ckhash_ok(const struct fs *fs, const struct cg *cgp)
 
 	if ((fs->fs_metackhash & CK_CYLGRP) == 0)
 		return 1;
-	return ufs_rw32(cgp->cg_ckhash, UFS_FSNEEDSWAP(fs) != 0) ==
+	return ufs_rw32(cgp->cg_ckhash, UFS_FSNEEDSWAP(fs)) ==
 	    ffs_cg_ckhash(cgp, (size_t)fs->fs_cgsize);
 }
 
@@ -273,7 +273,7 @@ ffs_dinode_setckhash(const struct fs *fs, struct ufs2_dinode *dp)
 	if ((fs->fs_metackhash & CK_INODE) == 0 || dp->di_mode == 0)
 		return;
 	dp->di_ckhash = ufs_rw32(ffs_dinode_ckhash(dp),
-	    UFS_FSNEEDSWAP(fs) != 0);
+	    UFS_FSNEEDSWAP(fs));
 }
 
 int
@@ -282,6 +282,6 @@ ffs_dinode_ckhash_ok(const struct fs *fs, const struct ufs2_dinode *dp)
 
 	if ((fs->fs_metackhash & CK_INODE) == 0 || dp->di_mode == 0)
 		return 1;
-	return ufs_rw32(dp->di_ckhash, UFS_FSNEEDSWAP(fs) != 0) ==
+	return ufs_rw32(dp->di_ckhash, UFS_FSNEEDSWAP(fs)) ==
 	    ffs_dinode_ckhash(dp);
 }

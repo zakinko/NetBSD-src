@@ -354,7 +354,9 @@ struct fs {
 	u_int32_t fs_avgfilesize;	/* expected average file size */
 	u_int32_t fs_avgfpdir;		/* expected # of files per directory */
 	int32_t	 fs_save_cgsize;	/* save real cg size to use fs_bsize */
-	int32_t	 fs_sparecon32[26];	/* reserved for future constants */
+	int32_t	 fs_sparecon32[24];	/* reserved for future constants */
+	uint32_t fs_ckhash;		/* if CK_SUPERBLOCK, its check-hash */
+	uint32_t fs_metackhash;		/* metadata check-hashes, see CK_ */
 	uint32_t fs_flags;		/* see FS_ flags below */
 /* back to stuff that has been around a while (again) */
 	int32_t	 fs_contigsumsize;	/* size of cluster summary array */
@@ -440,6 +442,7 @@ struct fs {
 /*	FS_NFS4ACLS	0x100	   file system has NFSv4 ACLs enabled (FBSD) */
 #define	FS_DOQUOTA2	0x200	/* in-filesystem quotas */
 /*     	FS_INDEXDIRS	0x200	   kernel supports indexed directories (FBSD)*/
+#define	FS_METACKHASH	0x200U	/* metadata check-hashes, see below */
 #define	FS_TRIM		0x400	/* discard deleted blocks in storage layer */
 #define	FS_NFS4ACLS	0x800	/* file system has NFSv4 ACLs enabled */
 
@@ -453,6 +456,19 @@ struct fs {
  */
 #define	FS_SWAPPED	0x80000000	/* file system is endian swapped */
 #define	FS_INTERNAL	0x80000000	/* mask for internal flags */
+
+/*
+ * Metadata check-hashes (see ffs_ckhash.c).  A file system that carries
+ * them has FS_METACKHASH, the same bit as FS_DOQUOTA2, and no quota2
+ * header, and fs_metackhash says which structures have one.  FreeBSD
+ * makes every UFS2 so; our in-core superblock keeps the bit clear and
+ * only fs_metackhash, so that such a file system is never taken for one
+ * with quota2.
+ */
+#define	CK_SUPERBLOCK	0x0001	/* the superblock */
+#define	CK_CYLGRP	0x0002	/* the cylinder groups */
+#define	CK_INODE	0x0004	/* inodes in use (UFS2 only) */
+#define	CK_SUPPORTED	(CK_SUPERBLOCK | CK_CYLGRP | CK_INODE)
 
 /*
  * Macros to access bits in the fs_active array.
@@ -526,7 +542,8 @@ struct cg {
 	u_int32_t cg_nclusterblks;	/* number of clusters this cg */
 	u_int32_t cg_niblk;		/* number of inode blocks this cg */
 	u_int32_t cg_initediblk;		/* last initialized inode */
-	int32_t	 cg_sparecon32[3];	/* reserved for future use */
+	int32_t	 cg_sparecon32[2];	/* reserved for future use */
+	uint32_t cg_ckhash;		/* if CK_CYLGRP, its check-hash */
 	int64_t  cg_time;		/* time last written */
 	int64_t  cg_sparecon64[3];	/* reserved for future use */
 	u_int8_t cg_space[1];		/* space for cylinder group maps */

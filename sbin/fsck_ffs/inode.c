@@ -67,6 +67,7 @@ static int iblock(struct inodesc *, long, u_int64_t);
 #ifndef NO_FFS_EI
 static void swap_dinode1(union dinode *, int);
 static void swap_dinode2(union dinode *, int);
+static void inoblk_setckhash(void *, size_t);
 #endif
 
 int
@@ -426,6 +427,8 @@ getnextinode(ino_t inumber)
 				swap_dinode2(inodebuf, lastinum - inumber);
 			else
 				swap_dinode1(inodebuf, lastinum - inumber);
+			inoblk_setckhash(inodebuf,
+			    (size_t)(lastinum - inumber));
 			bwrite(fswritefd, (char *)inodebuf, dblk, size);
 		}
 		dp = (union dinode *)inodebuf;
@@ -564,10 +567,31 @@ inocleanup(void)
 	inphead = inpsort = NULL;
 }
 
+/*
+ * Set the check-hash of every inode in use among the n on-disk UFS2
+ * inodes at buf, if the file system keeps them.
+ */
+static void
+inoblk_setckhash(void *buf, size_t n)
+{
+	struct ufs2_dinode *dp = buf;
+
+	if (!is_ufs2 || (sblock->fs_metackhash & CK_INODE) == 0)
+		return;
+	for (; n > 0; n--, dp++)
+		if (dp->di_mode != 0)
+			dp->di_ckhash = iswap32(ffs_dinode_ckhash(dp));
+}
+
+/*
+ * The current inode block, pbp, has been changed.  Which of its inodes
+ * is not known here, so give each one in use its check-hash again.
+ */
 void
 inodirty(void)
 {
 
+	inoblk_setckhash(pbp->b_un.b_buf, FFS_INOPB(sblock));
 	dirty(pbp);
 }
 

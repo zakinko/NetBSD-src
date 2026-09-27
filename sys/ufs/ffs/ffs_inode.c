@@ -187,6 +187,7 @@ ffs_update(struct vnode *vp, const struct timespec *acc,
 		else
 #endif
 			memcpy(cp, ip->i_din.ffs2_din, DINODE2_SIZE);
+		ffs_dinode_setckhash(fs, (struct ufs2_dinode *)cp);
 	}
 	if (waitfor) {
 		return (bwrite(bp));

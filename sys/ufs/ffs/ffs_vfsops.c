@@ -367,7 +367,7 @@ pool_cache_t ffs_dinode2_cache;
 
 static void ffs_oldfscompat_read(struct fs *, struct ufsmount *, daddr_t);
 static void ffs_oldfscompat_write(struct fs *, struct ufsmount *);
-static void ffs_fbsd_metackhash(struct fs *);
+static void ffs_ckhash_mount(struct fs *);
 
 /*
  * Called by main() when ffs is going to be mounted as root.
@@ -757,8 +757,6 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 		}
 #endif /* WAPBL */
 
-		if (!fs->fs_ronly)
-			ffs_fbsd_metackhash(fs);
 #ifdef QUOTA2
 		if (!fs->fs_ronly) {
 			error = ffs_quota2_mount(mp);
@@ -955,6 +953,7 @@ ffs_reload(struct mount *mp, kauth_cred_t cred, struct lwp *l)
 			mp->mnt_iflag &= ~IMNT_DTYPE;
 	}
 	ffs_oldfscompat_read(fs, ump, sblockloc);
+	ffs_ckhash_mount(fs);
 
 	mutex_enter(&ump->um_lock);
 	ump->um_maxfilesize = fs->fs_maxfilesize;
@@ -1198,6 +1197,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 #ifdef FFS_EI
 	int needswap = 0;		/* keep gcc happy */
 #endif
+	bool sbckbad = false;
 	int32_t *lp;
 	kauth_cred_t cred;
 	u_int32_t allocsbsize, fs_sbsize = 0;
@@ -1341,11 +1341,46 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 			continue;
 		}
 
+		/*
+		 * Check the check-hash against the bytes as they were read,
+		 * with the UFS2ea magic that we replaced above put back.
+		 */
+		sbckbad = false;
+		if (ffs_ckhash_present(fs) &&
+		    (fs->fs_metackhash & CK_SUPERBLOCK) != 0) {
+			struct fs *rfs = (struct fs *)bp->b_data;
+			const int32_t magic = rfs->fs_magic;
+
+			if (ump->um_flags & UFS_EA)
+				rfs->fs_magic = UFS_FSNEEDSWAP(fs) ?
+				    FS_UFS2EA_MAGIC_SWAPPED : FS_UFS2EA_MAGIC;
+			sbckbad = ffs_sb_ckhash(rfs, fs_sbsize) !=
+			    fs->fs_ckhash;
+			rfs->fs_magic = magic;
+		}
+
 		/* Ok seems to be a good superblock */
 		break;
 	}
 
 	ump->um_fs = fs;
+
+	/*
+	 * A superblock with a bad check-hash is not to be trusted: mount
+	 * it only when forced, or as the root so that fsck_ffs, which
+	 * corrects the check-hash, can run.
+	 */
+	if (sbckbad) {
+		uprintf("%s: superblock check-hash failed%s\n",
+		    mp->mnt_stat.f_mntonname,
+		    (mp->mnt_flag & (MNT_FORCE | MNT_ROOTFS)) ? "" :
+		    ", not mounting");
+		if ((mp->mnt_flag & (MNT_FORCE | MNT_ROOTFS)) == 0) {
+			error = EIO;
+			DPRINTF("superblock check-hash %d", error);
+			goto out;
+		}
+	}
 
 #ifdef WAPBL
 	if ((mp->mnt_wapbl_replay == 0) && (fs->fs_flags & FS_DOWAPBL)) {
@@ -1391,6 +1426,7 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 #endif /* !WAPBL */
 
 	ffs_oldfscompat_read(fs, ump, sblockloc);
+	ffs_ckhash_mount(fs);
 	ump->um_maxfilesize = fs->fs_maxfilesize;
 
 	if (fs->fs_flags & ~(FS_KNOWN_FLAGS | FS_INTERNAL)) {
@@ -1616,7 +1652,6 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	}
 #endif /* WAPBL */
 	if (ronly == 0) {
-		ffs_fbsd_metackhash(fs);
 #ifdef QUOTA2
 		error = ffs_quota2_mount(mp);
 		if (error) {
@@ -1669,30 +1704,21 @@ out:
 }
 
 /*
- * FreeBSD sets 0x200, our FS_DOQUOTA2, as FS_METACKHASH: the kernel
- * maintains the metadata check-hashes listed in fs_metackhash.  Its
- * newfs sets it on every UFS2.  The quota2 header, fs_quota_magic
- * through fs_quotafile[], lies in FreeBSD's fs_sparecon64[] and is
- * zero there; a quota2 file system always has the magic and at least
- * one quota type set.  We do not maintain the check-hashes, so clear
- * the bit before a writable mount, which is what FreeBSD requires of
- * a kernel that does not: its next mount then stops verifying them
- * and its fsck rebuilds them.  Otherwise quota2 took the bit for its
- * own and every writable mount failed with "invalid quota magic
- * number".  A quota2 header that is damaged rather than absent is
- * still left to ffs_quota2_mount() to refuse.
+ * Set up the in-core superblock for metadata check-hashes.  If the file
+ * system has them, clear FS_METACKHASH, which is also FS_DOQUOTA2, so
+ * that nothing takes it for quota2, and keep in fs_metackhash those we
+ * maintain; ffs_sbupdate() puts the bit back.  Otherwise fs_metackhash
+ * is zero and nothing is hashed.
  */
 static void
-ffs_fbsd_metackhash(struct fs *fs)
+ffs_ckhash_mount(struct fs *fs)
 {
 
-	if ((fs->fs_flags & FS_DOQUOTA2) != 0 &&
-	    fs->fs_quota_magic == 0 && fs->fs_quota_flags == 0 &&
-	    fs->fs_quotafile[USRQUOTA] == 0 &&
-	    fs->fs_quotafile[GRPQUOTA] == 0) {
-		fs->fs_flags &= ~FS_DOQUOTA2;
-		fs->fs_fmod = 1;
-	}
+	if (ffs_ckhash_present(fs)) {
+		fs->fs_flags &= ~FS_METACKHASH;
+		fs->fs_metackhash &= CK_SUPPORTED;
+	} else
+		fs->fs_metackhash = 0;
 }
 
 /*
@@ -2156,6 +2182,13 @@ ffs_init_vnode(struct ufsmount *ump, struct vnode *vp, ino_t ino)
 		      (int)fs->fs_bsize, 0, &bp);
 	if (error)
 		return error;
+	if (ump->um_fstype == UFS2 && !ffs_dinode_ckhash_ok(fs,
+	    (struct ufs2_dinode *)bp->b_data + ino_to_fsbo(fs, ino))) {
+		printf("%s: inode %" PRIu64 ": bad check-hash\n",
+		    fs->fs_fsmnt, ino);
+		brelse(bp, 0);
+		return EIO;
+	}
 
 	/* Allocate and initialize inode. */
 	ip = pool_cache_get(ffs_inode_cache, PR_WAITOK);
@@ -2443,6 +2476,7 @@ ffs_init(void)
 	    "ffsdino1", NULL, IPL_NONE, NULL, NULL, NULL);
 	ffs_dinode2_cache = pool_cache_init(sizeof(struct ufs2_dinode), 0, 0, 0,
 	    "ffsdino2", NULL, IPL_NONE, NULL, NULL, NULL);
+	ffs_ckhash_init();
 	ufs_init();
 }
 
@@ -2488,6 +2522,8 @@ ffs_sbupdate(struct ufsmount *mp, int waitfor)
 	bfs = (struct fs *)bp->b_data;
 
 	bfs->fs_flags &= ~FS_INTERNAL;
+	if (bfs->fs_metackhash != 0)
+		bfs->fs_flags |= FS_METACKHASH;
 	ffs_oldfscompat_write((struct fs *)bp->b_data, mp);
 	if (mp->um_flags & UFS_EA) {
 		KASSERT(bfs->fs_magic == FS_UFS2_MAGIC);
@@ -2497,6 +2533,9 @@ ffs_sbupdate(struct ufsmount *mp, int waitfor)
 	if (mp->um_flags & UFS_NEEDSWAP)
 		ffs_sb_swap(bfs, bfs);
 #endif
+	if ((fs->fs_metackhash & CK_SUPERBLOCK) != 0)
+		bfs->fs_ckhash = ufs_rw32(ffs_sb_ckhash(bfs,
+		    (size_t)fs->fs_sbsize), UFS_MPNEEDSWAP(mp) != 0);
 
 	if (waitfor == MNT_WAIT)
 		error = bwrite(bp);

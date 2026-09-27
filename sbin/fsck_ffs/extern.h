@@ -43,6 +43,7 @@ int		cmpsblks(const struct fs *, struct fs *);
 int		cmpsblks42(const struct fs *, struct fs *);
 int		cmpsblks44(const struct fs *, struct fs *);
 void		cvt_magic(struct fs *);
+void		sb_setckhash(struct fs *);
 union		dinode * getnextinode(ino_t);
 void		direrror(ino_t, const char *);
 int		dirscan(struct inodesc *);

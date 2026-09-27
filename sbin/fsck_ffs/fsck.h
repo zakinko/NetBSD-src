@@ -163,9 +163,12 @@ extern struct fs *sblocksave;
 	do { \
 		memmove(sblk.b_un.b_fs, sblock, SBLOCKSIZE); \
 		sb_oldfscompat_write(sblk.b_un.b_fs, sblocksave); \
+		if (sblock->fs_metackhash != 0) \
+			sblk.b_un.b_fs->fs_flags |= FS_METACKHASH; \
 		if (needswap) \
 			ffs_sb_swap(sblk.b_un.b_fs, sblk.b_un.b_fs); \
 		cvt_magic(sblk.b_un.b_fs); \
+		sb_setckhash(sblk.b_un.b_fs); \
 		sblk.b_dirty = 1; \
 	} while (0)
 #define	cgdirty()	do {copyback_cg(&cgblk); cgblk.b_dirty = 1;} while (0)

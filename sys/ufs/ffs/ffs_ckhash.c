@@ -38,6 +38,9 @@
  *
  * The functions here hash around the check-hash field rather than
  * clearing it, so the buffer they are given is never written.
+ *
+ * The CRC is taken eight bytes at a time, with the crc32 instruction
+ * where the CPU has it (amd64 with SSE4.2) and with tables otherwise.
  */
 
 #if HAVE_NBTOOL_CONFIG_H
@@ -54,6 +57,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
 #define	KASSERT(x)	assert(x)
 #define	FFS_EI		/* always include byteswapped filesystems support */
 #endif
@@ -71,6 +75,47 @@ __KERNEL_RCSID(0, "$NetBSD$");
  */
 static uint32_t crc32c_table[8][256];
 static bool crc32c_ready;
+
+#if defined(__x86_64__) && !defined(HAVE_NBTOOL_CONFIG_H)
+#define	CRC32C_INSN
+
+static bool crc32c_insn;
+
+/*
+ * Whether the CPU has SSE4.2, whose crc32 instruction is CRC32C.  Ask
+ * cpuid directly: this runs once, and the same way in the kernel, in
+ * a rump kernel and in the utilities.
+ */
+static bool
+crc32c_insn_present(void)
+{
+	uint32_t eax, ebx, ecx, edx;
+
+	__asm volatile("cpuid"
+	    : "=a" (eax), "=b" (ebx), "=c" (ecx), "=d" (edx)
+	    : "a" (1), "c" (0));
+	return (ecx & (1U << 20)) != 0;		/* CPUID2_SSE42 */
+}
+
+/*
+ * The crc32 instruction works on general registers only, so the
+ * kernel needs no FPU state for it.
+ */
+static uint32_t
+crc32c_update_insn(uint32_t crc, const uint8_t *p, size_t len)
+{
+	uint64_t crc64 = crc, v;
+
+	for (; len >= 8; p += 8, len -= 8) {
+		memcpy(&v, p, sizeof(v));
+		__asm("crc32q %1, %0" : "+r" (crc64) : "rm" (v));
+	}
+	crc = (uint32_t)crc64;
+	for (; len > 0; p++, len--)
+		__asm("crc32b %1, %0" : "+r" (crc) : "rm" (*p));
+	return crc;
+}
+#endif /* __x86_64__ */
 
 /*
  * Fill in the tables.  The kernel calls this from ffs_init(), the
@@ -98,6 +143,9 @@ ffs_ckhash_init(void)
 			crc32c_table[j][i] = crc;
 		}
 	}
+#ifdef CRC32C_INSN
+	crc32c_insn = crc32c_insn_present();
+#endif
 	crc32c_ready = true;
 }
 
@@ -107,6 +155,10 @@ crc32c_update(uint32_t crc, const uint8_t *p, size_t len)
 	uint32_t lo, hi;
 
 	KASSERT(crc32c_ready);
+#ifdef CRC32C_INSN
+	if (crc32c_insn)
+		return crc32c_update_insn(crc, p, len);
+#endif
 	for (; len >= 8; p += 8, len -= 8) {
 		/* Byte by byte: any alignment, any host byte order. */
 		lo = crc ^ ((uint32_t)p[0] | (uint32_t)p[1] << 8 |

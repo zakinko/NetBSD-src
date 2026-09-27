@@ -1623,6 +1623,13 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 	for (i = 0; i < MAXQUOTAS; i++)
 		ump->um_quotas[i] = NULLVP;
 	spec_node_setmountedfs(devvp, mp);
+	if ((fs->fs_metackhash & CK_CYLGRP) != 0) {
+		/* See ffs_cg_ckhash_cow() and ffs_cg_ckhash_flush(). */
+		ump->um_cgdirty = kmem_zalloc(
+		    howmany((size_t)fs->fs_ncg, 32) * sizeof(uint32_t),
+		    KM_SLEEP);
+		fscow_establish(mp, ffs_cg_ckhash_cow, ump);
+	}
 	if (ronly == 0 && fs->fs_snapinum[0] != 0) {
 #ifndef FFS_NO_SNAPSHOT
 		ffs_snapshot_mount(mp);
@@ -1678,6 +1685,12 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 
 	return (0);
 out1:
+	if (ump->um_cgdirty != NULL) {
+		fscow_disestablish(mp, ffs_cg_ckhash_cow, ump);
+		kmem_free(ump->um_cgdirty,
+		    howmany((size_t)fs->fs_ncg, 32) * sizeof(uint32_t));
+		ump->um_cgdirty = NULL;
+	}
 	kmem_free(fs->fs_csp, allocsbsize);
 out:
 #ifdef WAPBL
@@ -1889,6 +1902,13 @@ ffs_unmount(struct mount *mp, int mntflags)
 		return error;
 	}
 #endif /* WAPBL */
+
+	if (ump->um_cgdirty != NULL) {
+		fscow_disestablish(mp, ffs_cg_ckhash_cow, ump);
+		kmem_free(ump->um_cgdirty,
+		    howmany((size_t)fs->fs_ncg, 32) * sizeof(uint32_t));
+		ump->um_cgdirty = NULL;
+	}
 
 	if (ump->um_devvp->v_type != VBAD)
 		spec_node_setmountedfs(ump->um_devvp, NULL);

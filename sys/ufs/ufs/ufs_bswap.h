@@ -36,8 +36,8 @@
 
 /* Macros to access UFS flags */
 #ifdef FFS_EI
-#define	UFS_MPNEEDSWAP(ump)	((ump)->um_flags & UFS_NEEDSWAP)
-#define UFS_FSNEEDSWAP(fs)	((fs)->fs_flags & FS_SWAPPED)
+#define	UFS_MPNEEDSWAP(ump)	(((ump)->um_flags & UFS_NEEDSWAP) != 0)
+#define UFS_FSNEEDSWAP(fs)	(((fs)->fs_flags & FS_SWAPPED) != 0)
 #define	UFS_IPNEEDSWAP(ip)	UFS_MPNEEDSWAP((ip)->i_ump)
 #else
 #define	UFS_MPNEEDSWAP(ump)	((void)(ump), 0)

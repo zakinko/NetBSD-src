@@ -576,6 +576,9 @@ copyback_cg(struct bufarea *blk)
 	memcpy(blk->b_un.b_cg, cgrp, sblock->fs_cgsize);
 	if (needswap)
 		ffs_cg_swap(cgrp, blk->b_un.b_cg, sblock);
+	if ((sblock->fs_metackhash & CK_CYLGRP) != 0)
+		blk->b_un.b_cg->cg_ckhash = iswap32(
+		    ffs_cg_ckhash(blk->b_un.b_cg, (size_t)sblock->fs_cgsize));
 }
 
 void

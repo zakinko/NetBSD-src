@@ -121,6 +121,7 @@ static void ffs_blkfree_common(struct ufsmount *, struct fs *, dev_t, struct buf
     daddr_t, long, bool);
 static void ffs_freefile_common(struct ufsmount *, struct fs *, dev_t, struct buf *, ino_t,
     int, bool);
+static int ffs_cgread(struct fs *, struct vnode *, u_int, int, struct buf **);
 
 /* if 1, changes in optimalization strategy are logged */
 int ffs_log_changeopt = 0;
@@ -993,8 +994,7 @@ ffs_fragextend(struct inode *ip, u_int cg, daddr_t bprev, int osize, int nsize)
 		return (0);
 	}
 	mutex_exit(&ump->um_lock);
-	error = bread(ip->i_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
-		(int)fs->fs_cgsize, B_MODIFY, &bp);
+	error = ffs_cgread(fs, ip->i_devvp, cg, B_MODIFY, &bp);
 	if (error)
 		goto fail;
 	cgp = (struct cg *)bp->b_data;
@@ -1007,8 +1007,11 @@ ffs_fragextend(struct inode *ip, u_int cg, daddr_t bprev, int osize, int nsize)
 	bno = dtogd(fs, bprev);
 	blksfree = cg_blksfree(cgp, UFS_FSNEEDSWAP(fs));
 	for (i = ffs_numfrags(fs, osize); i < frags; i++)
-		if (isclr(blksfree, bno + i))
+		if (isclr(blksfree, bno + i)) {
+			/* The times above changed; keep the buffer whole. */
+			ffs_cg_setckhash(fs, cgp);
 			goto fail;
+		}
 	/*
 	 * the current fragment can be extended
 	 * deduct the count on fragment being extended into
@@ -1031,6 +1034,7 @@ ffs_fragextend(struct inode *ip, u_int cg, daddr_t bprev, int osize, int nsize)
 	fs->fs_fmod = 1;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 	return (bprev);
 
@@ -1068,8 +1072,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 	if (fs->fs_cs(fs, cg).cs_nbfree == 0 && size == fs->fs_bsize)
 		return (0);
 	mutex_exit(&ump->um_lock);
-	error = bread(ip->i_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
-		(int)fs->fs_cgsize, B_MODIFY, &bp);
+	error = ffs_cgread(fs, ip->i_devvp, cg, B_MODIFY, &bp);
 	if (error)
 		goto fail;
 	cgp = (struct cg *)bp->b_data;
@@ -1099,6 +1102,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 			    (long)(size - realsize), false);
 		}
 
+		ffs_cg_setckhash(fs, cgp);
 		bdwrite(bp);
 		return (blkno);
 	}
@@ -1117,8 +1121,11 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 		 * no fragments were available, so a block will be
 		 * allocated, and hacked up
 		 */
-		if (cgp->cg_cs.cs_nbfree == 0)
+		if (cgp->cg_cs.cs_nbfree == 0) {
+			/* The times above changed; keep the buffer whole. */
+			ffs_cg_setckhash(fs, cgp);
 			goto fail;
+		}
 		mutex_enter(&ump->um_lock);
 		blkno = ffs_alloccgblk(ip, bp, bpref, realsize, flags);
 		bno = dtogd(fs, blkno);
@@ -1132,6 +1139,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 		ufs_add32(cgp->cg_frsum[i], 1, needswap);
 		ACTIVECG_CLR(fs, cg);
 		mutex_exit(&ump->um_lock);
+		ffs_cg_setckhash(fs, cgp);
 		bdwrite(bp);
 		return (blkno);
 	}
@@ -1157,6 +1165,7 @@ ffs_alloccg(struct inode *ip, u_int cg, daddr_t bpref, int size, int realsize,
 	blkno = cgbase(fs, cg) + bno;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 	return blkno;
 
@@ -1288,8 +1297,7 @@ ffs_nodealloccg(struct inode *ip, u_int cg, daddr_t ipref, int mode, int realsiz
 	maxiblk = initediblk;
 
 retry:
-	error = bread(ip->i_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
-		(int)fs->fs_cgsize, B_MODIFY, &bp);
+	error = ffs_cgread(fs, ip->i_devvp, cg, B_MODIFY, &bp);
 	if (error)
 		goto fail;
 	cgp = (struct cg *)bp->b_data;
@@ -1413,6 +1421,7 @@ gotit:
 		fs->fs_cs(fs, cg).cs_ndir++;
 	}
 	mutex_exit(&ump->um_lock);
+	ffs_cg_setckhash(fs, cgp);
 	if (ibp != NULL) {
 		bwrite(ibp);
 		bwrite(bp);
@@ -1468,8 +1477,7 @@ ffs_blkalloc_ump(struct ufsmount *ump, daddr_t bno, long size)
 	KASSERT(bno < fs->fs_size);
 
 	cg = dtog(fs, bno);
-	error = bread(ump->um_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
-		(int)fs->fs_cgsize, B_MODIFY, &bp);
+	error = ffs_cgread(fs, ump->um_devvp, cg, B_MODIFY, &bp);
 	if (error) {
 		return error;
 	}
@@ -1488,6 +1496,8 @@ ffs_blkalloc_ump(struct ufsmount *ump, daddr_t bno, long size)
 		fragno = ffs_fragstoblks(fs, cgbno);
 		if (!ffs_isblock(fs, blksfree, fragno)) {
 			mutex_exit(&ump->um_lock);
+			/* The times changed. */
+			ffs_cg_setckhash(fs, cgp);
 			brelse(bp, 0);
 			return EBUSY;
 		}
@@ -1503,6 +1513,8 @@ ffs_blkalloc_ump(struct ufsmount *ump, daddr_t bno, long size)
 		for (i = 0; i < frags; i++) {
 			if (isclr(blksfree, cgbno + i)) {
 				mutex_exit(&ump->um_lock);
+				/* The times changed. */
+				ffs_cg_setckhash(fs, cgp);
 				brelse(bp, 0);
 				return EBUSY;
 			}
@@ -1543,6 +1555,7 @@ ffs_blkalloc_ump(struct ufsmount *ump, daddr_t bno, long size)
 	fs->fs_fmod = 1;
 	ACTIVECG_CLR(fs, cg);
 	mutex_exit(&ump->um_lock);
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 	return 0;
 }
@@ -1562,7 +1575,6 @@ ffs_blkfree_cg(struct fs *fs, struct vnode *devvp, daddr_t bno, long size)
 	struct cg *cgp;
 	struct buf *bp;
 	struct ufsmount *ump;
-	daddr_t cgblkno;
 	int error;
 	u_int cg;
 	dev_t dev;
@@ -1575,10 +1587,8 @@ ffs_blkfree_cg(struct fs *fs, struct vnode *devvp, daddr_t bno, long size)
 	dev = devvp->v_rdev;
 	ump = VFSTOUFS(spec_node_getmountedfs(devvp));
 	KASSERT(fs == ump->um_fs);
-	cgblkno = FFS_FSBTODB(fs, cgtod(fs, cg));
 
-	error = bread(devvp, cgblkno, (int)fs->fs_cgsize,
-	    B_MODIFY, &bp);
+	error = ffs_cgread(fs, devvp, cg, B_MODIFY, &bp);
 	if (error) {
 		return;
 	}
@@ -1590,6 +1600,7 @@ ffs_blkfree_cg(struct fs *fs, struct vnode *devvp, daddr_t bno, long size)
 
 	ffs_blkfree_common(ump, fs, dev, bp, bno, size, devvp_is_snapshot);
 
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 }
 
@@ -1867,6 +1878,7 @@ ffs_blkfree_snap(struct fs *fs, struct vnode *devvp, daddr_t bno, long size,
 
 	ffs_blkfree_common(ump, fs, dev, bp, bno, size, devvp_is_snapshot);
 
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 }
 
@@ -2002,20 +2014,17 @@ ffs_freefile(struct mount *mp, ino_t ino, int mode)
 	struct buf *bp;
 	int error;
 	u_int cg;
-	daddr_t cgbno;
 	dev_t dev;
 	const int needswap = UFS_FSNEEDSWAP(fs);
 
 	cg = ino_to_cg(fs, ino);
 	devvp = ump->um_devvp;
 	dev = devvp->v_rdev;
-	cgbno = FFS_FSBTODB(fs, cgtod(fs, cg));
 
 	if (ino >= fs->fs_ipg * fs->fs_ncg)
 		panic("%s: range: dev = 0x%llx, ino = %llu, fs = %s", __func__,
 		    (long long)dev, (unsigned long long)ino, fs->fs_fsmnt);
-	error = bread(devvp, cgbno, (int)fs->fs_cgsize,
-	    B_MODIFY, &bp);
+	error = ffs_cgread(fs, devvp, cg, B_MODIFY, &bp);
 	if (error) {
 		return (error);
 	}
@@ -2027,6 +2036,7 @@ ffs_freefile(struct mount *mp, ino_t ino, int mode)
 
 	ffs_freefile_common(ump, fs, dev, bp, ino, mode, false);
 
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 
 	return 0;
@@ -2065,6 +2075,7 @@ ffs_freefile_snap(struct fs *fs, struct vnode *devvp, ino_t ino, int mode)
 	}
 	ffs_freefile_common(ump, fs, dev, bp, ino, mode, true);
 
+	ffs_cg_setckhash(fs, cgp);
 	bdwrite(bp);
 
 	return 0;
@@ -2150,6 +2161,51 @@ ffs_checkfreefile(struct fs *fs, struct vnode *devvp, ino_t ino)
 	ret = isclr(inosused, ino);
 	brelse(bp, 0);
 	return ret;
+}
+
+/*
+ * Read cylinder group cg of the file system on devvp for changing it.
+ *
+ * If the file system keeps check-hashes (CK_CYLGRP) and the block is
+ * not in the buffer cache, its check-hash is verified.  One that is in
+ * the cache is not: everything here that changes a cylinder group sets
+ * its check-hash again (ffs_cg_setckhash) before releasing the buffer,
+ * so the cache holds only whole cylinder groups and nothing needs to
+ * hook the write to disk.  A bad one is refused with EIO and dropped
+ * from the cache, and the callers go on as for any cylinder group they
+ * cannot use; fsck_ffs has to repair it.
+ */
+static int
+ffs_cgread(struct fs *fs, struct vnode *devvp, u_int cg, int flags,
+    struct buf **bpp)
+{
+	static struct timeval lasttime;
+	static const struct timeval interval = { 1, 0 };
+	const daddr_t blkno = FFS_FSBTODB(fs, cgtod(fs, cg));
+	struct buf *bp;
+	bool fromdisk = false;
+	int error;
+
+	*bpp = NULL;
+	if ((fs->fs_metackhash & CK_CYLGRP) != 0) {
+		mutex_enter(&bufcache_lock);
+		fromdisk = incore(devvp, blkno) == NULL;
+		mutex_exit(&bufcache_lock);
+	}
+	error = bread(devvp, blkno, (int)fs->fs_cgsize, flags, &bp);
+	if (error)
+		return error;
+	if (fromdisk &&
+	    cg_chkmagic((struct cg *)bp->b_data, UFS_FSNEEDSWAP(fs)) &&
+	    !ffs_cg_ckhash_ok(fs, (struct cg *)bp->b_data)) {
+		if (ratecheck(&lasttime, &interval))
+			printf("%s: cylinder group %u: bad check-hash\n",
+			    fs->fs_fsmnt, cg);
+		brelse(bp, BC_INVAL);
+		return EIO;
+	}
+	*bpp = bp;
+	return 0;
 }
 
 /*

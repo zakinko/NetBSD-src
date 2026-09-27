@@ -197,6 +197,17 @@ struct csum_total;
 void	ffs_csumtotal_swap(const struct csum_total *, struct csum_total *);
 void	ffs_cg_swap(struct cg *, struct cg *, struct fs *);
 
+/* ffs_ckhash.c */
+void	ffs_ckhash_init(void);
+int	ffs_ckhash_present(const struct fs *);
+uint32_t ffs_sb_ckhash(const void *, size_t);
+uint32_t ffs_cg_ckhash(const void *, size_t);
+uint32_t ffs_dinode_ckhash(const void *);
+void	ffs_cg_setckhash(const struct fs *, struct cg *);
+int	ffs_cg_ckhash_ok(const struct fs *, const struct cg *);
+void	ffs_dinode_setckhash(const struct fs *, struct ufs2_dinode *);
+int	ffs_dinode_ckhash_ok(const struct fs *, const struct ufs2_dinode *);
+
 /* ffs_subr.c */
 #if defined(_KERNEL)
 void	ffs_load_inode(struct buf *, struct inode *, struct fs *, ino_t);

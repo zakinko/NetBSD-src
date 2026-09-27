@@ -8,7 +8,7 @@ MAN=	fsdb.8
 SRCS=	fsdb.c fsdbutil.c
 SRCS+=	dir.c inode.c pass1.c pass1b.c pass2.c pass3.c pass4.c \
 	pass5.c setup.c utilities.c
-SRCS+=	ffs_bswap.c ffs_subr.c ffs_tables.c ffs_appleufs.c
+SRCS+=	ffs_bswap.c ffs_subr.c ffs_tables.c ffs_appleufs.c ffs_ckhash.c
 SRCS+=	fsutil.c partutil.c
 
 FSCK=	${NETBSDSRCDIR}/sbin/fsck

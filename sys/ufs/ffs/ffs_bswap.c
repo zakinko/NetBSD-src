@@ -97,7 +97,9 @@ ffs_sb_swap(const struct fs *o, struct fs *n)
 		n->fs_snapinum[i] = bswap32(o->fs_snapinum[i]);
 	n->fs_avgfilesize = bswap32(o->fs_avgfilesize);
 	n->fs_avgfpdir = bswap32(o->fs_avgfpdir);
-	/* fs_sparecon[28] - ignore for now */
+	/* fs_sparecon[24] - ignore for now */
+	n->fs_ckhash = bswap32(o->fs_ckhash);
+	n->fs_metackhash = bswap32(o->fs_metackhash);
 	n->fs_flags = bswap32(o->fs_flags);
 	n->fs_contigsumsize = bswap32(o->fs_contigsumsize);
 	n->fs_maxsymlinklen = bswap32(o->fs_maxsymlinklen);
@@ -241,6 +243,7 @@ ffs_cg_swap(struct cg *o, struct cg *n, struct fs *fs)
 		n->cg_nclusterblks = bswap32(o->cg_nclusterblks);
 		n->cg_niblk = bswap32(o->cg_niblk);
 		n->cg_initediblk = bswap32(o->cg_initediblk);
+		n->cg_ckhash = bswap32(o->cg_ckhash);
 		n->cg_time = bswap64(o->cg_time);
 
 		if (n->cg_magic == CG_MAGIC) {

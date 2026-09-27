@@ -126,6 +126,7 @@ setup(const char *dev, const char *origdev)
 			printf("** %s\n", dev);
 	fsmodified = 0;
 	lfdir = 0;
+	ffs_ckhash_init();
 	initbarea(&sblk);
 	initbarea(&asblk);
 	sblk.b_un.b_buf = aligned_alloc(DEV_BSIZE, SBLOCKSIZE);
@@ -749,6 +750,19 @@ detect_byteorder(struct fs *fs, int sblockoff)
 	return -1;
 }
 
+/*
+ * Set the check-hash of the superblock about to be written, as it lies
+ * in sblk: byte order and magic already those of the disk.
+ */
+void
+sb_setckhash(struct fs *fs)
+{
+
+	if ((sblock->fs_metackhash & CK_SUPERBLOCK) != 0)
+		fs->fs_ckhash = iswap32(ffs_sb_ckhash(fs,
+		    (size_t)sblock->fs_sbsize));
+}
+
 /* Update on-disk fs->fs_magic if we are converting */
 void
 cvt_magic(struct fs *fs)
@@ -785,7 +799,8 @@ readsb(int listerr)
 {
 	daddr_t super = 0;
 	struct fs *fs;
-	int i;
+	int i, sbckbad;
+	uint32_t sbsize, rawckhash;
 
 	if (bflag) {
 		super = bflag;
@@ -812,6 +827,19 @@ readsb(int listerr)
 			return (0);
 		}
 	}
+	/*
+	 * The check-hash covers the superblock as it lies on disk, so
+	 * take it now, before the buffer is swapped or its magic changed.
+	 */
+	sbsize = (uint32_t)fs->fs_sbsize;
+#ifndef NO_FFS_EI
+	if (needswap != doswap)
+		sbsize = bswap32(sbsize);
+#endif
+	rawckhash = 0;
+	if (sbsize >= sizeof(struct fs) && sbsize <= SBLOCKSIZE)
+		rawckhash = ffs_sb_ckhash(fs, sbsize);
+
 	if (doswap) {
 		if (preen)
 			errx(FSCK_EXIT_USAGE,
@@ -906,8 +934,34 @@ readsb(int listerr)
 */
 	}
 out:
+	/*
+	 * Metadata check-hashes use FS_DOQUOTA2 as FS_METACKHASH.  As in
+	 * the kernel, the in-core superblock drops the bit, so that the
+	 * quota2 checks leave the file system alone, and keeps in
+	 * fs_metackhash the check-hashes we maintain; sbdirty() puts the
+	 * bit back.
+	 */
+	sbckbad = 0;
+	if (ffs_ckhash_present(sblock)) {
+		sblock->fs_flags &= ~FS_METACKHASH;
+		sblock->fs_metackhash &= CK_SUPPORTED;
+		if ((sblock->fs_metackhash & CK_SUPERBLOCK) != 0 &&
+		    sblock->fs_ckhash != rawckhash)
+			sbckbad = 1;
+	} else
+		sblock->fs_metackhash = 0;
 
 	sb_oldfscompat_read(sblock, &sblocksave);
+
+	if (sbckbad) {
+		pwarn("BAD SUPER BLOCK CHECK HASH");
+		if (preen)
+			printf(" (CORRECTED)\n");
+		if (preen || reply("CORRECT"))
+			sbdirty();
+		else
+			markclean = 0;
+	}
 
 	/* Now we know the SB is valid, we can write it back if needed */
 	if (doswap || doing2ea || doing2noea) {
@@ -1039,6 +1093,8 @@ cmpsblks44(const struct fs *sb, struct fs *asb)
 	asb->fs_save_cgsize = sb->fs_save_cgsize;
 	memmove(asb->fs_sparecon32,
 		sb->fs_sparecon32, sizeof sb->fs_sparecon32);
+	asb->fs_ckhash = sb->fs_ckhash;
+	asb->fs_metackhash = sb->fs_metackhash;
 	asb->fs_flags = sb->fs_flags;
 
 	/* Original comment:

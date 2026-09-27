@@ -5,7 +5,7 @@
 
 PROG=	tunefs
 MAN=	tunefs.8
-SRCS=	tunefs.c ffs_bswap.c openspecial.c
+SRCS=	tunefs.c ffs_bswap.c ffs_ckhash.c openspecial.c
 LDADD+=-lutil
 
 .PATH: ${.CURDIR}/../fsck

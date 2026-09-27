@@ -88,6 +88,7 @@ int	extattr = 0;
 off_t	sblockloc;
 int	userquota = 0;
 int	groupquota = 0;
+int	hasckhash = 0;	/* FS_DOQUOTA2 is the check-hash flag */
 #define Q2_EN  (1)
 #define Q2_IGN (0)
 #define Q2_DIS (-1)
@@ -244,6 +245,7 @@ main(int argc, char *argv[])
 		err(1, "%s", special);
 	active = !Fflag && isactive(fi, &sfs);
 	getsb(&sblock, special);
+	hasckhash = ffs_ckhash_present(&sblock);
 
 #define CHANGEVAL(old, new, type, suffix) do				\
 	if ((uint32_t)(new) != (uint32_t)-1) {				\
@@ -319,9 +321,16 @@ main(int argc, char *argv[])
 
 	if (logfilesize >= 0)
 		change_log_info(logfilesize);
+	/*
+	 * Metadata check-hashes use the quota2 flag.  Quotas cannot share
+	 * it, and the quota2 header must not be written over them.
+	 */
+	if (hasckhash && (userquota == Q2_EN || groupquota == Q2_EN))
+		errx(11, "cannot enable quotas: the file system has "
+		    "metadata check-hashes, which use the same flag");
 	if (userquota == Q2_EN || groupquota == Q2_EN)
 		sblock.fs_flags |= FS_DOQUOTA2;
-	if (sblock.fs_flags & FS_DOQUOTA2) {
+	if ((sblock.fs_flags & FS_DOQUOTA2) && !hasckhash) {
 		sblock.fs_quota_magic = Q2_HEAD_MAGIC;
 		switch(userquota) {
 		case Q2_EN:
@@ -429,7 +438,7 @@ main(int argc, char *argv[])
 		    sblock.fs_avgfpdir);
 		show_log_info();
 		printf("\tquotas");
-		if (sblock.fs_flags & FS_DOQUOTA2) {
+		if ((sblock.fs_flags & FS_DOQUOTA2) && !hasckhash) {
 			if (sblock.fs_quota_flags & FS_Q2_DO_TYPE(USRQUOTA)) {
 				printf(" user");
 				if (sblock.fs_quota_flags &
@@ -446,6 +455,14 @@ main(int argc, char *argv[])
 		    (sblock.fs_flags & FS_POSIX1EACLS) ? "enabled" : "disabled");
 		printf("\tNFS4 ACLs %s\n",
 		    (sblock.fs_flags & FS_NFS4ACLS) ? "enabled" : "disabled");
+		if (hasckhash)
+			printf("\tmetadata check-hashes%s%s%s\n",
+			    (sblock.fs_metackhash & CK_SUPERBLOCK) ?
+			    " superblock" : "",
+			    (sblock.fs_metackhash & CK_CYLGRP) ?
+			    " cylinder-groups" : "",
+			    (sblock.fs_metackhash & CK_INODE) ?
+			    " inodes" : "");
 		printf("%s: no changes made\n", getprogname());
 		return 0;
 	}
@@ -453,6 +470,13 @@ main(int argc, char *argv[])
 	memcpy(&buf, (char *)&sblock, SBLOCKSIZE);
 	if (needswap)
 		ffs_sb_swap((struct fs*)&buf, (struct fs*)&buf);
+	if (hasckhash && (sblock.fs_metackhash & CK_SUPERBLOCK) != 0) {
+		uint32_t sum;
+
+		ffs_ckhash_init();
+		sum = ffs_sb_ckhash(&buf, (size_t)sblock.fs_sbsize);
+		((struct fs *)&buf)->fs_ckhash = needswap ? bswap32(sum) : sum;
+	}
 
 	/* write superblock to original coordinates (use old dev_bsize!) */
 	bwrite(sblockloc, buf.data, SBLOCKSIZE, special);

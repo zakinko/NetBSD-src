@@ -284,6 +284,18 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 		return;
 	}
 	lastino = inumber;
+	if (is_ufs2 && (sblock->fs_metackhash & CK_INODE) != 0 &&
+	    iswap32(dp->dp2.di_ckhash) != ffs_dinode_ckhash(&dp->dp2)) {
+		pwarn("BAD INODE CHECK HASH I=%llu",
+		    (unsigned long long)inumber);
+		if (preen)
+			printf(" (CORRECTED)\n");
+		if (preen || reply("CORRECT")) {
+			(void)ginode(inumber);
+			inodirty();
+		} else
+			markclean = 0;
+	}
 	/* This should match the file size limit in ffs_mountfs(). */
 	if (is_ufs2)
 		kernmaxfilesize = sblock->fs_maxfilesize;
@@ -457,7 +469,7 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 		dp->dp2.di_mode &= iswap16(IFMT);
 		inodirty();
 	}
-	if (is_ufs2ea && iswap32(dp->dp2.di_extsize) > 0) {
+	if (is_ufs2ea && iswap32((uint32_t)dp->dp2.di_extsize) > 0) {
 		int ret, offset;
 		idesc->id_type = ADDR;
 		ndb = howmany(iswap32(dp->dp2.di_extsize), sblock->fs_bsize);

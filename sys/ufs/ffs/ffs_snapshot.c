@@ -963,8 +963,7 @@ cgaccount1(int cg, struct vnode *vp, void *data, int passno)
 	ip = VTOI(vp);
 	fs = ip->i_fs;
 	ns = UFS_FSNEEDSWAP(fs);
-	error = bread(ip->i_devvp, FFS_FSBTODB(fs, cgtod(fs, cg)),
-		(int)fs->fs_cgsize, 0, &bp);
+	error = ffs_cgread(fs, ip->i_devvp, (u_int)cg, 0, &bp);
 	if (error) {
 		return (error);
 	}

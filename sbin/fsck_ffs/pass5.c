@@ -59,7 +59,7 @@ void print_bmap(u_char *,u_int32_t);
 void
 pass5(void)
 {
-	int blk, frags, basesize, sumsize, mapsize, cssize;
+	int blk, frags, basesize, sumsize, mapsize, cssize, ckhashbad;
 	uint32_t inomapsize, blkmapsize;
 	uint32_t c;
 	struct fs *fs = sblock;
@@ -215,6 +215,10 @@ pass5(void)
 			    c, fs->fs_ncg);
 #endif /* PROGRESS */
 		getblk(&cgblk, cgtod(fs, c), fs->fs_cgsize);
+		/* As read, before anything below rewrites the buffer. */
+		ckhashbad = !doswap && (fs->fs_metackhash & CK_CYLGRP) != 0 &&
+		    iswap32(cgblk.b_un.b_cg->cg_ckhash) !=
+		    ffs_cg_ckhash(cgblk.b_un.b_cg, (size_t)fs->fs_cgsize);
 		memcpy(cg, cgblk.b_un.b_cg, fs->fs_cgsize);
 		if((doswap && !needswap) || (!doswap && needswap))
 			ffs_cg_swap(cgblk.b_un.b_cg, cg, sblock);
@@ -272,6 +276,7 @@ pass5(void)
 			newcg->cg_time = cg->cg_time;
 		newcg->cg_old_time = cg->cg_old_time;
 		newcg->cg_cgx = c;
+		newcg->cg_ckhash = cg->cg_ckhash;	/* checked apart */
 		newcg->cg_ndblk = dmax - dbase;
 		if (!is_ufs2) {
 			if (c == fs->fs_ncg - 1) {
@@ -479,6 +484,16 @@ pass5(void)
 			    (size_t)mapsize);
                         cgdirty();
                 }
+		/* A rewritten cylinder group has already got a new one. */
+		if (ckhashbad && !cgblk.b_dirty) {
+			pwarn("CG %d: BAD CHECK HASH", c);
+			if (preen)
+				printf(" (CORRECTED)\n");
+			if (preen || reply("CORRECT"))
+				cgdirty();
+			else
+				markclean = 0;
+		}
 	}
 	if (memcmp(&cstotal, &fs->fs_cstotal, cssize) != 0) {
 		if (debug) {

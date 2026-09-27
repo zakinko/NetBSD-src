@@ -13,7 +13,7 @@ COPTS.ffs_appleufs.c+=	${CC_WNO_ADDRESS_OF_PACKED_MEMBER}
 
 SRCS+=	ffs_alloc.c ffs_balloc.c ffs_inode.c ffs_subr.c ffs_tables.c \
 	ffs_vfsops.c ffs_vnops.c ffs_snapshot.c ffs_extattr.c \
-	ffs_bswap.c ffs_wapbl.c ffs_appleufs.c ffs_quota2.c
+	ffs_bswap.c ffs_wapbl.c ffs_appleufs.c ffs_quota2.c ffs_ckhash.c
 
 WARNS=	3
 

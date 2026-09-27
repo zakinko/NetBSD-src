@@ -92,6 +92,7 @@ int	ffs_alloc(struct inode *, daddr_t, daddr_t , int, int, kauth_cred_t,
 int	ffs_realloccg(struct inode *, daddr_t, daddr_t, daddr_t, int, int,
 		      int, kauth_cred_t, struct buf **, daddr_t *);
 int	ffs_valloc(struct vnode *, int, kauth_cred_t, ino_t *);
+int	ffs_cgread(struct fs *, struct vnode *, u_int, int, struct buf **);
 daddr_t	ffs_blkpref_ufs1(struct inode *, daddr_t, int, int, int32_t *);
 daddr_t	ffs_blkpref_ufs2(struct inode *, daddr_t, int, int, int64_t *);
 int	ffs_blkalloc(struct inode *, daddr_t, long);
@@ -196,6 +197,17 @@ void	ffs_csum_swap(struct csum *, struct csum *, int);
 struct csum_total;
 void	ffs_csumtotal_swap(const struct csum_total *, struct csum_total *);
 void	ffs_cg_swap(struct cg *, struct cg *, struct fs *);
+
+/* ffs_ckhash.c */
+void	ffs_ckhash_init(void);
+int	ffs_ckhash_present(const struct fs *);
+uint32_t ffs_sb_ckhash(const void *, size_t);
+uint32_t ffs_cg_ckhash(const void *, size_t);
+uint32_t ffs_dinode_ckhash(const void *);
+void	ffs_cg_setckhash(const struct fs *, struct cg *);
+int	ffs_cg_ckhash_ok(const struct fs *, const struct cg *);
+void	ffs_dinode_setckhash(const struct fs *, struct ufs2_dinode *);
+int	ffs_dinode_ckhash_ok(const struct fs *, const struct ufs2_dinode *);
 
 /* ffs_subr.c */
 #if defined(_KERNEL)

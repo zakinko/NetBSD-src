@@ -5,7 +5,7 @@
 
 PROG=	dumpfs
 MAN=	dumpfs.8
-SRCS=	dumpfs.c ffs_bswap.c
+SRCS=	dumpfs.c ffs_bswap.c ffs_ckhash.c
 SRCS+=	openspecial.c
 
 .ifndef HOSTPROG

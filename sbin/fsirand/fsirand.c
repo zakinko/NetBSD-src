@@ -63,6 +63,7 @@ static void fixinodes(int, struct fs *, struct disklabel *, int, long);
 static void statussig(int);
 
 int	needswap, ino, imax, is_ufs2;
+static int ckinode;	/* inodes carry check-hashes */
 static time_t	tstart;
 
 static void
@@ -122,6 +123,12 @@ getsblock(int fd, const char *name, struct fs *fs)
 
 	if (fs->fs_sbsize > SBLOCKSIZE)
 		errx(1, "%s: superblock too large", name);
+
+	if (is_ufs2 && ffs_ckhash_present(fs) &&
+	    (fs->fs_metackhash & CK_INODE) != 0) {
+		ffs_ckhash_init();
+		ckinode = 1;
+	}
 }
 
 
@@ -167,10 +174,16 @@ fixinodes(int fd, struct fs *fs, struct disklabel *lab, int pflag, long xorval)
 					printf("inode %10d   gen 0x%08x\n",
 					    ino,
 					    ufs_rw32(dp2[i].di_gen, needswap));
-				else
+				else {
 					dp2[i].di_gen =
 					    ufs_rw32((arc4random() & INT32_MAX)^ xorval,
 						needswap);
+					/* The check-hash covers di_gen. */
+					if (ckinode && dp2[i].di_mode != 0)
+						dp2[i].di_ckhash = ufs_rw32(
+						    ffs_dinode_ckhash(&dp2[i]),
+						    needswap);
+				}
 			} else {
 				if (pflag)
 					printf("inode %10d   gen 0x%08x\n",

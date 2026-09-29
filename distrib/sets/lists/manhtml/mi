@@ -1998,6 +1998,7 @@
 ./usr/share/man/html4/viomb.html		man-sys-htmlman		html
 ./usr/share/man/html4/viornd.html		man-sys-htmlman		html
 ./usr/share/man/html4/vioscsi.html		man-sys-htmlman		html
+./usr/share/man/html4/viosnd.html			man-sys-htmlman		html
 ./usr/share/man/html4/virt.html			man-sys-htmlman		html
 ./usr/share/man/html4/virtio.html		man-sys-htmlman		html
 ./usr/share/man/html4/virtio_mmio.html		man-sys-htmlman		html

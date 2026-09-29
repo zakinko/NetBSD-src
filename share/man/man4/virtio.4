@@ -46,6 +46,7 @@
 .Cd "viomb* at virtio?"
 .Cd "viornd* at virtio?"
 .Cd "vioscsi* at virtio?"
+.Cd "viosnd* at virtio?"
 .Sh DESCRIPTION
 The
 .Nm
@@ -84,6 +85,8 @@ A pseudo-device to release memory back to the hypervisor.
 An entropy source.
 .It Xr vioscsi 4
 A SCSI adapter.
+.It Xr viosnd 4
+A sound device.
 .El
 .Sh SEE ALSO
 .Xr acpi 4 ,
@@ -96,7 +99,8 @@ A SCSI adapter.
 .Xr vioif 4 ,
 .Xr viomb 4 ,
 .Xr viornd 4 ,
-.Xr vioscsi 4
+.Xr vioscsi 4 ,
+.Xr viosnd 4
 .Pp
 .Rs
 .%A Rusty Russell, IBM Corporation

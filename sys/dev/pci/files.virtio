@@ -35,3 +35,7 @@ defparam opt_vioscsi.h	VIOSCSI_MAX_TARGET VIOSCSI_MAX_LUN
 device	vio9p
 attach	vio9p at virtio
 file	dev/pci/vio9p.c		vio9p
+
+device	viosnd: audiobus
+attach	viosnd at virtio
+file	dev/pci/viosnd.c	viosnd

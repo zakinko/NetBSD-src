@@ -2197,6 +2197,7 @@
 ./usr/share/man/cat4/viomb.0			man-sys-catman		.cat
 ./usr/share/man/cat4/viornd.0			man-sys-catman		.cat
 ./usr/share/man/cat4/vioscsi.0			man-sys-catman		.cat
+./usr/share/man/cat4/viosnd.0			man-sys-catman		.cat
 ./usr/share/man/cat4/virt.0			man-sys-catman		.cat
 ./usr/share/man/cat4/virtio.0			man-sys-catman		.cat
 ./usr/share/man/cat4/virtio_mmio.0		man-sys-catman		.cat
@@ -5811,6 +5812,7 @@
 ./usr/share/man/man4/viomb.4			man-sys-man		.man
 ./usr/share/man/man4/viornd.4			man-sys-man		.man
 ./usr/share/man/man4/vioscsi.4			man-sys-man		.man
+./usr/share/man/man4/viosnd.4			man-sys-man		.man
 ./usr/share/man/man4/virt.4			man-sys-man		.man
 ./usr/share/man/man4/virtio.4			man-sys-man		.man
 ./usr/share/man/man4/virtio_mmio.4		man-sys-man		.man

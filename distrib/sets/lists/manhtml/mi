@@ -1006,6 +1006,7 @@
 ./usr/share/man/html4/crypto.html		man-sys-htmlman		html
 ./usr/share/man/html4/cs.html			man-sys-htmlman		html
 ./usr/share/man/html4/cs80bus.html		man-sys-htmlman		html
+./usr/share/man/html4/cscodec.html			man-sys-htmlman		html
 ./usr/share/man/html4/cuda.html			man-sys-htmlman		html
 ./usr/share/man/html4/cue.html			man-sys-htmlman		html
 ./usr/share/man/html4/cx24227.html		man-sys-htmlman		html

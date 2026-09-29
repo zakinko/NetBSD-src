@@ -389,6 +389,7 @@ dsrtc*		at iic?			# Dallas Semiconductor RTCs
 es8316ac*	at iic?			# Everest Semi ES8316 Audio CODEC
 tasamp*		at iic?			# TI TAS2764/TAS2770 speaker amplifier
 ssmamp*		at iic?			# ADI SSM3515 speaker amplifier
+cscodec*	at iic?			# Cirrus Logic CS42L42/CS42L83 headphone codec
 fan53555reg*	at iic?			# FAN53555 / SY82x regulator
 #fusbtc* 	at iic?			# USB-C power controller
 max77620pmic*	at iic?

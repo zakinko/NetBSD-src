@@ -1,0 +1,87 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 Showta Ishizaki <zakinko@snowrabbit.org>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+.\" IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+.\" OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+.\" IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+.\" INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+.\" BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+.\" LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+.\" AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+.\" OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd September 26, 2026
+.Dt CSCODEC 4
+.Os
+.Sh NAME
+.Nm cscodec
+.Nd Cirrus Logic CS42L42 and CS42L83 headphone codecs
+.Sh SYNOPSIS
+.Cd "cscodec* at iic?"
+.Sh DESCRIPTION
+The
+.Nm
+driver supports headphone playback on the Cirrus Logic CS42L42 and on
+the CS42L83 found in Apple Silicon Macs, as a digital audio interface
+device for a machine driver such as
+.Xr applemacaudio 4 .
+.Pp
+The codec runs as a clock slave with its bit clock at 12.288 MHz used as
+its master clock, 48 kHz, as in the power-up sequence of the data sheet.
+The machine driver must keep the bit clock running once it has reported
+it; the codec can only lose it after switching back to its internal
+oscillator.
+.Pp
+Headphone output starts muted, with the full scale 6 dB down and the
+volume at \-30 dB when first opened.
+The volume goes from \-62 dB to 0 dB in 1 dB steps.
+.Pp
+Plug presence is sensed on the jack's tip and polled.
+When a plug arrives while the headphones are not playing, the driver
+lets the codec find the headset type and set its microphone switches.
+Both are reported by
+.Xr sysctl 8 :
+.Bl -tag -width "hw.cscodec0.headset"
+.It Va hw.cscodec0.plugged
+1 while a plug is in.
+.It Va hw.cscodec0.headset
+0 while the type is not known, 1 for a headset with its microphone on
+pin 4, 2 for one with it on pin 3 (the OMTP pinout), 3 for headphones
+without a microphone and 4 for an optical plug.
+.El
+.Pp
+Opened for recording with a headset found (types 1 and 2), the codec
+records its microphone into the time slot the machine driver gives.
+.Pp
+The device tree property
+.Dq cirrus,ts-inv
+gives the kind of jack switch, as in its binding.
+.Sh SEE ALSO
+.Xr applemacaudio 4 ,
+.Xr iic 4 ,
+.Xr sysctl 8
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Nx 12.0 .
+.Sh CAVEATS
+The CS42L83 has no public data sheet; the driver runs it as a CS42L42,
+as other systems do, writing every register it relies on rather than
+assuming reset values.
+Headphone load detection is not done, and headset buttons are not
+reported.

@@ -402,6 +402,10 @@ device	es8316ac: fdt_dai
 attach	es8316ac at iic
 file	dev/i2c/es8316ac.c			es8316ac
 
+# Cirrus Logic CS42L42/CS42L83 headphone codec
+device	cscodec: fdt_dai
+attach	cscodec at iic
+file	dev/i2c/cs42l42.c			cscodec
 
 # Analog Devices SSM3515 speaker amplifier
 device	ssmamp: fdt_dai

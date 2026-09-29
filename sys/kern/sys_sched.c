@@ -244,6 +244,12 @@ do_sched_setutil(pid_t pid, lwpid_t lid, const struct sched_util *req)
 		mutex_enter(p->p_lock);
 	}
 
+	/*
+	 * All or nothing: every LWP is authorized before any is changed.
+	 * Authorizing and changing each in turn left the LWPs met before a
+	 * refusal changed while the call failed.  p_lock keeps the list
+	 * the same for both walks.
+	 */
 	error = 0;
 	lcnt = 0;
 	LIST_FOREACH(t, &p->p_lwps, l_sibling) {
@@ -254,13 +260,19 @@ do_sched_setutil(pid_t pid, lwpid_t lid, const struct sched_util *req)
 		lwp_lock(t);
 		error = kauth_authorize_process(kauth_cred_get(),
 		    KAUTH_PROCESS_SCHEDULER_SETUTIL, p, t, &su, NULL);
-		if (error) {
-			lwp_unlock(t);
-			break;
-		}
-		t->l_util_min = su.su_min;
-		t->l_util_max = su.su_max;
 		lwp_unlock(t);
+		if (error)
+			break;
+	}
+	if (lcnt != 0 && error == 0) {
+		LIST_FOREACH(t, &p->p_lwps, l_sibling) {
+			if (lid && lid != t->l_lid)
+				continue;
+			lwp_lock(t);
+			t->l_util_min = su.su_min;
+			t->l_util_max = su.su_max;
+			lwp_unlock(t);
+		}
 	}
 	mutex_exit(p->p_lock);
 	return (lcnt == 0) ? ESRCH : error;

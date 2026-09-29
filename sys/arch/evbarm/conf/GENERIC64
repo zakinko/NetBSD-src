@@ -209,6 +209,7 @@ qemufwcfg*	at fdt?			# QEMU Firmware Configuration device
 qemufwcfg*	at acpi?
 
 # DMA controller
+appleadmac*	at fdt? pass 4		# Apple audio DMA controller
 bcmdmac*	at fdt?			# Broadcom BCM283x DMA controller
 sun6idma*	at fdt?	pass 4		# Allwinner DMA controller (sun6i)
 tegraapbdma*	at fdt? pass 4		# NVIDIA Tegra APB DMA
@@ -224,6 +225,7 @@ tegrapmc*	at fdt? pass 4		# NVIDIA Tegra PMC
 applembox*	at fdt? pass 2		# Apple Mailbox
 
 # Clock and Reset controller
+applenco*	at fdt? pass 2		# Apple NCO (audio clocks)
 bcmcprman*	at fdt? pass 1		# Broadcom BCM283x Clock Manager
 bcmaux* 	at fdt? pass 1		# Broadcom BCM283x Aux Periph Clocks
 g12aoclkc*	at fdt? pass 2		# Amlogic Meson G12 AO clock controller
@@ -472,6 +474,8 @@ vchiq*		at acpi?
 vcaudio0 	at vchiq?
 
 # Audio support
+applemca*	at fdt?			# Apple MCA audio serial ports
+applemacaudio*	at fdt? pass 5		# Apple Mac speakers (see apple_macaudio.c)
 hdaudio*	at fdt?			# Intel HDA
 hdaudio*	at pci? dev ? function ?
 auich*		at pci? dev ? function ?	# Intel AC'97 Audio (QEMU)

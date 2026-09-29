@@ -1,0 +1,135 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 Showta Ishizaki <zakinko@snowrabbit.org>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+.\" IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+.\" OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+.\" IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+.\" INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+.\" BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+.\" LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+.\" AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+.\" OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd September 26, 2026
+.Dt APPLEMACAUDIO 4 evbarm
+.Os
+.Sh NAME
+.Nm applemacaudio
+.Nd Apple Silicon Mac speakers and their protection interlock
+.Sh SYNOPSIS
+.Cd "applemacaudio* at fdt? pass 5"
+.Cd "applemca* at fdt?"
+.Cd "appleadmac* at fdt? pass 4"
+.Cd "applenco* at fdt? pass 2"
+.Cd "tasamp* at iic?"
+.Cd "cscodec* at iic?"
+.Cd "audio* at audiobus?"
+.Sh DESCRIPTION
+The
+.Nm
+driver attaches the speaker array of Apple Silicon Macs as an
+.Xr audio 4
+playback device, the amplifiers' voltage and current sense as a
+second, capture-only
+.Xr audio 4
+device, and the headphone jack as a third device whose
+.Dq outputs.headphones
+mixer control sets the codec's volume; it also records a headset's
+microphone when one is plugged in, see
+.Xr cscodec 4 .
+The headphone jack does not depend on the speaker interlock below.
+.Pp
+The speakers have no protection of their own and are destroyed within
+seconds by a loud enough signal.
+Protection is left to a userland daemon, such as speakersafetyd, that
+models their temperature from the sense data and turns them down as they
+heat.
+The kernel's part is an interlock:
+.Bl -bullet
+.It
+Each amplifier enforces an output level cap for the machine, and a lock
+that holds its volume at mute; see
+.Xr tasamp 4 .
+The lock is closed at attach.
+.It
+Writing the magic value 0xdec1be15 to
+.Va hw.applemacaudio0.speaker_unlock
+opens the lock.
+It closes again after 250 ms of playback without such a write; the time
+counts only while playing, and playback that starts after a pause gets
+only what was left.
+A daemon that exits or hangs therefore leaves the speakers muted.
+.It
+Machines on which the speaker model has not been validated get no
+speaker output.
+.El
+.Pp
+User volume stays in the audio layer; the per-speaker volumes below are
+for the daemon.
+.Sh SYSCTL VARIABLES
+.Bl -tag -width indent
+.It Va hw.applemacaudio0.compatible
+The machine, as the first device tree compatible string, for example
+.Dq apple,j293 .
+.It Va hw.applemacaudio0.sense_audio
+The
+.Xr audio 4
+device recording the sense data, for example
+.Dq audio1 .
+It records 16-bit samples, two channels per speaker, current before
+voltage, in the order of the device tree codec list, and only while the
+speakers are playing.
+.It Va hw.applemacaudio0.speaker_rate
+The speaker sample rate, or 0 when idle.
+.It Va hw.applemacaudio0.speaker_unlock
+Write the magic value to open the lock; reads 1 while open.
+.It Va hw.applemacaudio0.amp_gain_max
+The amplifier output level cap, in hundredths of a dBV.
+.It Va hw.applemacaudio0.speaker\&. Ns Ar name Ns Va \&.volume
+The volume of one speaker, in hundredths of a dB, 0 or below.
+.Ar name
+is the device tree
+.Dq sound-name-prefix
+of its amplifier, lower case with other characters replaced by
+underscores, for example
+.Dq left_front .
+.El
+.Pp
+Only the super-user can write these.
+.Sh SEE ALSO
+.Xr audio 4 ,
+.Xr cscodec 4 ,
+.Xr ssmamp 4 ,
+.Xr tasamp 4 ,
+.Xr sysctl 8
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Nx 12.0 .
+.Sh CAVEATS
+Machines with the SN012776 amplifier, Apple's variant of the TI TAS2764,
+do not play: its differences are not documented and
+.Xr tasamp 4
+keeps it in shutdown.
+Those with the TAS5770L play once
+.Xr speakersafetyd 8
+unlocks them.
+.Pp
+The per-machine output caps, the timeout and the magic value are taken
+from the Asahi Linux project, as is the time-division layout of the
+speaker ports.

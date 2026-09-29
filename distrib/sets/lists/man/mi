@@ -1211,6 +1211,7 @@
 ./usr/share/man/cat4/et.0			man-sys-catman		.cat
 ./usr/share/man/cat4/etherip.0			man-obsolete		obsolete
 ./usr/share/man/cat4/etphy.0			man-sys-catman		.cat
+./usr/share/man/cat4/evbarm/applemacaudio.0	man-sys-catman		.cat
 ./usr/share/man/cat4/evbarm/awge.0		man-sys-catman		.cat
 ./usr/share/man/cat4/evbarm/bcmgpio.0		man-sys-catman		.cat
 ./usr/share/man/cat4/evbarm/cpsw.0		man-sys-catman		.cat
@@ -4823,6 +4824,7 @@
 ./usr/share/man/man4/et.4			man-sys-man		.man
 ./usr/share/man/man4/etherip.4			man-obsolete		obsolete
 ./usr/share/man/man4/etphy.4			man-sys-man		.man
+./usr/share/man/man4/evbarm/applemacaudio.4	man-sys-man		.man
 ./usr/share/man/man4/evbarm/awge.4		man-sys-man		.man
 ./usr/share/man/man4/evbarm/bcmgpio.4		man-sys-man		.man
 ./usr/share/man/man4/evbarm/cpsw.4		man-sys-man		.man

@@ -4,6 +4,21 @@
 #
 #
 
+# Audio serial ports (I2S/TDM)
+device	applemca: fdt_dai, fdt_dma, fdt_clock
+attach	applemca at fdt with apple_mca
+file	arch/arm/apple/apple_mca.c		apple_mca
+
+# Machine sound: the speaker array and its protection lock
+device	applemacaudio: audiobus, fdt_dai
+attach	applemacaudio at fdt with apple_macaudio
+file	arch/arm/apple/apple_macaudio.c		apple_macaudio
+
+# Audio DMA controller
+device	appleadmac: fdt_dma
+attach	appleadmac at fdt with apple_admac
+file	arch/arm/apple/apple_admac.c		apple_admac
+
 # IOMMU
 device	appledart: fdt_iommu
 attach	appledart at fdt with apple_dart
@@ -13,6 +28,11 @@ file	arch/arm/apple/apple_dart.c		apple_dart
 device	appleiic: fdt_clock, fdt_i2c, i2cbus
 attach	appleiic at fdt with apple_iic
 file	arch/arm/apple/apple_iic.c		apple_iic
+
+# NCO, audio clock generator
+device	applenco: fdt_clock
+attach	applenco at fdt with apple_nco
+file	arch/arm/apple/apple_nco.c		apple_nco
 
 # Interrupt controller
 device	appleintc: pic, pic_splfuncs

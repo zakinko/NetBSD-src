@@ -1091,6 +1091,7 @@
 ./usr/share/man/html4/et.html			man-sys-htmlman		html
 ./usr/share/man/html4/etherip.html		man-obsolete		obsolete
 ./usr/share/man/html4/etphy.html		man-sys-htmlman		html
+./usr/share/man/html4/evbarm/applemacaudio.html	man-sys-htmlman		html
 ./usr/share/man/html4/evbarm/awge.html		man-sys-htmlman		html
 ./usr/share/man/html4/evbarm/bcmgpio.html	man-sys-htmlman		html
 ./usr/share/man/html4/evbarm/cpsw.html		man-sys-htmlman		html

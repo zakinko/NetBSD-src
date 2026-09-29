@@ -2003,6 +2003,7 @@
 ./usr/share/man/cat4/sysmon.0			man-sys-catman		.cat
 ./usr/share/man/cat4/systrace.0			man-obsolete		obsolete
 ./usr/share/man/cat4/tap.0			man-sys-catman		.cat
+./usr/share/man/cat4/tasamp.0			man-sys-catman		.cat
 ./usr/share/man/cat4/tb.0			man-obsolete		obsolete
 ./usr/share/man/cat4/tc.0			man-sys-catman		.cat
 ./usr/share/man/cat4/tcds.0			man-sys-catman		.cat
@@ -5613,6 +5614,7 @@
 ./usr/share/man/man4/sysmon.4			man-sys-man		.man
 ./usr/share/man/man4/systrace.4			man-obsolete		obsolete
 ./usr/share/man/man4/tap.4			man-sys-man		.man
+./usr/share/man/man4/tasamp.4			man-sys-man		.man
 ./usr/share/man/man4/tb.4			man-obsolete		obsolete
 ./usr/share/man/man4/tc.4			man-sys-man		.man
 ./usr/share/man/man4/tcds.4			man-sys-man		.man

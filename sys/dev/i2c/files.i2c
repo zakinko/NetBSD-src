@@ -402,6 +402,12 @@ device	es8316ac: fdt_dai
 attach	es8316ac at iic
 file	dev/i2c/es8316ac.c			es8316ac
 
+
+# TI TAS2764/TAS2770 speaker amplifier
+device	tasamp: fdt_dai
+attach	tasamp at iic
+file	dev/i2c/tasamp.c			tasamp
+
 # CellWise CW2015 Fuel Gauge IC
 device	cwfg: sysmon_envsys
 attach	cwfg at iic

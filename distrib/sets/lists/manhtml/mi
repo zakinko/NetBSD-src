@@ -1811,6 +1811,7 @@
 ./usr/share/man/html4/sysbeep.html		man-sys-htmlman		html
 ./usr/share/man/html4/sysmon.html		man-sys-htmlman		html
 ./usr/share/man/html4/tap.html			man-sys-htmlman		html
+./usr/share/man/html4/tasamp.html		man-sys-htmlman		html
 ./usr/share/man/html4/tc.html			man-sys-htmlman		html
 ./usr/share/man/html4/tcds.html			man-sys-htmlman		html
 ./usr/share/man/html4/tcic.html			man-sys-htmlman		html

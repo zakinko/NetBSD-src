@@ -1,0 +1,92 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 Showta Ishizaki <zakinko@snowrabbit.org>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+.\" IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+.\" OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+.\" IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+.\" INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+.\" BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+.\" LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+.\" AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+.\" OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd September 26, 2026
+.Dt TASAMP 4
+.Os
+.Sh NAME
+.Nm tasamp
+.Nd Texas Instruments TAS2764 and TAS2770 speaker amplifiers
+.Sh SYNOPSIS
+.Cd "tasamp* at iic?"
+.Sh DESCRIPTION
+The
+.Nm
+driver supports the Texas Instruments TAS2764 and TAS2770 mono class-D
+amplifiers with speaker voltage and current sense, as found with small
+speakers in laptops and phones.
+It is a digital audio interface device for a machine driver such as
+.Xr applemacaudio 4 ,
+not an audio device of its own.
+.Pp
+These parts protect nothing by themselves: out of reset their output
+level is at or near its maximum, and a full-scale input then destroys a
+small speaker in seconds.
+The driver does not trust whatever feeds it to keep the level down:
+.Bl -bullet
+.It
+The amplifier stays in software shutdown, muted and at its lowest
+output level, until the machine driver sets a limit.
+There is no default limit, since the driver cannot know the speaker.
+.It
+The output level is never set above the limit's cap.
+While the limit is locked the volume is held at mute, and on the TAS2764
+its safe mode is set as well.
+.It
+Every register access that affects the level is checked: reads are done
+twice and compared, writes are read back.
+Any I2C failure or mismatch shuts the amplifier down, first in software
+and then by pulling its shutdown line low, and it stays down until the
+system is restarted.
+The line is often shared by all amplifiers of a machine, so one fault
+silences them all.
+.It
+Going quieter, the volume is muted before anything else changes;
+going louder, it is raised last.
+.El
+.Pp
+The sense data is transmitted in the time slots given by the device tree
+properties
+.Dq ti,vmon-slot-no
+and
+.Dq ti,imon-slot-no ,
+counted in the amplifier's 8-bit transmit slots.
+.Sh SEE ALSO
+.Xr applemacaudio 4 ,
+.Xr iic 4 ,
+.Xr ssmamp 4
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Nx 12.0 .
+.Sh CAVEATS
+The Apple variant SN012776 of the TAS2764 is recognised but kept in
+shutdown: it needs writes to undocumented registers whose purpose is
+not known.
+The TAS5770L, Apple's variant of the TAS2770, is run as a TAS2770; that
+it needs nothing more rests on the experience of the Linux maintainers,
+not on a data sheet.

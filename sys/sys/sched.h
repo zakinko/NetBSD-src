@@ -307,6 +307,7 @@ void		suspendsched(void);
 int		do_sched_setparam(pid_t, lwpid_t, int, const struct sched_param *);
 int		do_sched_getparam(pid_t, lwpid_t, int *, struct sched_param *);
 int		do_sched_setutil(pid_t, lwpid_t, const struct sched_util *);
+bool		sched_lwp_prefers(const struct lwp *, struct cpu_info *);
 extern bool	sched_util_on;
 void		sched_util_switch(struct lwp *, const struct bintime *);
 void		sched_util_tick(struct cpu_info *, struct lwp *, bool);

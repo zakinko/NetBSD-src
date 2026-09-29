@@ -447,6 +447,64 @@ lwp_cache_hot(const struct lwp *l)
 }
 
 /*
+ * Where an LWP should run first, given its utilization bounds (struct
+ * sched_util).  With the default bounds this is exactly the 1st class
+ * CPUs, as it was before bounds existed.  An LWP whose demand within
+ * its bounds (sched_util_lwp_demand()) the slow CPUs serve prefers
+ * those instead; any other prefers the 1st class CPUs, and no LWP
+ * prefers a CPU below its minimum.
+ *
+ * The bounds are read without the LWP lock: they are a hint, and a
+ * stale value only means one placement made on the old one.
+ */
+bool
+sched_lwp_prefers(const struct lwp *l, struct cpu_info *ci)
+{
+	const u_int min = l->l_util_min, max = l->l_util_max;
+
+	if (__predict_true(min == 0 && max == SCHED_UTIL_SCALE))
+		return cpu_is_1stclass(ci);
+	if (ci->ci_capacity < min)
+		return false;
+	if (cpu_topology_fitslow(min, sched_util_lwp_demand(l)))
+		return ci->ci_is_slow;
+	return cpu_is_1stclass(ci);
+}
+
+static inline bool
+sched_lwp_prefers_idle(const struct lwp *l, struct cpu_info *ci)
+{
+
+	return cpu_is_type(ci, SPCF_IDLE) && sched_lwp_prefers(l, ci);
+}
+
+/*
+ * Whether an LWP with bounds should stay on ci rather than be taken by
+ * tci: it prefers ci and not tci.  Without this an idle fast CPU takes
+ * back every LWP the bounds sent to a slow one.  LWPs with the default
+ * bounds are taken as before.
+ */
+static inline bool
+sched_lwp_stays(const struct lwp *l, struct cpu_info *ci,
+    struct cpu_info *tci)
+{
+
+	if (__predict_true(l->l_util_min == 0 &&
+	    l->l_util_max == SCHED_UTIL_SCALE))
+		return false;
+	return sched_lwp_prefers(l, ci) && !sched_lwp_prefers(l, tci);
+}
+
+/* LWP-aware cpu_is_better(). */
+static inline bool
+sched_lwp_better(const struct lwp *l, struct cpu_info *ci1,
+    struct cpu_info *ci2)
+{
+
+	return sched_lwp_prefers(l, ci1) && !sched_lwp_prefers(l, ci2);
+}
+
+/*
  * Check if LWP can migrate to the chosen CPU.
  */
 static inline bool
@@ -522,8 +580,8 @@ sched_bestcpu(struct lwp *l, struct cpu_info *pivot)
 
 			curspc = &curci->ci_schedstate;
 
-			/* If this CPU is idle and 1st class, we're done. */
-			if (cpu_is_idle_1stclass(curci)) {
+			/* If this CPU is idle and preferred, we're done. */
+			if (sched_lwp_prefers_idle(l, curci)) {
 				return curci;
 			}
 
@@ -534,8 +592,8 @@ sched_bestcpu(struct lwp *l, struct cpu_info *pivot)
 				continue;
 			}
 			if (curpri == bestpri) {
-				/* Prefer first class CPUs over others. */
-				if (cpu_is_better(bestci, curci)) {
+				/* Prefer preferred CPUs over others. */
+				if (sched_lwp_better(l, bestci, curci)) {
 				    	continue;
 				}
 				/*
@@ -569,7 +627,7 @@ sched_takecpu(struct lwp *l)
 	struct schedstate_percpu *spc;
 	struct cpu_info *ci, *curci, *tci;
 	pri_t eprio;
-	int flags;
+	bool anyidle;
 
 	KASSERT(lwp_locked(l, NULL));
 
@@ -596,9 +654,9 @@ sched_takecpu(struct lwp *l)
 		} else {
 			return sched_bestcpu(l, sched_nextpkg());
 		}
-		flags = SPCF_IDLE;
+		anyidle = true;
 	} else {
-		flags = SPCF_IDLE | SPCF_1STCLASS;
+		anyidle = false;
 	}
 
 	/*
@@ -609,7 +667,9 @@ sched_takecpu(struct lwp *l)
 	 */
 	tci = ci;
 	do {
-		if (cpu_is_type(tci, flags) && sched_migratable(l, tci)) {
+		if ((anyidle ? cpu_is_type(tci, SPCF_IDLE) :
+		    sched_lwp_prefers_idle(l, tci)) &&
+		    sched_migratable(l, tci)) {
 			return tci;
 		}
 		tci = tci->ci_sibling[CPUREL_CORE];
@@ -631,7 +691,9 @@ sched_takecpu(struct lwp *l)
 	curci = curcpu();
 	tci = curci;
 	do {
-		if (cpu_is_type(tci, flags) && sched_migratable(l, tci)) {
+		if ((anyidle ? cpu_is_type(tci, SPCF_IDLE) :
+		    sched_lwp_prefers_idle(l, tci)) &&
+		    sched_migratable(l, tci)) {
 			return tci;
 		}
 		tci = tci->ci_sibling[CPUREL_CORE];
@@ -688,7 +750,8 @@ sched_catchlwp(struct cpu_info *ci)
 		/* Look for threads, whose are allowed to migrate */
 		if ((l->l_pflag & LP_BOUND) ||
 		    (gentle && lwp_cache_hot(l)) ||
-		    !sched_migratable(l, curci)) {
+		    !sched_migratable(l, curci) ||
+		    sched_lwp_stays(l, ci, curci)) {
 			l = TAILQ_NEXT(l, l_runq);
 			/* XXX Gap: could walk down priority list. */
 			continue;
@@ -922,7 +985,7 @@ sched_preempted(struct lwp *l)
 	 * - or this LWP is a child of vfork() that has just done execve()
 	 */
 	if (l->l_target_cpu != NULL ||
-	    (cpu_is_1stclass(ci) &&
+	    (sched_lwp_prefers(l, ci) &&
 	     (l->l_pflag & LP_TELEPORT) == 0)) {
 		return;
 	}
@@ -936,7 +999,8 @@ sched_preempted(struct lwp *l)
 	tci = ci->ci_sibling[CPUREL_CORE];
 	while (tci != ci) {
 		tspc = &tci->ci_schedstate;
-		if (cpu_is_idle_1stclass(tci) && sched_migratable(l, tci)) {
+		if (sched_lwp_prefers_idle(l, tci) &&
+		    sched_migratable(l, tci)) {
 		    	l->l_target_cpu = tci;
 			l->l_pflag &= ~LP_TELEPORT;
 		    	return;
@@ -967,7 +1031,7 @@ sched_preempted(struct lwp *l)
 		 * whole system if needed.
 		 */
 		tci = sched_bestcpu(l, l->l_cpu);
-		if (tci != ci && cpu_is_idle_1stclass(tci)) {
+		if (tci != ci && sched_lwp_prefers_idle(l, tci)) {
 			l->l_target_cpu = tci;
 		}
 	}
@@ -988,7 +1052,7 @@ sched_vforkexec(struct lwp *l, bool samecpu)
 {
 
 	KASSERT(l == curlwp);
-	if ((samecpu && ncpu > 1) || !cpu_is_1stclass(l->l_cpu)) {
+	if ((samecpu && ncpu > 1) || !sched_lwp_prefers(l, l->l_cpu)) {
 		l->l_pflag |= LP_TELEPORT;
 		preempt();
 	}
@@ -1024,6 +1088,13 @@ sched_vforkexec(struct lwp *l, bool samecpu)
 {
 
 	KASSERT(l == curlwp);
+}
+
+bool
+sched_lwp_prefers(const struct lwp *l, struct cpu_info *ci)
+{
+
+	return true;
 }
 
 #endif	/* MULTIPROCESSOR */

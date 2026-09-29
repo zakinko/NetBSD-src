@@ -146,11 +146,11 @@ sched_tick(struct cpu_info *ci)
 			 */
 			pri = MAXPRI_KTHREAD;
 			spc->spc_flags |= SPCF_SHOULDYIELD;
-		} else if (!cpu_is_1stclass(ci)) {
+		} else if (!sched_lwp_prefers(l, ci)) {
 			/*
 			 * For SMT or asymmetric systems push a little
-			 * harder: if this is not a 1st class CPU, try to
-			 * find a better one to run this LWP.
+			 * harder: if this is not a CPU the LWP prefers,
+			 * try to find a better one to run it.
 			 */
 			pri = MAXPRI_KTHREAD;
 			spc->spc_flags |= SPCF_SHOULDYIELD;

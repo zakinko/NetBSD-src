@@ -1169,6 +1169,8 @@ distributed on and moved between CPUs.
 .It kern.sched.rtts	   integer	 no
 .It kern.sched.pri_min	   integer	 no
 .It kern.sched.pri_max	   integer	 no
+.It kern.sched.util_governor	   integer	 yes
+.It kern.sched.util_rate_ms	   integer	 yes
 .El
 .Pp
 The variables are as follows:
@@ -1198,6 +1200,22 @@ migratable threads.
 A small value gives more weight to the past, a larger values more weight
 on the current situation.
 Defaults to 50 and must be between 0 and 100.
+.It Li kern.sched.util_governor ( dynamic )
+If set to 1, the kernel chooses CPU frequencies itself, from how busy
+each CPU has been and the utilization bounds of the LWPs on it (see
+.Fn sched_setutil_np
+in
+.Xr sched 3 ) ,
+for CPUs whose frequency driver supports it.
+The frequency is 1.25 times the demand as a share of the highest
+frequency, where the demand of a CPU is its recent utilization held
+between the largest lower and upper bounds of its runnable LWPs.
+While set, the governor owns those frequencies; settings made through
+the drivers' own sysctl variables are overridden.
+Defaults to 0, which leaves frequencies alone.
+.It Li kern.sched.util_rate_ms ( dynamic )
+How often, in milliseconds, the governor re-evaluates the frequencies.
+Defaults to 10.
 .It Li kern.sched.min_catch ( dynamic )
 Minimum count of migratable (runnable) threads for catching (stealing)
 from another CPU.

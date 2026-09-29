@@ -76,6 +76,7 @@ file	kern/kern_rate.c		kern
 file	kern/kern_reboot.c		kern
 file	kern/kern_resource.c		kern
 file	kern/kern_runq.c		kern
+file	kern/kern_sched_util.c		kern
 file	kern/kern_rwlock.c		kern
 file	kern/kern_rwlock_obj.c		kern
 file	kern/kern_scdebug.c		kern

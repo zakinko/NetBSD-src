@@ -34,6 +34,7 @@ __KERNEL_RCSID(0, "$NetBSD: intr.c,v 1.57 2025/04/06 01:58:22 riastradh Exp $");
 #include <sys/kernel.h>
 #include <sys/kmem.h>
 #include <sys/kthread.h>
+#include <sys/sched.h>
 #include <sys/malloc.h>
 #include <sys/intr.h>
 #include <sys/timetc.h>
@@ -88,6 +89,10 @@ __strong_alias(cpu_initclocks,noclock);
 __strong_alias(addupc_intr,noclock);
 __strong_alias(sched_tick,noclock);
 __strong_alias(setstatclockrate,noclock);
+
+/* No utilization tracking: rump has its own scheduler (kern_sched_util.c). */
+bool sched_util_on = false;
+__strong_alias(sched_util_tick,noclock);
 
 /*
  * clock "interrupt"

@@ -187,6 +187,8 @@ struct schedstate_percpu {
 	volatile int	spc_flags;	/* s: flags; see below */
 	u_int		spc_schedticks;	/* s: ticks for schedclock() */
 	uint64_t	spc_cp_time[CPUSTATES];/* s: CPU state statistics */
+	uint32_t	spc_util;	/* s: busy average, kern_sched_util.c */
+	uint32_t	spc_util_scale;	/* (: speed now, 0 = full scale */
 	int		spc_ticks;	/* s: ticks until sched_tick() */
 	int		spc_pscnt;	/* s: prof/stat counter */
 	int		spc_psdiv;	/* s: prof/stat divisor */
@@ -237,7 +239,9 @@ extern u_int sched_rrticks;
 extern u_int sched_pstats_ticks;
 
 struct proc;
+struct lwp;
 struct cpu_info;
+struct bintime;
 
 /*
  * Common Scheduler Interface.
@@ -303,6 +307,10 @@ void		suspendsched(void);
 int		do_sched_setparam(pid_t, lwpid_t, int, const struct sched_param *);
 int		do_sched_getparam(pid_t, lwpid_t, int *, struct sched_param *);
 int		do_sched_setutil(pid_t, lwpid_t, const struct sched_util *);
+extern bool	sched_util_on;
+void		sched_util_switch(struct lwp *, const struct bintime *);
+void		sched_util_tick(struct cpu_info *, struct lwp *, bool);
+u_int		sched_util_lwp_demand(const struct lwp *);
 int		do_sched_getutil(pid_t, lwpid_t, struct sched_util *);
 
 #endif	/* _KERNEL */

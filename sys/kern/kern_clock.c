@@ -517,6 +517,10 @@ statclock(struct clockframe *frame)
 	}
 	spc->spc_pscnt = psdiv;
 
+	/* Busy is any LWP but idle, or interrupt work. */
+	if (__predict_false(sched_util_on))
+		sched_util_tick(ci, l, p != NULL || CLKF_INTR(frame));
+
 	if (p != NULL) {
 		atomic_inc_uint(&l->l_cpticks);
 		mutex_spin_exit(&p->p_stmutex);

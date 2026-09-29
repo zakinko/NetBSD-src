@@ -540,6 +540,9 @@ updatertime(lwp_t *l, const struct bintime *now)
 	/* rtime += now - stime */
 	bintime_add(&l->l_rtime, now);
 	bintime_sub(&l->l_rtime, &l->l_stime);
+
+	if (__predict_false(sched_util_on))
+		sched_util_switch(l, now);
 }
 
 /*

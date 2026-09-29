@@ -40,6 +40,8 @@ __KERNEL_RCSID(0, "$NetBSD: cpufreq_dt.c,v 1.20 2025/09/06 21:24:05 thorpej Exp 
 #include <sys/queue.h>
 #include <sys/once.h>
 #include <sys/cpu.h>
+#include <sys/cpufreq_domain.h>
+#include <sys/kcpuset.h>
 
 #include <dev/fdt/fdtvar.h>
 #include <dev/fdt/fdt_opp.h>
@@ -79,6 +81,10 @@ struct cpufreq_dt_softc {
 	int			sc_node_available;
 
 	struct cpufreq_dt_table	sc_table;
+
+	/* For the utilization governor, kern_sched_util.c. */
+	struct cpufreq_domain	sc_domain;
+	u_int			*sc_domain_khz;
 };
 
 static void
@@ -523,6 +529,75 @@ cpufreq_dt_match(device_t parent, cfdata_t cf, void *aux)
 	return 1;
 }
 
+static int
+cpufreq_dt_domain_set(void *cookie, u_int idx)
+{
+	struct cpufreq_dt_softc * const sc = cookie;
+
+	return cpufreq_dt_set_rate(sc, sc->sc_domain_khz[idx]);
+}
+
+static int
+cpufreq_dt_domain_get(void *cookie)
+{
+	struct cpufreq_dt_softc * const sc = cookie;
+	const u_int khz = clk_get_rate(sc->sc_clk) / 1000;
+	u_int i;
+
+	for (i = 0; i < sc->sc_nopp; i++) {
+		if (sc->sc_domain_khz[i] == khz)
+			return i;
+	}
+	return -1;
+}
+
+/*
+ * Offer the clock to the governor: the CPUs that share it are this one
+ * and, with a shared table, every CPU that names the same table.
+ */
+static void
+cpufreq_dt_register_domain(struct cpufreq_dt_softc *sc)
+{
+	const int table = fdtbus_get_phandle(sc->sc_phandle,
+	    "operating-points-v2");
+	const bool shared = table > 0 && of_hasprop(table, "opp-shared");
+	CPU_INFO_ITERATOR cii;
+	struct cpu_info *ci;
+	u_int i, j, t;
+
+	if (sc->sc_nopp <= 0)
+		return;
+	sc->sc_domain_khz = kmem_alloc(sizeof(u_int) * sc->sc_nopp, KM_SLEEP);
+	for (i = 0; i < sc->sc_nopp; i++)
+		sc->sc_domain_khz[i] = sc->sc_opp[i].freq_khz;
+	/* Ascending, as cpufreq_domain wants; the table is short. */
+	for (i = 1; i < sc->sc_nopp; i++) {
+		for (j = i; j > 0 &&
+		    sc->sc_domain_khz[j - 1] > sc->sc_domain_khz[j]; j--) {
+			t = sc->sc_domain_khz[j];
+			sc->sc_domain_khz[j] = sc->sc_domain_khz[j - 1];
+			sc->sc_domain_khz[j - 1] = t;
+		}
+	}
+
+	kcpuset_create(&sc->sc_domain.cd_cpus, true);
+	for (CPU_INFO_FOREACH(cii, ci)) {
+		const int ph = ci->ci_dev != NULL ?
+		    devhandle_to_of(device_handle(ci->ci_dev)) : -1;
+
+		if (ph == sc->sc_phandle || (shared && ph > 0 &&
+		    fdtbus_get_phandle(ph, "operating-points-v2") == table))
+			kcpuset_set(sc->sc_domain.cd_cpus, cpu_index(ci));
+	}
+	sc->sc_domain.cd_name = device_xname(sc->sc_dev);
+	sc->sc_domain.cd_nstates = sc->sc_nopp;
+	sc->sc_domain.cd_khz = sc->sc_domain_khz;
+	sc->sc_domain.cd_set = cpufreq_dt_domain_set;
+	sc->sc_domain.cd_get = cpufreq_dt_domain_get;
+	sc->sc_domain.cd_cookie = sc;
+	(void)cpufreq_domain_register(&sc->sc_domain);
+}
+
 static void
 cpufreq_dt_init(device_t self)
 {
@@ -536,6 +611,7 @@ cpufreq_dt_init(device_t self)
 	pmf_event_register(sc->sc_dev, PMFE_THROTTLE_DISABLE, cpufreq_dt_throttle_disable, true);
 
 	cpufreq_dt_init_sysctl(sc);
+	cpufreq_dt_register_domain(sc);
 
 	if (sc->sc_nopp > 0) {
 		struct cpufreq_dt_opp * const opp = &sc->sc_opp[0];

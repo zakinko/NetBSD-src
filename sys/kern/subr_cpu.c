@@ -81,6 +81,8 @@ int		ncpuonline		__read_mostly;
 bool		mp_online		__read_mostly;
 static bool	cpu_topology_present	__read_mostly;
 static bool	cpu_topology_haveslow	__read_mostly;
+static bool	cpu_topology_havecap	__read_mostly;
+static u_int	cpu_topology_slowcap	__read_mostly;
 int64_t		cpu_counts[CPU_COUNT_MAX];
 
 /* An array of CPUs.  There are ncpu entries. */
@@ -198,6 +200,68 @@ cpu_topology_setspeed(struct cpu_info *ci, bool slow)
 }
 
 /*
+ * Collect CPU relative performance, in any unit as long as it is the
+ * same for all CPUs; cpu_topology_init() scales it so that the fastest
+ * CPU has SCHED_UTIL_SCALE.  Optional: see cpu_topology_capacity().
+ */
+void
+cpu_topology_setcapacity(struct cpu_info *ci, u_int perf)
+{
+
+	cpu_topology_havecap |= (perf != 0);
+	ci->ci_capacity = perf;
+}
+
+/*
+ * Whether an LWP wanting between min and max of SCHED_UTIL_SCALE is
+ * served by the slow CPUs.  With their capacity unknown, it is if it
+ * wants no minimum and less than a fast CPU.
+ */
+bool
+cpu_topology_fitslow(u_int min, u_int max)
+{
+
+	if (!cpu_topology_haveslow)
+		return false;
+	if (!cpu_topology_havecap)
+		return min == 0 && max < SCHED_UTIL_SCALE;
+	return max <= cpu_topology_slowcap;
+}
+
+/*
+ * Scale the performance given to cpu_topology_setcapacity() to parts of
+ * SCHED_UTIL_SCALE.  Where the MD code gave none, the fast CPUs get the
+ * full scale and the slow ones 0: nothing is known of how slow they
+ * are, so only an LWP that asks for no minimum is steered to them.
+ */
+static void
+cpu_topology_capacity(void)
+{
+	CPU_INFO_ITERATOR cii;
+	struct cpu_info *ci;
+	u_int max;
+
+	max = 0;
+	if (cpu_topology_havecap) {
+		for (CPU_INFO_FOREACH(cii, ci))
+			max = MAX(max, ci->ci_capacity);
+	}
+	cpu_topology_slowcap = 0;
+	for (CPU_INFO_FOREACH(cii, ci)) {
+		if (max != 0) {
+			ci->ci_capacity = (uint64_t)ci->ci_capacity *
+			    SCHED_UTIL_SCALE / max;
+		} else {
+			ci->ci_capacity = ci->ci_is_slow ? 0 : SCHED_UTIL_SCALE;
+		}
+		if (ci->ci_is_slow) {
+			cpu_topology_slowcap = MAX(cpu_topology_slowcap,
+			    ci->ci_capacity);
+		}
+	}
+}
+
+/*
  * Link a CPU into the given circular list.
  */
 static void
@@ -235,8 +299,10 @@ cpu_topology_dump(void)
 	}
 
 	for (CPU_INFO_FOREACH(cii, ci)) {
-		if (cpu_topology_haveslow)
-			aprint_debug("%s ", ci->ci_is_slow ? "slow" : "fast");
+		if (cpu_topology_haveslow) {
+			aprint_debug("%s capacity %u ",
+			    ci->ci_is_slow ? "slow" : "fast", ci->ci_capacity);
+		}
 		for (rel = 0; rel < __arraycount(ci->ci_sibling); rel++) {
 			aprint_debug("%s has %d %s siblings:", cpu_name(ci),
 			    ci->ci_nsibling[rel], names[rel]);
@@ -457,6 +523,7 @@ cpu_topology_init(void)
 		}
 	}
 
+	cpu_topology_capacity();
 	cpu_topology_dump();
 }
 

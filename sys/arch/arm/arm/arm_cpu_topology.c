@@ -92,6 +92,7 @@ arm_cpu_do_topology(struct cpu_info *const newci)
 	 * directly here.  This also handles the not-MP case.
 	 */
 	cpu_topology_setspeed(newci, newci->ci_capacity_dmips_mhz < best_cap);
+	cpu_topology_setcapacity(newci, newci->ci_capacity_dmips_mhz);
 
 	/*
 	 * Using saved largest capacity, refresh previous topology info.

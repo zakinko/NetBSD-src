@@ -93,6 +93,8 @@ void	cpu_intr_redistribute(void);
 u_int	cpu_intr_count(struct cpu_info *);
 void	cpu_topology_set(struct cpu_info *, u_int, u_int, u_int, u_int);
 void	cpu_topology_setspeed(struct cpu_info *, bool);
+void	cpu_topology_setcapacity(struct cpu_info *, u_int);
+bool	cpu_topology_fitslow(u_int, u_int);
 void	cpu_topology_init(void);
 #endif
 

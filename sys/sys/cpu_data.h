@@ -158,6 +158,7 @@ struct cpu_data {
 	u_int		cpu_smt_id;
 	u_int		cpu_numa_id;
 	bool		cpu_is_slow;
+	u_int		cpu_capacity;	/* 0..SCHED_UTIL_SCALE, see subr_cpu.c */
 	u_int		cpu_nsibling[CPUREL_COUNT];
 	struct cpu_info	*cpu_sibling[CPUREL_COUNT];
 	struct cpu_info *cpu_package1st;	/* 1st CPU in our package */
@@ -217,6 +218,7 @@ struct cpu_data {
 #define	ci_smt_id		ci_data.cpu_smt_id
 #define	ci_numa_id		ci_data.cpu_numa_id
 #define	ci_is_slow		ci_data.cpu_is_slow
+#define	ci_capacity		ci_data.cpu_capacity
 #define	ci_nsibling		ci_data.cpu_nsibling
 #define	ci_sibling		ci_data.cpu_sibling
 #define	ci_package1st		ci_data.cpu_package1st

@@ -52,8 +52,10 @@ The volume goes from \-62 dB to 0 dB in 1 dB steps.
 .Pp
 Plug presence is sensed on the jack's tip and polled.
 When a plug arrives while the headphones are not playing, the driver
-lets the codec find the headset type and set its microphone switches.
-Both are reported by
+lets the codec find the headset type and set its microphone switches,
+then measures the headphone load and sets the amplifier's compensation
+for it.
+All are reported by
 .Xr sysctl 8 :
 .Bl -tag -width "hw.cscodec0.headset"
 .It Va hw.cscodec0.plugged
@@ -62,6 +64,8 @@ Both are reported by
 0 while the type is not known, 1 for a headset with its microphone on
 pin 4, 2 for one with it on pin 3 (the OMTP pinout), 3 for headphones
 without a microphone and 4 for an optical plug.
+.It Va hw.cscodec0.load
+The load resistance found, in ohms: 15, 30 or 3000; 0 while not known.
 .El
 .Pp
 Opened for recording with a headset found (types 1 and 2), the codec
@@ -83,5 +87,4 @@ driver first appeared in
 The CS42L83 has no public data sheet; the driver runs it as a CS42L42,
 as other systems do, writing every register it relies on rather than
 assuming reset values.
-Headphone load detection is not done, and headset buttons are not
-reported.
+Headset buttons are not reported.

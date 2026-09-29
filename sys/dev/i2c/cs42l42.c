@@ -48,8 +48,8 @@
  * Plug presence is tip sense (4.14), polled: the part's interrupt line
  * is not used.  When a plug arrives and the headphones are not playing,
  * the headset type is found automatically as in Example 5-5 steps 10 to
- * 17 (4.13); load detection, from step 18 on, is not done.  Both are
- * reported by sysctl, hw.<dev>.plugged and hw.<dev>.headset.
+ * 17 (4.13), then the load as in steps 18 to 31 (4.4.4).  All three are
+ * reported by sysctl: hw.<dev>.plugged, .headset and .load.
  *
  * Opened for reading with a headset found (types 1 and 2), the headset
  * microphone is recorded: the HS bias in normal mode (7.9.5), the ADC
@@ -133,6 +133,19 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	 PLL_START		__BIT(0)
 #define	CS_DAC_CTL1		0x1f01
 #define	CS_DAC_CTL2		0x1f06		/* 7.12.2, values of Ex. 5-5 */
+#define	 DAC2_HPOUT_LOAD	__BIT(3)	/* 1: 10 nF mode */
+#define	CS_SOFT_RAMP		0x100a		/* 7.3.9 */
+#define	 SOFT_RAMP_LOAD_DET	0x71		/* Ex. 5-5 22 */
+#define	CS_LD_STATUS		0x1925		/* 7.8.1 */
+#define	 LD_CLA_LOW		__BIT(4)	/* 1: CL < ~2 nF */
+#define	 LD_RLA			__BITS(1,0)	/* 15, 30, 3k ohm */
+#define	CS_LD_DONE		0x1926		/* 7.8.2 */
+#define	 LD_DONE		__BIT(0)
+#define	CS_LD_EN		0x1927		/* 7.8.3 */
+#define	 LD_EN			__BIT(0)
+#define	CS_CLASS_H		0x2101		/* 7.14.1 */
+#define	 ADPTPWR		__BITS(2,0)
+#define	  ADPTPWR_VCP3		4		/* fixed, +-VCP/3 */
 #define	CS_HP_CTL		0x2001		/* 7.13.1 */
 #define	 HP_ANA_MUTE_B		__BIT(3)
 #define	 HP_ANA_MUTE_A		__BIT(2)
@@ -216,6 +229,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * and the count are ours.
  */
 #define	CSCODEC_POLL_MS		250
+/*
+ * Waiting for HPLOAD_DET_DONE (Ex. 5-5 24): no bound is given; this
+ * one is ours.
+ */
+#define	CSCODEC_LOAD_WAIT_US	200000
+#define	CSCODEC_LOAD_POLL_US	1000
 
 static const struct device_compatible_entry compat_data[] = {
 	{ .compat = "cirrus,cs42l83",	.value = CS42L83_ID },
@@ -248,12 +267,14 @@ struct cscodec_softc {
 	bool			sc_sample;	/* last raw sample */
 	bool			sc_typed;	/* sc_headset is current */
 	u_int			sc_headset;	/* 1..4 of Table 4-22, 0: none */
+	u_int			sc_load_ohm;	/* 15, 30, 3000; 0: not known */
 
 	struct workqueue	*sc_wq;
 	struct work		sc_work;
 	callout_t		sc_poll;
 	struct sysctllog	*sc_sysctllog;
 	int			sc_sysctl_plugged, sc_sysctl_headset;
+	int			sc_sysctl_load;
 };
 
 static int	cscodec_match(device_t, cfdata_t, void *);
@@ -599,6 +620,71 @@ out:
 #undef W
 }
 
+/*
+ * Output load detection, Example 5-5 steps 18 to 31, with the codec
+ * closed as Ex. 5-2 leaves it, which already meets the preconditions of
+ * step 18 for PDN_ALL, ADC_PDN, HP_PDN, the analog mutes and
+ * LATCH_TO_VP.  Returns the load resistance, or 0 if not found.
+ *
+ * Not done: step 29 powers the HP up to go on playing, which is the
+ * open's work here; step 33 clears LATCH_TO_VP, which tip sense needs
+ * kept; step 34 sets ADC_INV "if necessary" without saying when.
+ *
+ * 4.4.4 also asks for DAC_HPF_EN cleared during detection, but 7.12.2
+ * allows changing it only with PDN_ALL set and clearing it only for
+ * testing, and Example 5-5 leaves it set; the example is followed.
+ */
+static u_int
+cscodec_detect_load(struct cscodec_softc *sc)
+{
+	static const u_int ohm[] = { 15, 30, 3000, 0 };	/* RLA_STAT */
+	uint8_t ch, ramp, st, dac2;
+	u_int waited, r;
+
+	KASSERT(mutex_owned(&sc->sc_lock));
+
+	if (cscodec_read(sc, CS_CLASS_H, &ch) != 0 ||
+	    cscodec_read(sc, CS_SOFT_RAMP, &ramp) != 0 ||
+	    cscodec_read(sc, CS_DAC_CTL2, &dac2) != 0)
+		return 0;
+	r = 0;
+	if (cscodec_write(sc, CS_MISC_DET_CTL, 0x01) != 0 ||	/* 20 */
+	    cscodec_write(sc, CS_CLASS_H, (ch & ~ADPTPWR) |
+	    __SHIFTIN(ADPTPWR_VCP3, ADPTPWR)) != 0 ||		/* 21 */
+	    cscodec_write(sc, CS_SOFT_RAMP, SOFT_RAMP_LOAD_DET) != 0 || /* 22 */
+	    cscodec_write(sc, CS_LD_EN, 0) != 0 ||	/* a 0-to-1 starts it */
+	    cscodec_write(sc, CS_LD_EN, LD_EN) != 0)		/* 23 */
+		goto restore;
+	for (waited = 0;; waited += CSCODEC_LOAD_POLL_US) {	/* 24 */
+		if (cscodec_read(sc, CS_LD_DONE, &st) != 0)
+			goto restore;
+		if (st & LD_DONE)
+			break;
+		if (waited >= CSCODEC_LOAD_WAIT_US)
+			goto restore;
+		delay(CSCODEC_LOAD_POLL_US);
+	}
+	if (cscodec_read(sc, CS_LD_STATUS, &st) != 0)		/* 25 */
+		goto restore;
+	r = ohm[__SHIFTOUT(st, LD_RLA)];
+	/*
+	 * 26.  Below ~300 ohm capacitance is not measured and taken as low
+	 * (4.4.4); CLA_STAT then still reads its default, high.
+	 */
+	dac2 &= ~DAC2_HPOUT_LOAD;
+	if (r == 3000 && (st & LD_CLA_LOW) == 0)
+		dac2 |= DAC2_HPOUT_LOAD;
+	(void)cscodec_write(sc, CS_DAC_CTL2, dac2);
+restore:
+	(void)cscodec_write(sc, CS_CLASS_H, ch);		/* 27 */
+	(void)cscodec_write(sc, CS_MISC_DET_CTL,		/* 28 */
+	    sc->sc_headset == 1 || sc->sc_headset == 2 ?
+	    MISC_DET_HSBIAS_2V7 : MISC_DET_DEFAULT);
+	(void)cscodec_write(sc, CS_SOFT_RAMP, ramp);		/* 30 */
+	(void)cscodec_write(sc, CS_LD_EN, 0);			/* 31 */
+	return r;
+}
+
 /* One sample of plug presence, and the type when a plug arrives. */
 static void
 cscodec_poll_work(struct work *wk, void *arg)
@@ -623,6 +709,7 @@ cscodec_poll_work(struct work *wk, void *arg)
 		sc->sc_plugged = now;
 		sc->sc_typed = false;
 		sc->sc_headset = 0;
+		sc->sc_load_ohm = 0;
 		if (!now)
 			(void)cscodec_write(sc, CS_MISC_DET_CTL,
 			    MISC_DET_DEFAULT);
@@ -638,6 +725,9 @@ cscodec_poll_work(struct work *wk, void *arg)
 		if (error != 0) {
 			device_printf(sc->sc_dev,
 			    "headset type detection failed: %d\n", error);
+		} else if (type >= 1 && type <= 3) {
+			/* Step 18: after the type, the load. */
+			sc->sc_load_ohm = cscodec_detect_load(sc);
 		}
 	}
 out:
@@ -662,8 +752,12 @@ cscodec_sysctl_state(SYSCTLFN_ARGS)
 	int val;
 
 	mutex_enter(&sc->sc_lock);
-	val = node.sysctl_num == sc->sc_sysctl_plugged ? sc->sc_plugged :
-	    (int)sc->sc_headset;
+	if (node.sysctl_num == sc->sc_sysctl_plugged)
+		val = sc->sc_plugged;
+	else if (node.sysctl_num == sc->sc_sysctl_load)
+		val = (int)sc->sc_load_ohm;
+	else
+		val = (int)sc->sc_headset;
 	mutex_exit(&sc->sc_lock);
 	node.sysctl_data = &val;
 	return sysctl_lookup(SYSCTLFN_CALL(&node));
@@ -687,6 +781,11 @@ cscodec_sysctl_attach(struct cscodec_softc *sc)
 	    "unknown, 1 mic on pin 4, 2 mic on pin 3, 3 no mic, 4 optical"),
 	    cscodec_sysctl_state, 0, (void *)sc, 0, CTL_CREATE, CTL_EOL) == 0)
 		sc->sc_sysctl_headset = node->sysctl_num;
+	if (sysctl_createv(&sc->sc_sysctllog, 0, &root, &node, CTLFLAG_READONLY,
+	    CTLTYPE_INT, "load", SYSCTL_DESCR("Headphone load resistance "
+	    "found, ohms: 15, 30 or 3000; 0 not known"),
+	    cscodec_sysctl_state, 0, (void *)sc, 0, CTL_CREATE, CTL_EOL) == 0)
+		sc->sc_sysctl_load = node->sysctl_num;
 }
 
 static int

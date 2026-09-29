@@ -2537,6 +2537,47 @@ netbsd32__sched_getparam(struct lwp *l,
 	return sys__sched_getparam(l, &ua, retval);
 }
 
+/* struct sched_util is all ints, so it needs no conversion. */
+int
+netbsd32__sched_setutil(struct lwp *l,
+			const struct netbsd32__sched_setutil_args *uap,
+			register_t *retval)
+{
+	/* {
+		syscallarg(pid_t) pid;
+		syscallarg(lwpid_t) lid;
+		syscallarg(const netbsd32_sched_utilp_t) util;
+	} */
+	struct sys__sched_setutil_args ua;
+
+	memset(&ua, 0, sizeof(ua));
+	NETBSD32TO64_UAP(pid);
+	NETBSD32TO64_UAP(lid);
+	NETBSD32TOP_UAP(util, const struct sched_util *);
+
+	return sys__sched_setutil(l, &ua, retval);
+}
+
+int
+netbsd32__sched_getutil(struct lwp *l,
+			const struct netbsd32__sched_getutil_args *uap,
+			register_t *retval)
+{
+	/* {
+		syscallarg(pid_t) pid;
+		syscallarg(lwpid_t) lid;
+		syscallarg(netbsd32_sched_utilp_t) util;
+	} */
+	struct sys__sched_getutil_args ua;
+
+	memset(&ua, 0, sizeof(ua));
+	NETBSD32TO64_UAP(pid);
+	NETBSD32TO64_UAP(lid);
+	NETBSD32TOP_UAP(util, struct sched_util *);
+
+	return sys__sched_getutil(l, &ua, retval);
+}
+
 int
 netbsd32__sched_setaffinity(struct lwp *l,
 			    const struct netbsd32__sched_setaffinity_args *uap,

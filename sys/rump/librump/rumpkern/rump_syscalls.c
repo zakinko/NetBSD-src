@@ -1,4 +1,4 @@
-/* $NetBSD: rump_syscalls.c,v 1.166 2026/05/10 23:51:37 tls Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call vector and marshalling for rump.
@@ -17,7 +17,7 @@
 
 #ifdef __NetBSD__
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: rump_syscalls.c,v 1.166 2026/05/10 23:51:37 tls Exp $");
+__KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/fstypes.h>
 #include <sys/proc.h>
@@ -8666,13 +8666,11 @@ struct sysent rump_sysent[] = {
 		.sy_call = (sy_call_t *)(void *)rumpns_sys_nomodule,
 },		/* 506 = semtimedop */
 	{
-		.sy_flags = SYCALL_NOSYS,
 		.sy_call = (sy_call_t *)(void *)rumpns_enosys,
-	},		/* 507 = filler */
+},		/* 507 = _sched_setutil */
 	{
-		.sy_flags = SYCALL_NOSYS,
 		.sy_call = (sy_call_t *)(void *)rumpns_enosys,
-	},		/* 508 = filler */
+},		/* 508 = _sched_getutil */
 	{
 		.sy_flags = SYCALL_NOSYS,
 		.sy_call = (sy_call_t *)(void *)rumpns_enosys,

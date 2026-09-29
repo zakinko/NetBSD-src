@@ -1,4 +1,4 @@
-/* $NetBSD: syscalls.c,v 1.335 2026/05/10 23:51:37 tls Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call names.
@@ -8,7 +8,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: syscalls.c,v 1.335 2026/05/10 23:51:37 tls Exp $");
+__KERNEL_RCSID(0, "$NetBSD$");
 
 #if defined(_KERNEL_OPT)
 #ifdef _KERNEL_OPT
@@ -557,8 +557,8 @@ const char *const syscallnames[] = {
 	/* 504 */	"epoll_pwait2",
 	/* 505 */	"__dup3100",
 	/* 506 */	"semtimedop",
-	/* 507 */	"# filler",
-	/* 508 */	"# filler",
+	/* 507 */	"_sched_setutil",
+	/* 508 */	"_sched_getutil",
 	/* 509 */	"# filler",
 	/* 510 */	"# filler",
 	/* 511 */	"# filler",
@@ -1094,8 +1094,8 @@ const char *const altsyscallnames[] = {
 	/* 504 */	NULL, /* epoll_pwait2 */
 	/* 505 */	"dup3",
 	/* 506 */	NULL, /* semtimedop */
-	/* 507 */	NULL, /* filler */
-	/* 508 */	NULL, /* filler */
+	/* 507 */	NULL, /* _sched_setutil */
+	/* 508 */	NULL, /* _sched_getutil */
 	/* 509 */	NULL, /* filler */
 	/* 510 */	NULL, /* filler */
 	/* 511 */	NULL, /* filler */

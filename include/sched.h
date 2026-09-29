@@ -67,6 +67,10 @@ __BEGIN_DECLS
 int	sched_getaffinity_np(pid_t, size_t, cpuset_t *);
 int	sched_setaffinity_np(pid_t, size_t, cpuset_t *);
 
+/* Utilization bounds (not portable) */
+int	sched_getutil_np(pid_t, struct sched_util *);
+int	sched_setutil_np(pid_t, const struct sched_util *);
+
 #endif /* _NETBSD_SOURCE */
 
 #if defined(_GNU_SOURCE)

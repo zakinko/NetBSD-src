@@ -159,3 +159,21 @@ sched_setaffinity_np(pid_t pid, size_t size, cpuset_t *cpuset)
 
 	return _sched_setaffinity(pid, P_ALL_LWPS, size, cpuset);
 }
+
+/*
+ * Utilization bounds.
+ */
+
+int
+sched_getutil_np(pid_t pid, struct sched_util *su)
+{
+
+	return _sched_getutil(pid, P_ALL_LWPS, su);
+}
+
+int
+sched_setutil_np(pid_t pid, const struct sched_util *su)
+{
+
+	return _sched_setutil(pid, P_ALL_LWPS, su);
+}

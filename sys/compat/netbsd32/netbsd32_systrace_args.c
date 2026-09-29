@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_systrace_args.c,v 1.56 2026/09/11 13:08:13 sborrill Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call argument to DTrace register array conversion.
@@ -3769,6 +3769,24 @@ systrace_args(register_t sysnum, const void *params, uintptr_t *uarg, size_t *n_
 		iarg[2] = SCARG(p, nsops); /* netbsd32_size_t */
 		uarg[3] = (intptr_t) SCARG(p, timeout).i32; /* netbsd32_timespecp_t */
 		*n_args = 4;
+		break;
+	}
+	/* netbsd32__sched_setutil */
+	case 507: {
+		const struct netbsd32__sched_setutil_args *p = params;
+		iarg[0] = SCARG(p, pid); /* pid_t */
+		iarg[1] = SCARG(p, lid); /* lwpid_t */
+		uarg[2] = (intptr_t) SCARG(p, util).i32; /* const netbsd32_sched_utilp_t */
+		*n_args = 3;
+		break;
+	}
+	/* netbsd32__sched_getutil */
+	case 508: {
+		const struct netbsd32__sched_getutil_args *p = params;
+		iarg[0] = SCARG(p, pid); /* pid_t */
+		iarg[1] = SCARG(p, lid); /* lwpid_t */
+		uarg[2] = (intptr_t) SCARG(p, util).i32; /* netbsd32_sched_utilp_t */
+		*n_args = 3;
 		break;
 	}
 	default:
@@ -10214,6 +10232,38 @@ systrace_entry_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 			break;
 		};
 		break;
+	/* netbsd32__sched_setutil */
+	case 507:
+		switch(ndx) {
+		case 0:
+			p = "pid_t";
+			break;
+		case 1:
+			p = "lwpid_t";
+			break;
+		case 2:
+			p = "const netbsd32_sched_utilp_t";
+			break;
+		default:
+			break;
+		};
+		break;
+	/* netbsd32__sched_getutil */
+	case 508:
+		switch(ndx) {
+		case 0:
+			p = "pid_t";
+			break;
+		case 1:
+			p = "lwpid_t";
+			break;
+		case 2:
+			p = "netbsd32_sched_utilp_t";
+			break;
+		default:
+			break;
+		};
+		break;
 	default:
 		break;
 	};
@@ -12338,6 +12388,16 @@ systrace_return_setargdesc(int sysnum, int ndx, char *desc, size_t descsz)
 		break;
 	/* netbsd32_semtimedop */
 	case 506:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32__sched_setutil */
+	case 507:
+		if (ndx == 0 || ndx == 1)
+			p = "int";
+		break;
+	/* netbsd32__sched_getutil */
+	case 508:
 		if (ndx == 0 || ndx == 1)
 			p = "int";
 		break;

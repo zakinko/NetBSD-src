@@ -119,6 +119,8 @@ struct lwp {
 	int		l_protectdepth;	/* l: for PTHREAD_PRIO_PROTECT */
 	u_int		l_cpticks;	/* (: Ticks of CPU time */
 	psetid_t	l_psid;		/* l: assigned processor-set ID */
+	uint16_t	l_util_min;	/* l: utilization bounds, see */
+	uint16_t	l_util_max;	/* l:  struct sched_util */
 	fixpt_t		l_pctcpu;	/* p: %cpu during l_swtime */
 	fixpt_t		l_estcpu;	/* l: cpu time for SCHED_4BSD */
 	SLIST_HEAD(, turnstile) l_pi_lenders; /* l: ts lending us priority */

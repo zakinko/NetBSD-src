@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_syscallargs.h,v 1.163 2026/09/11 13:08:13 sborrill Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call argument lists.
@@ -2842,6 +2842,20 @@ struct netbsd32_semtimedop_args {
 };
 check_syscall_args(netbsd32_semtimedop)
 
+struct netbsd32__sched_setutil_args {
+	syscallarg(pid_t) pid;
+	syscallarg(lwpid_t) lid;
+	syscallarg(const netbsd32_sched_utilp_t) util;
+};
+check_syscall_args(netbsd32__sched_setutil)
+
+struct netbsd32__sched_getutil_args {
+	syscallarg(pid_t) pid;
+	syscallarg(lwpid_t) lid;
+	syscallarg(netbsd32_sched_utilp_t) util;
+};
+check_syscall_args(netbsd32__sched_getutil)
+
 /*
  * System call prototypes.
  */
@@ -3725,5 +3739,9 @@ int	netbsd32_epoll_pwait2(struct lwp *, const struct netbsd32_epoll_pwait2_args 
 int	netbsd32___dup3100(struct lwp *, const struct netbsd32___dup3100_args *, register_t *);
 
 int	netbsd32_semtimedop(struct lwp *, const struct netbsd32_semtimedop_args *, register_t *);
+
+int	netbsd32__sched_setutil(struct lwp *, const struct netbsd32__sched_setutil_args *, register_t *);
+
+int	netbsd32__sched_getutil(struct lwp *, const struct netbsd32__sched_getutil_args *, register_t *);
 
 #endif /* _NETBSD32_SYS_SYSCALLARGS_H_ */

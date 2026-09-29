@@ -44,6 +44,8 @@ MLINKS+=	sched.3 sched_rr_get_interval.3
 MLINKS+=	sched.3 sched_yield.3
 MLINKS+=	sched.3 sched_setaffinity_np.3
 MLINKS+=	sched.3 sched_getaffinity_np.3
+MLINKS+=	sched.3 sched_setutil_np.3
+MLINKS+=	sched.3 sched_getutil_np.3
 
 MLINKS+=	shm_open.3 shm_unlink.3
 

@@ -1050,6 +1050,7 @@ struct netbsd32_kevent100 {
 
 /* from <sys/sched.h> */
 typedef netbsd32_pointer_t netbsd32_sched_paramp_t;
+typedef netbsd32_pointer_t netbsd32_sched_utilp_t;
 typedef netbsd32_pointer_t netbsd32_cpusetp_t;
 
 /* from <fs/tmpfs/tmpfs_args.h> */

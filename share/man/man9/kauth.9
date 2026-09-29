@@ -586,6 +586,16 @@ Checks whether setting the scheduler affinity is allowed.
 Checks whether viewing the scheduler policy and parameters is allowed.
 .It Dv KAUTH_PROCESS_SCHEDULER_SETPARAM
 Checks whether modifying the scheduler policy and parameters is allowed.
+.It Dv KAUTH_PROCESS_SCHEDULER_SETUTIL
+Checks whether modifying the utilization bounds of LWP
+.Ar arg1
+to those pointed to by
+.Ar arg2 ,
+a
+.Vt "const struct sched_util *"
+already validated and with no
+.Dv SCHED_UTIL_RESET ,
+is allowed.
 .It Dv KAUTH_PROCESS_SIGNAL
 Checks whether an object with one set of credentials can post signals
 to another process.

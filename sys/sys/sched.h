@@ -91,6 +91,26 @@ struct sched_param {
 #define	SCHED_RR	2
 
 #if defined(_NETBSD_SOURCE)
+/*
+ * Utilization bounds of an LWP: a hint of the least and most of a CPU's
+ * performance it wants, as parts of SCHED_UTIL_SCALE, which is the
+ * performance of the fastest CPU in the system.  An LWP whose maximum
+ * is at or below the capacity of a slower CPU is placed on such CPUs
+ * in preference to faster ones.
+ *
+ * SCHED_UTIL_RESET for either bound restores its default; the defaults,
+ * 0 and SCHED_UTIL_SCALE, change nothing about how the LWP is scheduled.
+ * su_spare must be zero.
+ */
+#define	SCHED_UTIL_SCALE	1024
+#define	SCHED_UTIL_RESET	(-1)
+
+struct sched_util {
+	int	su_min;
+	int	su_max;
+	int	su_spare[6];
+};
+
 __BEGIN_DECLS
 
 /*
@@ -126,6 +146,8 @@ int	_sched_setaffinity(pid_t, lwpid_t, size_t, const cpuset_t *);
 int	_sched_getparam(pid_t, lwpid_t, int *, struct sched_param *);
 int	_sched_setparam(pid_t, lwpid_t, int, const struct sched_param *);
 int	_sched_protect(int);
+int	_sched_getutil(pid_t, lwpid_t, struct sched_util *);
+int	_sched_setutil(pid_t, lwpid_t, const struct sched_util *);
 __END_DECLS
 
 /*
@@ -280,6 +302,8 @@ void		suspendsched(void);
 
 int		do_sched_setparam(pid_t, lwpid_t, int, const struct sched_param *);
 int		do_sched_getparam(pid_t, lwpid_t, int *, struct sched_param *);
+int		do_sched_setutil(pid_t, lwpid_t, const struct sched_util *);
+int		do_sched_getutil(pid_t, lwpid_t, struct sched_util *);
 
 #endif	/* _KERNEL */
 #endif	/* _SYS_SCHED_H_ */

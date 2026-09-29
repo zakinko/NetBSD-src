@@ -193,6 +193,148 @@ do_sched_setparam(pid_t pid, lwpid_t lid, int policy,
 }
 
 /*
+ * Resolve the requested bounds into su: SCHED_UTIL_RESET
+ * becomes the default.  Returns false if they are out of range.
+ */
+static bool
+sched_util_resolve(const struct sched_util *req, struct sched_util *su)
+{
+
+	su->su_min = req->su_min == SCHED_UTIL_RESET ? 0 : req->su_min;
+	su->su_max = req->su_max == SCHED_UTIL_RESET ?
+	    SCHED_UTIL_SCALE : req->su_max;
+	return su->su_min >= 0 && su->su_max <= SCHED_UTIL_SCALE &&
+	    su->su_min <= su->su_max;
+}
+
+int
+do_sched_setutil(pid_t pid, lwpid_t lid, const struct sched_util *req)
+{
+	struct sched_util su;
+	struct proc *p;
+	struct lwp *t;
+	u_int i, lcnt;
+	int error;
+
+	for (i = 0; i < __arraycount(req->su_spare); i++) {
+		if (req->su_spare[i] != 0)
+			return EINVAL;
+	}
+	memset(&su, 0, sizeof(su));
+	if (!sched_util_resolve(req, &su))
+		return EINVAL;
+
+	if (pid < 0 || lid < 0)
+		return EINVAL;
+	if (pid != 0) {
+		mutex_enter(&proc_lock);
+		p = proc_find(pid);
+		if (p == NULL) {
+			mutex_exit(&proc_lock);
+			return ESRCH;
+		}
+		mutex_enter(p->p_lock);
+		mutex_exit(&proc_lock);
+		if ((p->p_flag & PK_SYSTEM) != 0) {
+			mutex_exit(p->p_lock);
+			return EPERM;
+		}
+	} else {
+		p = curlwp->l_proc;
+		mutex_enter(p->p_lock);
+	}
+
+	error = 0;
+	lcnt = 0;
+	LIST_FOREACH(t, &p->p_lwps, l_sibling) {
+		if (lid && lid != t->l_lid)
+			continue;
+
+		lcnt++;
+		lwp_lock(t);
+		error = kauth_authorize_process(kauth_cred_get(),
+		    KAUTH_PROCESS_SCHEDULER_SETUTIL, p, t, &su, NULL);
+		if (error) {
+			lwp_unlock(t);
+			break;
+		}
+		t->l_util_min = su.su_min;
+		t->l_util_max = su.su_max;
+		lwp_unlock(t);
+	}
+	mutex_exit(p->p_lock);
+	return (lcnt == 0) ? ESRCH : error;
+}
+
+/*
+ * if lid=0, returns the bounds of the first LWP in the process.
+ */
+int
+do_sched_getutil(pid_t pid, lwpid_t lid, struct sched_util *su)
+{
+	struct lwp *t;
+	int error;
+
+	if (pid < 0 || lid < 0)
+		return EINVAL;
+
+	t = lwp_find2(pid, lid); /* acquire p_lock */
+	if (t == NULL)
+		return ESRCH;
+
+	error = kauth_authorize_process(kauth_cred_get(),
+	    KAUTH_PROCESS_SCHEDULER_GETPARAM, t->l_proc, NULL, NULL, NULL);
+	if (error != 0) {
+		mutex_exit(t->l_proc->p_lock);
+		return error;
+	}
+
+	memset(su, 0, sizeof(*su));
+	lwp_lock(t);
+	su->su_min = t->l_util_min;
+	su->su_max = t->l_util_max;
+	lwp_unlock(t);
+	mutex_exit(t->l_proc->p_lock);
+	return 0;
+}
+
+int
+sys__sched_setutil(struct lwp *l, const struct sys__sched_setutil_args *uap,
+    register_t *retval)
+{
+	/* {
+		syscallarg(pid_t) pid;
+		syscallarg(lwpid_t) lid;
+		syscallarg(const struct sched_util *) util;
+	} */
+	struct sched_util su;
+	int error;
+
+	error = copyin(SCARG(uap, util), &su, sizeof(su));
+	if (error)
+		return error;
+	return do_sched_setutil(SCARG(uap, pid), SCARG(uap, lid), &su);
+}
+
+int
+sys__sched_getutil(struct lwp *l, const struct sys__sched_getutil_args *uap,
+    register_t *retval)
+{
+	/* {
+		syscallarg(pid_t) pid;
+		syscallarg(lwpid_t) lid;
+		syscallarg(struct sched_util *) util;
+	} */
+	struct sched_util su;
+	int error;
+
+	error = do_sched_getutil(SCARG(uap, pid), SCARG(uap, lid), &su);
+	if (error)
+		return error;
+	return copyout(&su, SCARG(uap, util), sizeof(su));
+}
+
+/*
  * Set scheduling parameters.
  */
 int
@@ -682,6 +824,18 @@ sched_listener_cb(kauth_cred_t cred, kauth_action_t action, void *cookie,
 				result = KAUTH_RESULT_ALLOW;
 		}
 
+		break;
+
+	case KAUTH_PROCESS_SCHEDULER_SETUTIL:
+		/* As with nice(2): the owner may lower, not raise. */
+		if (kauth_cred_uidmatch(cred, p->p_cred)) {
+			const struct lwp *l = arg1;
+			const struct sched_util *su = arg2;
+
+			if (su->su_min <= l->l_util_min &&
+			    su->su_max <= l->l_util_max)
+				result = KAUTH_RESULT_ALLOW;
+		}
 		break;
 
 	case KAUTH_PROCESS_SCHEDULER_GETAFFINITY:

@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_sysent.c,v 1.164 2026/09/11 13:08:13 sborrill Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call switch table.
@@ -8,7 +8,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_sysent.c,v 1.164 2026/09/11 13:08:13 sborrill Exp $");
+__KERNEL_RCSID(0, "$NetBSD$");
 
 #if defined(_KERNEL_OPT)
 #include "opt_compat_netbsd.h"
@@ -2125,11 +2125,13 @@ struct sysent netbsd32_sysent[] = {
 		.sy_call = (sy_call_t *)sys_nomodule
 	},		/* 506 = netbsd32_semtimedop */
 	{
-		.sy_call = sys_nosys,
-	},		/* 507 = filler */
+		ns(struct netbsd32__sched_setutil_args),
+		.sy_call = (sy_call_t *)netbsd32__sched_setutil
+	},		/* 507 = netbsd32__sched_setutil */
 	{
-		.sy_call = sys_nosys,
-	},		/* 508 = filler */
+		ns(struct netbsd32__sched_getutil_args),
+		.sy_call = (sy_call_t *)netbsd32__sched_getutil
+	},		/* 508 = netbsd32__sched_getutil */
 	{
 		.sy_call = sys_nosys,
 	},		/* 509 = filler */

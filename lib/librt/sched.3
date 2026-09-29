@@ -27,7 +27,7 @@
 .\" ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 .\" POSSIBILITY OF SUCH DAMAGE.
 .\"
-.Dd August 5, 2016
+.Dd September 26, 2026
 .Dt SCHED 3
 .Os
 .Sh NAME
@@ -41,7 +41,9 @@
 .Nm sched_yield ,
 .Nm sched_protect ,
 .Nm sched_setaffinity_np ,
-.Nm sched_getaffinity_np
+.Nm sched_getaffinity_np ,
+.Nm sched_setutil_np ,
+.Nm sched_getutil_np
 .Nd process scheduling
 .Sh LIBRARY
 .Lb librt
@@ -67,6 +69,10 @@
 .Fn sched_setaffinity_np "pid_t pid" "size_t size" "cpuset_t *cpuset"
 .Ft int
 .Fn sched_getaffinity_np "pid_t pid" "size_t size" "cpuset_t *cpuset"
+.Ft int
+.Fn sched_setutil_np "pid_t pid" "const struct sched_util *util"
+.Ft int
+.Fn sched_getutil_np "pid_t pid" "struct sched_util *util"
 .Ft int
 .Fn sched_protect "int priority"
 .Sh DESCRIPTION
@@ -161,6 +167,48 @@ Get the affinity mask of the process specified by
 .Fa pid
 into the
 .Fa cpuset .
+.It Fn sched_setutil_np pid util
+Set the utilization bounds of all threads of the process specified by
+.Fa pid
+to those in
+.Fa util :
+.Bd -literal -offset indent
+struct sched_util {
+	int	su_min;
+	int	su_max;
+	int	su_spare[6];	/* must be zero */
+};
+.Ed
+.Pp
+The bounds are a hint of the least and the most performance the
+threads want, as parts of
+.Dv SCHED_UTIL_SCALE ,
+the performance of the fastest CPU in the system.
+On a system with CPUs of different performance, a thread whose
+.Fa su_max
+is at or below the performance of a slower CPU is run on such CPUs
+in preference to faster ones.
+.Fa su_min
+must not exceed
+.Fa su_max .
+Either may be
+.Dv SCHED_UTIL_RESET
+to restore its default, 0 for
+.Fa su_min
+and
+.Dv SCHED_UTIL_SCALE
+for
+.Fa su_max ;
+with the defaults a thread is scheduled as if it had no bounds.
+New threads, and the child of
+.Xr fork 2 ,
+inherit the bounds of the thread that created them.
+.It Fn sched_getutil_np pid util
+Get the utilization bounds of the first thread of the process
+specified by
+.Fa pid
+into
+.Fa util .
 .It Fn sched_protect priority
 Performs priority protection using the
 .Dv PTHREAD_PRIO_PROTECT
@@ -201,10 +249,15 @@ of their threads via the
 See
 .Xr secmodel_extensions 9 .
 .Pp
+An ordinary user may lower the utilization bounds of their own
+threads; raising either bound requires super-user privileges.
+.Pp
 Portable applications should not use the
-.Fn sched_setaffinity_np
+.Fn sched_setaffinity_np ,
+.Fn sched_getaffinity_np ,
+.Fn sched_setutil_np
 and
-.Fn sched_getaffinity_np
+.Fn sched_getutil_np
 functions.
 .Sh RETURN VALUES
 .Fn sched_protect ,
@@ -238,9 +291,11 @@ Otherwise, \-1 is returned and
 .Va errno
 is set to indicate the error.
 .Pp
-.Fn sched_setaffinity_np
+.Fn sched_setaffinity_np ,
+.Fn sched_getaffinity_np ,
+.Fn sched_setutil_np
 and
-.Fn sched_getaffinity_np
+.Fn sched_getutil_np
 return 0 on success.
 Otherwise, \-1 is returned and
 .Va errno
@@ -317,6 +372,26 @@ parameter was out of range (not in the range between
 and
 .Dv SCHED_PRIO_MAX ) .
 .El
+.Pp
+The
+.Fn sched_setutil_np
+function fails if:
+.Bl -tag -width Er
+.It Bq Er EINVAL
+A bound was out of range,
+.Fa su_min
+exceeded
+.Fa su_max ,
+or
+.Fa su_spare
+was not zero.
+.It Bq Er EPERM
+A bound would be raised and the caller is not the super-user, or the
+process is a system process.
+.It Bq Er ESRCH
+No process can be found corresponding to
+.Fa pid .
+.El
 .Sh SEE ALSO
 .Xr affinity 3 ,
 .Xr cpuset 3 ,
@@ -324,12 +399,19 @@ and
 .Xr schedctl 8
 .Sh STANDARDS
 These functions, except
-.Fn sched_setaffinity_np
-and
+.Fn sched_setaffinity_np ,
 .Fn sched_getaffinity_np ,
+.Fn sched_setutil_np
+and
+.Fn sched_getutil_np ,
 are expected to conform the
 .St -p1003.1-2001
 standard.
 .Sh HISTORY
 The scheduling functions appeared in
 .Nx 5.0 .
+.Fn sched_setutil_np
+and
+.Fn sched_getutil_np
+appeared in
+.Nx 12.0 .

@@ -1,4 +1,4 @@
-/* $NetBSD: syscallargs.h,v 1.313 2026/05/10 23:51:37 tls Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call argument lists.
@@ -3419,6 +3419,24 @@ struct sys_semtimedop_args {
 check_syscall_args(sys_semtimedop)
 #endif /* !RUMP_CLIENT */
 
+#ifndef RUMP_CLIENT
+struct sys__sched_setutil_args {
+	syscallarg(pid_t) pid;
+	syscallarg(lwpid_t) lid;
+	syscallarg(const struct sched_util *) util;
+};
+check_syscall_args(sys__sched_setutil)
+#endif /* !RUMP_CLIENT */
+
+#ifndef RUMP_CLIENT
+struct sys__sched_getutil_args {
+	syscallarg(pid_t) pid;
+	syscallarg(lwpid_t) lid;
+	syscallarg(struct sched_util *) util;
+};
+check_syscall_args(sys__sched_getutil)
+#endif /* !RUMP_CLIENT */
+
 /*
  * System call prototypes.
  */
@@ -4356,6 +4374,10 @@ int	sys_epoll_pwait2(struct lwp *, const struct sys_epoll_pwait2_args *, registe
 int	sys___dup3100(struct lwp *, const struct sys___dup3100_args *, register_t *);
 
 int	sys_semtimedop(struct lwp *, const struct sys_semtimedop_args *, register_t *);
+
+int	sys__sched_setutil(struct lwp *, const struct sys__sched_setutil_args *, register_t *);
+
+int	sys__sched_getutil(struct lwp *, const struct sys__sched_getutil_args *, register_t *);
 
 #endif /* !RUMP_CLIENT */
 #endif /* _SYS_SYSCALLARGS_H_ */

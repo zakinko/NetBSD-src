@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_syscalls_autoload.c,v 1.43 2026/09/11 13:08:13 sborrill Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call autoload table.
@@ -8,7 +8,7 @@
  */
 
 #include <sys/cdefs.h>
-__KERNEL_RCSID(0, "$NetBSD: netbsd32_syscalls_autoload.c,v 1.43 2026/09/11 13:08:13 sborrill Exp $");
+__KERNEL_RCSID(0, "$NetBSD$");
 
 #if defined(_KERNEL_OPT)
 #include "opt_compat_netbsd.h"

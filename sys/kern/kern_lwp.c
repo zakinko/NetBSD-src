@@ -291,6 +291,7 @@ struct lwp lwp0 __aligned(MIN_LWP_ALIGNMENT) = {
 	.l_inheritedprio = -1,
 	.l_class = SCHED_OTHER,
 	.l_psid = PS_NONE,
+	.l_util_max = SCHED_UTIL_SCALE,
 	.l_pi_lenders = SLIST_HEAD_INITIALIZER(&lwp0.l_pi_lenders),
 	.l_name = __UNCONST("swapper"),
 	.l_fd = &filedesc0,
@@ -951,6 +952,12 @@ lwp_create(lwp_t *l1, proc_t *p2, vaddr_t uaddr, int flags,
 	p2->p_nrlwps++;
 
 	KASSERT(l2->l_affinity == NULL);
+
+	/* Inherit the utilization bounds, under the same lock as affinity. */
+	lwp_lock(l1);
+	l2->l_util_min = l1->l_util_min;
+	l2->l_util_max = l1->l_util_max;
+	lwp_unlock(l1);
 
 	/* Inherit the affinity mask. */
 	if (l1->l_affinity) {

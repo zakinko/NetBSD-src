@@ -57,4 +57,4 @@
 # - move humanize_number/dehumanize_number to libutil
 #
 major=12
-minor=224
+minor=225

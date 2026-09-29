@@ -1068,3 +1068,7 @@
 506	STD MODULAR sysv_ipc { int|sys||semtimedop(int semid, \
 			    struct sembuf *sops, size_t nsops, \
 			    struct timespec *timeout); }
+507	STD		{ int|sys||_sched_setutil(pid_t pid, lwpid_t lid, \
+			    const struct sched_util *util); }
+508	STD		{ int|sys||_sched_getutil(pid_t pid, lwpid_t lid, \
+			    struct sched_util *util); }

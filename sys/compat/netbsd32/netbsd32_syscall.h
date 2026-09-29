@@ -1,4 +1,4 @@
-/* $NetBSD: netbsd32_syscall.h,v 1.164 2026/09/11 13:08:13 sborrill Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call numbers.
@@ -1359,6 +1359,12 @@
 /* syscall: "netbsd32_semtimedop" ret: "int" args: "int" "netbsd32_sembufp_t" "netbsd32_size_t" "netbsd32_timespecp_t" */
 #define	NETBSD32_SYS_netbsd32_semtimedop	506
 
-#define	NETBSD32_SYS_MAXSYSCALL	507
+/* syscall: "netbsd32__sched_setutil" ret: "int" args: "pid_t" "lwpid_t" "const netbsd32_sched_utilp_t" */
+#define	NETBSD32_SYS_netbsd32__sched_setutil	507
+
+/* syscall: "netbsd32__sched_getutil" ret: "int" args: "pid_t" "lwpid_t" "netbsd32_sched_utilp_t" */
+#define	NETBSD32_SYS_netbsd32__sched_getutil	508
+
+#define	NETBSD32_SYS_MAXSYSCALL	509
 #define	NETBSD32_SYS_NSYSENT	512
 #endif /* _NETBSD32_SYS_SYSCALL_H_ */

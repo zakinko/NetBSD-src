@@ -1,4 +1,4 @@
-/* $NetBSD: syscall.h,v 1.330 2026/05/10 23:51:37 tls Exp $ */
+/* $NetBSD$ */
 
 /*
  * System call numbers.
@@ -1425,6 +1425,12 @@
 /* syscall: "semtimedop" ret: "int" args: "int" "struct sembuf *" "size_t" "struct timespec *" */
 #define	SYS_semtimedop	506
 
-#define	SYS_MAXSYSCALL	507
+/* syscall: "_sched_setutil" ret: "int" args: "pid_t" "lwpid_t" "const struct sched_util *" */
+#define	SYS__sched_setutil	507
+
+/* syscall: "_sched_getutil" ret: "int" args: "pid_t" "lwpid_t" "struct sched_util *" */
+#define	SYS__sched_getutil	508
+
+#define	SYS_MAXSYSCALL	509
 #define	SYS_NSYSENT	512
 #endif /* _SYS_SYSCALL_H_ */

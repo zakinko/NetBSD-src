@@ -403,6 +403,11 @@ attach	es8316ac at iic
 file	dev/i2c/es8316ac.c			es8316ac
 
 
+# Analog Devices SSM3515 speaker amplifier
+device	ssmamp: fdt_dai
+attach	ssmamp at iic
+file	dev/i2c/ssmamp.c			ssmamp
+
 # TI TAS2764/TAS2770 speaker amplifier
 device	tasamp: fdt_dai
 attach	tasamp at iic

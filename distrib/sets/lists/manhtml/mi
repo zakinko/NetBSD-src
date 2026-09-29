@@ -1769,6 +1769,7 @@
 ./usr/share/man/html4/srt.html			man-sys-htmlman		html
 ./usr/share/man/html4/ss.html			man-sys-htmlman		html
 ./usr/share/man/html4/ssdfb.html		man-sys-htmlman		html
+./usr/share/man/html4/ssmamp.html			man-sys-htmlman		html
 ./usr/share/man/html4/st.html			man-sys-htmlman		html
 ./usr/share/man/html4/stderr.html		man-sys-htmlman		html
 ./usr/share/man/html4/stdin.html		man-sys-htmlman		html

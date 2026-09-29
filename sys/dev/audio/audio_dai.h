@@ -61,11 +61,29 @@
 #define	AUDIO_DAI_JACK_HP		0
 #define	AUDIO_DAI_JACK_MIC		1
 
+/*
+ * Limits a speaker amplifier must enforce on itself.  Levels are in
+ * hundredths of a dB: amp_gain_max in cdBV, the analog output level
+ * for a full scale input; volume is attenuation in cdB, 0 or below.
+ *
+ * While locked is true the amplifier holds its output at the quietest
+ * level it has, whatever volume it is asked for.
+ */
+struct audio_dai_speaker_limit {
+	bool	locked;
+	int	amp_gain_max;
+};
+
 typedef struct audio_dai_device {
 	int	(*dai_set_sysclk)(struct audio_dai_device *, u_int, int);
 	int	(*dai_set_format)(struct audio_dai_device *, u_int);
 	int	(*dai_add_device)(struct audio_dai_device *, struct audio_dai_device *);
 	int	(*dai_jack_detect)(struct audio_dai_device *, u_int, int);
+	int	(*dai_set_tdm_slot)(struct audio_dai_device *, uint32_t, uint32_t,
+		    u_int, u_int);
+	int	(*dai_set_speaker_limit)(struct audio_dai_device *,
+		    const struct audio_dai_speaker_limit *);
+	int	(*dai_set_volume)(struct audio_dai_device *, int);
 
 	const struct audio_hw_if *dai_hw_if;		/* audio driver callbacks */
 
@@ -119,6 +137,44 @@ audio_dai_jack_detect(audio_dai_tag_t dai, u_int jack, bool present)
 		return 0;
 
 	return dai->dai_jack_detect(dai, jack, present);
+}
+
+/*
+ * Place a device on a TDM link: txmask and rxmask have a bit set for
+ * each slot it transmits in and receives from, out of slots per frame,
+ * each width bits wide.
+ */
+static inline int
+audio_dai_set_tdm_slot(audio_dai_tag_t dai, uint32_t txmask, uint32_t rxmask,
+    u_int slots, u_int width)
+{
+	if (!dai->dai_set_tdm_slot)
+		return 0;
+
+	return dai->dai_set_tdm_slot(dai, txmask, rxmask, slots, width);
+}
+
+/*
+ * Unlike the hooks above, a device without this one fails: the caller
+ * is asking for a guarantee, and silence would read as having it.
+ */
+static inline int
+audio_dai_set_speaker_limit(audio_dai_tag_t dai,
+    const struct audio_dai_speaker_limit *limit)
+{
+	if (!dai->dai_set_speaker_limit)
+		return ENODEV;
+
+	return dai->dai_set_speaker_limit(dai, limit);
+}
+
+static inline int
+audio_dai_set_volume(audio_dai_tag_t dai, int cdb)
+{
+	if (!dai->dai_set_volume)
+		return ENODEV;
+
+	return dai->dai_set_volume(dai, cdb);
 }
 
 static inline int

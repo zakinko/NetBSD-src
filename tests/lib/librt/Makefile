@@ -7,6 +7,7 @@ NOMAN=		# defined
 TESTSDIR=	${TESTSBASE}/lib/librt
 
 LDADD+=		-lrt
+LDADD.t_sched+=	-lpthread
 
 TESTS_C=	t_sched
 TESTS_C+=	t_sem

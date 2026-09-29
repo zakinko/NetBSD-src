@@ -32,8 +32,13 @@
 __RCSID("$NetBSD: t_sched.c,v 1.6 2017/12/24 17:37:23 christos Exp $");
 
 #include <sys/param.h>	/* PRI_NONE */
+#include <sys/wait.h>
 #include <sched.h>
+#include <errno.h>
+#include <lwp.h>
 #include <limits.h>
+#include <pthread.h>
+#include <string.h>
 #include <unistd.h>
 
 #include <atf-c.h>
@@ -243,6 +248,272 @@ ATF_TC_BODY(sched_rr_get_interval_2, tc)
 	ATF_REQUIRE(tv1.tv_nsec == tv2.tv_nsec);
 }
 
+static struct sched_util
+util(int min, int max)
+{
+	struct sched_util su;
+
+	memset(&su, 0, sizeof(su));
+	su.su_min = min;
+	su.su_max = max;
+	return su;
+}
+
+static void
+util_expect(pid_t pid, int min, int max)
+{
+	struct sched_util su;
+
+	ATF_REQUIRE(sched_getutil_np(pid, &su) == 0);
+	ATF_CHECK_EQ_MSG(su.su_min, min, "su_min %d, want %d", su.su_min, min);
+	ATF_CHECK_EQ_MSG(su.su_max, max, "su_max %d, want %d", su.su_max, max);
+}
+
+ATF_TC(sched_util_default);
+ATF_TC_HEAD(sched_util_default, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Utilization bounds default to 0 and SCHED_UTIL_SCALE");
+}
+
+ATF_TC_BODY(sched_util_default, tc)
+{
+
+	util_expect(0, 0, SCHED_UTIL_SCALE);
+	util_expect(getpid(), 0, SCHED_UTIL_SCALE);
+}
+
+ATF_TC(sched_util_set);
+ATF_TC_HEAD(sched_util_set, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Bounds read back as set, and SCHED_UTIL_RESET restores them");
+	atf_tc_set_md_var(tc, "require.user", "root");
+}
+
+ATF_TC_BODY(sched_util_set, tc)
+{
+	struct sched_util su;
+
+	su = util(100, 800);
+	ATF_REQUIRE(sched_setutil_np(0, &su) == 0);
+	util_expect(0, 100, 800);
+
+	su = util(SCHED_UTIL_RESET, 600);
+	ATF_REQUIRE(sched_setutil_np(0, &su) == 0);
+	util_expect(0, 0, 600);
+
+	su = util(SCHED_UTIL_RESET, SCHED_UTIL_RESET);
+	ATF_REQUIRE(sched_setutil_np(0, &su) == 0);
+	util_expect(0, 0, SCHED_UTIL_SCALE);
+}
+
+ATF_TC(sched_util_einval);
+ATF_TC_HEAD(sched_util_einval, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "Out of range bounds, min above max and spare fields fail");
+}
+
+ATF_TC_BODY(sched_util_einval, tc)
+{
+	struct sched_util su;
+
+	su = util(800, 100);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EINVAL, sched_setutil_np(0, &su) == -1);
+
+	su = util(0, SCHED_UTIL_SCALE + 1);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EINVAL, sched_setutil_np(0, &su) == -1);
+
+	su = util(-2, 100);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EINVAL, sched_setutil_np(0, &su) == -1);
+
+	su = util(0, 100);
+	su.su_spare[5] = 1;
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EINVAL, sched_setutil_np(0, &su) == -1);
+
+	/* Nothing of the failed calls took effect. */
+	util_expect(0, 0, SCHED_UTIL_SCALE);
+}
+
+ATF_TC(sched_util_esrch);
+ATF_TC_HEAD(sched_util_esrch, tc)
+{
+	atf_tc_set_md_var(tc, "descr", "A process that does not exist");
+}
+
+ATF_TC_BODY(sched_util_esrch, tc)
+{
+	struct sched_util su;
+	pid_t pid;
+	int status;
+
+	/* A child that has been reaped leaves a pid nobody has. */
+	pid = fork();
+	ATF_REQUIRE(pid != -1);
+	if (pid == 0)
+		_exit(0);
+	ATF_REQUIRE(waitpid(pid, &status, 0) == pid);
+
+	su = util(0, 100);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(ESRCH, sched_setutil_np(pid, &su) == -1);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(ESRCH, sched_getutil_np(pid, &su) == -1);
+}
+
+ATF_TC(sched_util_eperm);
+ATF_TC_HEAD(sched_util_eperm, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "An unprivileged process may lower its bounds but not raise them");
+	atf_tc_set_md_var(tc, "require.user", "unprivileged");
+}
+
+ATF_TC_BODY(sched_util_eperm, tc)
+{
+	struct sched_util su;
+
+	su = util(0, 500);
+	ATF_REQUIRE(sched_setutil_np(0, &su) == 0);
+	util_expect(0, 0, 500);
+
+	su = util(0, 600);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EPERM, sched_setutil_np(0, &su) == -1);
+
+	su = util(100, 500);
+	errno = 0;
+	ATF_REQUIRE_ERRNO(EPERM, sched_setutil_np(0, &su) == -1);
+
+	util_expect(0, 0, 500);
+}
+
+static void *
+util_thread(void *arg)
+{
+	struct sched_util *su = arg;
+
+	if (_sched_getutil(0, _lwp_self(), su) != 0)
+		su->su_min = -100;
+	return NULL;
+}
+
+static pthread_mutex_t util_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t util_cv = PTHREAD_COND_INITIALIZER;
+static int util_stage;
+static lwpid_t util_lid;
+
+static void *
+util_waiter(void *arg)
+{
+
+	pthread_mutex_lock(&util_mtx);
+	util_lid = _lwp_self();
+	util_stage = 1;
+	pthread_cond_broadcast(&util_cv);
+	while (util_stage != 2)
+		pthread_cond_wait(&util_cv, &util_mtx);
+	pthread_mutex_unlock(&util_mtx);
+	return NULL;
+}
+
+ATF_TC(sched_util_eperm_atomic);
+ATF_TC_HEAD(sched_util_eperm_atomic, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "A process-wide change refused for one thread changes none");
+	atf_tc_set_md_var(tc, "require.user", "unprivileged");
+}
+
+ATF_TC_BODY(sched_util_eperm_atomic, tc)
+{
+	struct sched_util su;
+	pthread_t t;
+
+	ATF_REQUIRE(pthread_create(&t, NULL, util_waiter, NULL) == 0);
+	pthread_mutex_lock(&util_mtx);
+	while (util_stage != 1)
+		pthread_cond_wait(&util_cv, &util_mtx);
+	pthread_mutex_unlock(&util_mtx);
+
+	/*
+	 * Both orders: the thread that may be lowered is met first in one
+	 * round and last in the other, whatever order the kernel walks
+	 * the threads in.  Values only go down, as an unprivileged
+	 * process may not raise them.
+	 */
+	static const struct {
+		int self, other, req;
+	} r[2] = {
+		{ 500, 300, 400 },	/* lowers this thread, raises the other */
+		{ 100, 300, 200 },	/* raises this thread, lowers the other */
+	};
+	for (int i = 0; i < 2; i++) {
+		su = util(0, r[i].self);
+		ATF_REQUIRE(_sched_setutil(0, _lwp_self(), &su) == 0);
+		su = util(0, r[i].other);
+		ATF_REQUIRE(_sched_setutil(0, util_lid, &su) == 0);
+
+		su = util(0, r[i].req);
+		errno = 0;
+		ATF_CHECK_ERRNO(EPERM, sched_setutil_np(0, &su) == -1);
+		ATF_REQUIRE(_sched_getutil(0, _lwp_self(), &su) == 0);
+		ATF_CHECK_EQ_MSG(su.su_max, r[i].self, "round %d: this "
+		    "thread's max %d", i, su.su_max);
+		ATF_REQUIRE(_sched_getutil(0, util_lid, &su) == 0);
+		ATF_CHECK_EQ_MSG(su.su_max, r[i].other, "round %d: other "
+		    "thread's max %d", i, su.su_max);
+	}
+
+	pthread_mutex_lock(&util_mtx);
+	util_stage = 2;
+	pthread_cond_broadcast(&util_cv);
+	pthread_mutex_unlock(&util_mtx);
+	ATF_REQUIRE(pthread_join(t, NULL) == 0);
+}
+
+ATF_TC(sched_util_inherit);
+ATF_TC_HEAD(sched_util_inherit, tc)
+{
+	atf_tc_set_md_var(tc, "descr",
+	    "The child of fork(2) and new threads inherit the bounds");
+	atf_tc_set_md_var(tc, "require.user", "root");
+}
+
+ATF_TC_BODY(sched_util_inherit, tc)
+{
+	struct sched_util su, tsu;
+	pthread_t t;
+	pid_t pid;
+	int status;
+
+	su = util(200, 700);
+	ATF_REQUIRE(sched_setutil_np(0, &su) == 0);
+
+	pid = fork();
+	ATF_REQUIRE(pid != -1);
+	if (pid == 0) {
+		if (sched_getutil_np(0, &su) != 0 ||
+		    su.su_min != 200 || su.su_max != 700)
+			_exit(1);
+		_exit(0);
+	}
+	ATF_REQUIRE(waitpid(pid, &status, 0) == pid);
+	ATF_CHECK_MSG(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+	    "child did not inherit the bounds");
+
+	memset(&tsu, 0, sizeof(tsu));
+	ATF_REQUIRE(pthread_create(&t, NULL, util_thread, &tsu) == 0);
+	ATF_REQUIRE(pthread_join(t, NULL) == 0);
+	ATF_CHECK_EQ_MSG(tsu.su_min, 200, "thread su_min %d", tsu.su_min);
+	ATF_CHECK_EQ_MSG(tsu.su_max, 700, "thread su_max %d", tsu.su_max);
+}
+
 ATF_TP_ADD_TCS(tp)
 {
 
@@ -256,6 +527,14 @@ ATF_TP_ADD_TCS(tp)
 
 	ATF_TP_ADD_TC(tp, sched_rr_get_interval_1);
 	ATF_TP_ADD_TC(tp, sched_rr_get_interval_2);
+
+	ATF_TP_ADD_TC(tp, sched_util_default);
+	ATF_TP_ADD_TC(tp, sched_util_set);
+	ATF_TP_ADD_TC(tp, sched_util_einval);
+	ATF_TP_ADD_TC(tp, sched_util_esrch);
+	ATF_TP_ADD_TC(tp, sched_util_eperm);
+	ATF_TP_ADD_TC(tp, sched_util_eperm_atomic);
+	ATF_TP_ADD_TC(tp, sched_util_inherit);
 
 	return atf_no_error();
 }

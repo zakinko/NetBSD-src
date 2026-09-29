@@ -29,6 +29,11 @@ device	appleiic: fdt_clock, fdt_i2c, i2cbus
 attach	appleiic at fdt with apple_iic
 file	arch/arm/apple/apple_iic.c		apple_iic
 
+# CPU cluster performance states, for the utilization governor
+device	applecpufreq
+attach	applecpufreq at fdt with apple_cpufreq
+file	arch/arm/apple/apple_cpufreq.c		apple_cpufreq
+
 # NCO, audio clock generator
 device	applenco: fdt_clock
 attach	applenco at fdt with apple_nco

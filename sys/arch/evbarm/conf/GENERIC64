@@ -225,6 +225,7 @@ tegrapmc*	at fdt? pass 4		# NVIDIA Tegra PMC
 applembox*	at fdt? pass 2		# Apple Mailbox
 
 # Clock and Reset controller
+applecpufreq*	at fdt?			# Apple CPU cluster performance states
 applenco*	at fdt? pass 2		# Apple NCO (audio clocks)
 bcmcprman*	at fdt? pass 1		# Broadcom BCM283x Clock Manager
 bcmaux* 	at fdt? pass 1		# Broadcom BCM283x Aux Periph Clocks

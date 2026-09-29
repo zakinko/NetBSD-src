@@ -53,6 +53,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/param.h>
 #include <sys/audioio.h>
 #include <sys/bus.h>
+#include <sys/condvar.h>
 #include <sys/device.h>
 #include <sys/kernel.h>
 #include <sys/kmem.h>
@@ -158,6 +159,8 @@ CTASSERT(sizeof(struct virtio_snd_pcm_set_params) == 24);
 #define	VIOSND_NIO		4	/* periods queued ahead, per stream */
 #define	VIOSND_CTL_WAIT_MS	1000	/* attach queries, polled; ours */
 #define	VIOSND_MAXSEG		(64 * 1024)	/* a period, at most */
+#define	VIOSND_DRAIN_WAIT_MS	100	/* freeing a ring; ours */
+#define	VIOSND_DRAIN_WAITS	20
 
 /* Driver memory shared with the device, one DMA allocation. */
 struct viosnd_shm {
@@ -193,9 +196,11 @@ struct viosnd_stream {
 	/* running */
 	struct viosnd_dma *vs_ring;
 	bool		vs_running;
+	u_int		vs_epoch;	/* of the current trigger */
 	size_t		vs_blksize, vs_bufsize;
 	size_t		vs_next;	/* next period to queue, offset */
 	u_int		vs_queued;
+	u_int		vs_inflight;	/* messages kept out */
 	void		(*vs_intr)(void *);
 	void		*vs_intrarg;
 };
@@ -213,6 +218,9 @@ struct viosnd_softc {
 	struct viosnd_shm	*sc_shm;
 	bool			sc_ctl_busy[VIOSND_NCTL];
 	bool			sc_io_busy[2][VIOSND_NIO];
+	u_int			sc_io_epoch[2][VIOSND_NIO];
+	u_int			sc_io_stale[2];	/* earlier triggers' */
+	kcondvar_t		sc_io_cv;	/* all messages back */
 	int			sc_info_slot;	/* -1: none waiting */
 	bool			sc_info_done;
 	/*
@@ -226,6 +234,7 @@ struct viosnd_softc {
 };
 
 static int	viosnd_match(device_t, cfdata_t, void *);
+static void	viosnd_stop(struct viosnd_softc *, struct viosnd_stream *);
 static void	viosnd_attach(device_t, device_t, void *);
 
 CFATTACH_DECL_NEW(viosnd, sizeof(struct viosnd_softc),
@@ -497,6 +506,7 @@ viosnd_io_queue(struct viosnd_softc *sc, struct viosnd_stream *vs)
 		return error;
 	sc->sc_slot_entry[vq->vq_index][slot] = i;
 	sc->sc_io_busy[vs->vs_dir][i] = true;
+	sc->sc_io_epoch[vs->vs_dir][i] = vs->vs_epoch;
 	io = &sc->sc_shm->io[vs->vs_dir][i];
 	io->xfer.stream_id = htole32(vs->vs_id);
 	io->status.status = 0;
@@ -528,11 +538,20 @@ viosnd_io_done(struct virtqueue *vq)
 
 	mutex_enter(&sc->sc_intr_lock);
 	while (virtio_dequeue(vsc, vq, &slot, &len) == 0) {
-		sc->sc_io_busy[dir][sc->sc_slot_entry[vq->vq_index][slot]] =
-		    false;
+		const u_int e = sc->sc_slot_entry[vq->vq_index][slot];
+
+		sc->sc_io_busy[dir][e] = false;
 		virtio_dequeue_commit(vsc, vq, slot);
-		if (vs->vs_queued > 0)
-			vs->vs_queued--;
+		if (sc->sc_io_epoch[dir][e] != vs->vs_epoch) {
+			/* An earlier trigger's, stopped before it came back. */
+			KASSERT(sc->sc_io_stale[dir] > 0);
+			if (--sc->sc_io_stale[dir] == 0)
+				cv_broadcast(&sc->sc_io_cv);
+			continue;
+		}
+		KASSERT(vs->vs_queued > 0);
+		if (--vs->vs_queued == 0)
+			cv_broadcast(&sc->sc_io_cv);
 		if (!vs->vs_running)
 			continue;	/* after halt: only drained */
 		/* One period elapsed: tell audio(4), keep the queue full. */
@@ -634,12 +653,37 @@ viosnd_allocm(void *priv, int dir, size_t size)
 	return NULL;
 }
 
+/*
+ * Messages out with the device point into the ring: wait for them
+ * before freeing it.  The bound is ours.
+ */
+static void
+viosnd_io_drain(struct viosnd_softc *sc)
+{
+	u_int d, tries;
+
+	mutex_enter(&sc->sc_intr_lock);
+	for (tries = 0; tries < VIOSND_DRAIN_WAITS; tries++) {
+		for (d = 0; d < 2; d++) {
+			if (sc->sc_stream[d].vs_queued != 0 ||
+			    sc->sc_io_stale[d] != 0)
+				break;
+		}
+		if (d == 2)
+			break;
+		(void)cv_timedwait(&sc->sc_io_cv, &sc->sc_intr_lock,
+		    mstohz(VIOSND_DRAIN_WAIT_MS));
+	}
+	mutex_exit(&sc->sc_intr_lock);
+}
+
 static void
 viosnd_freem(void *priv, void *addr, size_t size)
 {
 	struct viosnd_softc *sc = priv;
 	u_int i;
 
+	viosnd_io_drain(sc);
 	for (i = 0; i < __arraycount(sc->sc_dmas); i++) {
 		struct viosnd_dma *vd = sc->sc_dmas[i];
 
@@ -665,6 +709,17 @@ viosnd_get_props(void *priv)
 	if (props == (AUDIO_PROP_PLAYBACK | AUDIO_PROP_CAPTURE))
 		props |= AUDIO_PROP_FULLDUPLEX | AUDIO_PROP_INDEPENDENT;
 	return props;
+}
+
+/* 5.14.6.6.1: stop, then release. */
+static void
+viosnd_stop(struct viosnd_softc *sc, struct viosnd_stream *vs)
+{
+
+	KASSERT(mutex_owned(&sc->sc_intr_lock));
+
+	(void)viosnd_pcm_cmd(sc, vs, VIRTIO_SND_R_PCM_STOP);
+	(void)viosnd_pcm_cmd(sc, vs, VIRTIO_SND_R_PCM_RELEASE);
 }
 
 /*
@@ -693,6 +748,13 @@ viosnd_trigger(struct viosnd_softc *sc, struct viosnd_stream *vs,
 	/* 5.14.6.6.3.2: period_bytes divides buffer_bytes. */
 	if (blksize <= 0 || vs->vs_bufsize % blksize != 0)
 		return EINVAL;
+	/*
+	 * Messages of the previous trigger may still be out; from here on
+	 * their completions are not periods of this one.  Before, the
+	 * count was reset and they were taken as elapsed periods.
+	 */
+	sc->sc_io_stale[vs->vs_dir] += vs->vs_queued;
+	vs->vs_epoch++;
 	vs->vs_next = 0;
 	vs->vs_queued = 0;
 	vs->vs_intr = intr;
@@ -711,8 +773,19 @@ viosnd_trigger(struct viosnd_softc *sc, struct viosnd_stream *vs,
 	    (error = viosnd_pcm_cmd(sc, vs, VIRTIO_SND_R_PCM_PREPARE)) != 0)
 		return error;
 	vs->vs_running = true;
-	/* Output pre-buffers; input queues empty buffers (5.14.6.8.2.2). */
-	for (i = 0; i < MIN(VIOSND_NIO, vs->vs_bufsize / blksize); i++) {
+	/*
+	 * Output pre-buffers; input queues empty buffers (5.14.6.8.2.2).
+	 * At most one block fewer than the ring holds is out at a time:
+	 * audio(4) fills the block after next in the interrupt for a block
+	 * (audio_pintr), so the block a whole ring ahead still holds old
+	 * samples.  With the ring's every block out, each completion queued
+	 * that stale block; QEMU reads a message only when it comes to it,
+	 * which hid this until the last block of a sound, never refilled,
+	 * went out missing.
+	 */
+	vs->vs_inflight = MAX(1, MIN(VIOSND_NIO,
+	    vs->vs_bufsize / blksize - 1));
+	for (i = 0; i < vs->vs_inflight; i++) {
 		if ((error = viosnd_io_queue(sc, vs)) != 0)
 			break;
 	}
@@ -733,8 +806,7 @@ viosnd_halt(struct viosnd_softc *sc, struct viosnd_stream *vs)
 		return 0;
 	vs->vs_running = false;
 	vs->vs_intr = NULL;
-	(void)viosnd_pcm_cmd(sc, vs, VIRTIO_SND_R_PCM_STOP);
-	(void)viosnd_pcm_cmd(sc, vs, VIRTIO_SND_R_PCM_RELEASE);
+	viosnd_stop(sc, vs);
 	return 0;
 }
 
@@ -889,6 +961,7 @@ viosnd_attach(device_t parent, device_t self, void *aux)
 	sc->sc_info_slot = -1;
 	mutex_init(&sc->sc_lock, MUTEX_DEFAULT, IPL_NONE);
 	mutex_init(&sc->sc_intr_lock, MUTEX_DEFAULT, IPL_AUDIO);
+	cv_init(&sc->sc_io_cv, "viosndio");
 	for (d = 0; d < 2; d++) {
 		sc->sc_stream[d].vs_id = -1;
 		sc->sc_stream[d].vs_dir = d;

@@ -123,6 +123,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	TDM_CFG0_FRAME_START		__BIT(0)	/* 1: high to low */
 #define	TDM_CFG1_RX_OFFSET		__BITS(5,1)
 #define	TDM_CFG1_RX_EDGE		__BIT(0)	/* 1: falling */
+#define	TDM_CFG4_TX_FILL		__BIT(4)	/* 1: Hi-Z, 0: zeros */
 #define	TDM_CFG4_TX_OFFSET		__BITS(3,1)
 #define	TDM_CFG4_TX_EDGE		__BIT(0)	/* 1: falling */
 #define	TDM_CFG2_RX_SCFG		__BITS(5,4)
@@ -310,6 +311,7 @@ struct tasamp_softc {
 	struct timeval		sc_active_at;	/*  since */
 	uint32_t		sc_vsns_slot;
 	uint32_t		sc_isns_slot;
+	bool			sc_zero_fill;	/* ti,sdout-zero-fill */
 };
 
 static int	tasamp_match(device_t, cfdata_t, void *);
@@ -793,6 +795,16 @@ tasamp_init(struct tasamp_softc *sc)
 
 	if ((error = tasamp_update(sc, TASAMP_MODE_REG, m->sense_pd, 0)) != 0)
 		return error;
+	/*
+	 * Unused transmit slots: zeros rather than Hi-Z where the board's
+	 * tree asks, as for a single amplifier on the bus (TAS2764 8.4 and
+	 * 8.9.17, TAS2770 Table 8-21 and 8.5.2.15; TX_FILL is bit 4 of
+	 * TDM_CFG4 on both).  "ti,sdout-zero-fill" is in Apple's trees
+	 * but in no binding; its reading here is the name's and TX_FILL's.
+	 */
+	if ((error = tasamp_update(sc, m->tdm_cfg4_reg, TDM_CFG4_TX_FILL,
+	    sc->sc_zero_fill ? 0 : TDM_CFG4_TX_FILL)) != 0)
+		return error;
 	if ((error = tasamp_update(sc, m->tdm_cfg5_reg,
 	    TDM_CFG5_VSNS_TX | TDM_CFG5_VSNS_SLOT,
 	    TDM_CFG5_VSNS_TX |
@@ -840,6 +852,7 @@ tasamp_attach(device_t parent, device_t self, void *aux)
 	aprint_normal(": TI %s speaker amplifier\n", sc->sc_model->name);
 
 	/* SLOT fields are six bits wide (8.9.18, 8.5.2.16). */
+	sc->sc_zero_fill = of_hasprop(sc->sc_phandle, "ti,sdout-zero-fill");
 	if (of_getprop_uint32(sc->sc_phandle, "ti,vmon-slot-no",
 	    &sc->sc_vsns_slot) != 0 ||
 	    of_getprop_uint32(sc->sc_phandle, "ti,imon-slot-no",

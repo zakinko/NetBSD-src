@@ -74,6 +74,10 @@ properties
 and
 .Dq ti,imon-slot-no ,
 counted in the amplifier's 8-bit transmit slots.
+The other transmit slots are left undriven, or driven with zeros if
+the property
+.Dq ti,sdout-zero-fill
+is present, as for a single amplifier on the bus.
 .Sh SEE ALSO
 .Xr applemacaudio 4 ,
 .Xr iic 4 ,

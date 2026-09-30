@@ -63,6 +63,20 @@ static daddr_t dupblk;
 static void checkinode(ino_t, struct inodesc *);
 static ino_t lastino;
 
+/*
+ * Extended attribute blocks found on plain UFS2, checked once every
+ * data block is known.  See extattr_defer().
+ */
+struct eadefer {
+	ino_t	ed_ino;
+	daddr_t	ed_blk[UFS_NXADDR];
+	int	ed_nfrags[UFS_NXADDR];
+};
+static struct eadefer *eadefer;
+static size_t neadefer, maxeadefer;
+static int extattr_defer(ino_t, union dinode *, struct inodesc *);
+static void extattr_check(void);
+
 void
 pass1(void)
 {
@@ -215,6 +229,7 @@ pass1(void)
 			inostathead[c].il_stat = ninfo;
 		}
 	}
+	extattr_check();
 #ifdef PROGRESS
 	if (!preen)
 		progress_done();
@@ -426,7 +441,9 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 	if (is_ufs2 && (!is_ufs2ea || doing2noea) &&
 	    (iswap32(dp->dp2.di_extsize) != 0 ||
 	     iswap64(dp->dp2.di_extb[0]) != 0 ||
-	     iswap64(dp->dp2.di_extb[1]) != 0)) {
+	     iswap64(dp->dp2.di_extb[1]) != 0) &&
+	    (doing2ea || doing2noea ||
+	     !extattr_defer(inumber, dp, idesc))) {
 		pfatal("NON-ZERO EXTATTR FIELDS I=%llu",
 		    (unsigned long long)inumber);
 		if (!reply("CLEAR EXTATTR FIELDS AND SET PERMS TO 0")) {
@@ -495,6 +512,136 @@ unknown:
 		inodirty();
 	} else
 		markclean = 0;
+}
+
+/*
+ * Plain UFS2 as FreeBSD writes it carries extended attributes without
+ * the UFS2ea magic.  checkinode() used to clear every such inode's
+ * extended attribute fields and set its permissions to 0, which lost
+ * the attributes and ACLs for good; FreeBSD's fsck then found the
+ * file system clean.  The fields cannot simply be trusted either: a
+ * NetBSD release before UFS2ea may have freed their blocks and handed
+ * them to another file.  So note the blocks here, count them towards
+ * di_blocks as if they were kept, and let extattr_check() decide once
+ * the data blocks of every inode are in the block map.
+ *
+ * Return 0 if the fields are malformed, for checkinode() to clear.
+ */
+static int
+extattr_defer(ino_t inumber, union dinode *dp, struct inodesc *idesc)
+{
+	struct eadefer *ed;
+	uint32_t extsize, bsize;
+	u_int j, ndb;
+	int nfrags;
+	int64_t offset;
+
+	extsize = iswap32((uint32_t)dp->dp2.di_extsize);
+	bsize = (uint32_t)sblock->fs_bsize;
+	if (extsize == 0 || extsize > UFS_NXADDR * bsize)
+		return 0;
+	if (neadefer == maxeadefer) {
+		maxeadefer = maxeadefer ? 2 * maxeadefer : 64;
+		eadefer = realloc(eadefer, maxeadefer * sizeof(*eadefer));
+		if (eadefer == NULL) {
+			pfatal("cannot alloc %zu bytes for extattr list\n",
+			    maxeadefer * sizeof(*eadefer));
+			exit(FSCK_EXIT_CHECK_FAILED);
+		}
+	}
+	ed = &eadefer[neadefer];
+	ed->ed_ino = inumber;
+	ndb = howmany(extsize, bsize);
+	nfrags = 0;
+	for (j = 0; j < UFS_NXADDR; j++) {
+		ed->ed_blk[j] = (daddr_t)iswap64((uint64_t)dp->dp2.di_extb[j]);
+		if (j >= ndb) {
+			if (ed->ed_blk[j] != 0)
+				return 0;
+			ed->ed_nfrags[j] = 0;
+			continue;
+		}
+		if (ed->ed_blk[j] == 0)
+			return 0;
+		if (j == ndb - 1 &&
+		    (offset = ffs_blkoff(sblock, extsize)) != 0)
+			ed->ed_nfrags[j] = (int)ffs_numfrags(sblock,
+			    ffs_fragroundup(sblock, offset));
+		else
+			ed->ed_nfrags[j] = sblock->fs_frag;
+		nfrags += ed->ed_nfrags[j];
+	}
+	idesc->id_entryno += nfrags;
+	neadefer++;
+	return 1;
+}
+
+/*
+ * Keep the extended attribute blocks noted by extattr_defer() that lie
+ * inside the file system and belong to no other inode.  Data blocks
+ * were all claimed first, so a stale field loses to the file that now
+ * owns its block instead of turning that file's block into a DUP.
+ *
+ * Clearing a stale field loses nothing: its blocks hold no attributes
+ * any more.  Nor does it widen access, since those blocks cannot hold
+ * the file's ACL and the kernel does not read extended attributes on
+ * plain UFS2, so leave the permissions alone rather than set them to 0
+ * as for a malformed field, and let preen clear it.
+ */
+static void
+extattr_check(void)
+{
+	struct eadefer *ed;
+	union dinode *dp;
+	daddr_t blk;
+	uint64_t nblocks;
+	size_t i;
+	int j, k, ok;
+
+	for (i = 0; i < neadefer; i++) {
+		ed = &eadefer[i];
+		ok = 1;
+		nblocks = 0;
+		for (j = 0; j < UFS_NXADDR; j++) {
+			if (ed->ed_nfrags[j] == 0)
+				continue;
+			nblocks += (uint64_t)ed->ed_nfrags[j];
+			if (chkrange(ed->ed_blk[j], ed->ed_nfrags[j])) {
+				ok = 0;
+				continue;
+			}
+			for (k = 0; k < ed->ed_nfrags[j]; k++)
+				if (testbmap(ed->ed_blk[j] + k))
+					ok = 0;
+		}
+		if (ok) {
+			for (j = 0; j < UFS_NXADDR; j++)
+				for (k = 0; k < ed->ed_nfrags[j]; k++) {
+					blk = ed->ed_blk[j] + k;
+					setbmap(blk);
+					n_blks++;
+				}
+			continue;
+		}
+		pwarn("UNUSABLE EXTATTR BLOCKS I=%llu",
+		    (unsigned long long)ed->ed_ino);
+		if (preen)
+			printf(" (CLEARED)\n");
+		else if (reply("CLEAR EXTATTR FIELDS") == 0) {
+			markclean = 0;
+			continue;
+		}
+		dp = ginode(ed->ed_ino);
+		dp->dp2.di_extsize = 0;
+		dp->dp2.di_extb[0] = 0;
+		dp->dp2.di_extb[1] = 0;
+		dp->dp2.di_blocks = iswap64(iswap64(dp->dp2.di_blocks) -
+		    nblocks * (uint64_t)btodb(sblock->fs_fsize));
+		inodirty();
+	}
+	free(eadefer);
+	eadefer = NULL;
+	neadefer = maxeadefer = 0;
 }
 
 int

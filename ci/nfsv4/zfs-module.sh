@@ -1,7 +1,6 @@
 #!/bin/sh
-# Cross build zfs.kmod against this tree.  The kernel's XDR is a module of
-# its own here and nfsv4 needs it too, so the module must use that rather
-# than carry a copy of the same symbols.
+# Cross build zfs.kmod against this tree.  Its XDR is its own, renamed
+# openzfs_xdr_*, so it does not meet the xdr module.
 #   zfs-module.sh SHA WORK OUT
 set -eu
 SHA=$1; W=$2; OUT=$3
@@ -11,14 +10,6 @@ git fetch -q --depth 1 https://github.com/zakinko/zfs "$SHA"
 git checkout -q FETCH_HEAD
 python3 - <<'P'
 import re
-p='module/Makefile.netbsd';s=open(p).read()
-s2=re.sub(r'SRCS\+=\s*xdr\.c \\\n\s*xdr_array\.c \\\n\s*xdr_mem\.c\n','',s)
-assert s2!=s
-open(p,'w').write(s2)
-p='module/os/bsd/zfs/kmod_core.c';s=open(p).read()
-a='MODULE(MODULE_CLASS_DRIVER, zfs, "zlib");'
-assert s.count(a)==1
-open(p,'w').write(s.replace(a,'MODULE(MODULE_CLASS_DRIVER, zfs, "zlib,xdr");'))
 # Current has no struct uvm to look into; 11.0, which the port follows, has.
 import subprocess
 for f in subprocess.check_output('grep -rl pagedaemon_lwp module/os/bsd',shell=True,text=True).split():

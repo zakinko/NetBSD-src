@@ -114,6 +114,31 @@ oncrpc_xdrmbuf_detach(struct oncrpc_xdrmbuf *xm)
 }
 
 /*
+ * Make an encoder end at pos, with the cursor there: the bytes after it
+ * were written for nothing.  x must be an oncrpc_xdrmbuf.
+ */
+void
+oncrpc_xdrmbuf_truncate(XDR *x, u_int pos)
+{
+	struct oncrpc_xdrmbuf *xm = XM(x);
+	struct mbuf *m;
+
+	KASSERT(x->x_op == XDR_ENCODE);
+	KASSERT(pos <= xm->xm_len);
+
+	(void)xdrmbuf_setpos(x, pos);
+	m = xm->xm_cur;
+	if (m == NULL)
+		return;
+	m->m_len = xm->xm_off;
+	if (m->m_next != NULL) {
+		m_freem(m->m_next);
+		m->m_next = NULL;
+	}
+	xm->xm_len = pos;
+}
+
+/*
  * Where the cursor is, as the (nd_md, nd_dpos) pair the nfsm_* macros
  * use.  This is also how the body of a large opaque can be taken from
  * the chain without going through xdr_opaque(), which always copies.

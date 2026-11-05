@@ -58,6 +58,7 @@ void	oncrpc_xdrmbuf_create(struct oncrpc_xdrmbuf *, struct mbuf *, u_int,
 	    enum xdr_op);
 struct mbuf *
 	oncrpc_xdrmbuf_detach(struct oncrpc_xdrmbuf *);
+void	oncrpc_xdrmbuf_truncate(XDR *, u_int);
 void	oncrpc_xdrmbuf_getcursor(struct oncrpc_xdrmbuf *, struct mbuf **,
 	    char **);
 

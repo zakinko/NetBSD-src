@@ -88,6 +88,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 struct oncrpc_ireq;
 struct oncrpc_xprt;
 
+static volatile uint64_t oncrpc_nextconn;
+
 /* A registered program. */
 struct oncrpc_prog {
 	LIST_ENTRY(oncrpc_prog)	 pg_list;
@@ -126,6 +128,7 @@ struct oncrpc_xprt {
 	u_int			 xp_refs;
 	u_int			 xp_flags;
 	u_int			 xp_nreqs;	/* calls in progress */
+	uint64_t		 xp_id;		/* rq_connid */
 	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
 	LIST_ENTRY(oncrpc_xprt)	 xp_list;
 	SIMPLEQ_HEAD(, oncrpc_ireq) xp_sendq;
@@ -507,6 +510,7 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	rq->rq_proc = c->c_proc;
 	rq->rq_flavor = c->c_cred.oa_flavor;
 	rq->rq_nam = ir->ir_nam != NULL ? ir->ir_nam : ir->ir_xprt->xp_nam;
+	rq->rq_connid = ir->ir_xprt->xp_id;
 	rq->rq_arg = op->op_arg;
 	rq->rq_args = &ir->ir_args.xm_xdr;
 	oncrpc_xdrmbuf_create(&ir->ir_res, NULL, ONCRPC_MAXMSG, XDR_ENCODE);
@@ -775,6 +779,7 @@ oncrpc_svc_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam)
 
 	xp = kmem_zalloc(sizeof(*xp), KM_SLEEP);
 	xp->xp_svc = svc;
+	xp->xp_id = atomic_inc_64_nv(&oncrpc_nextconn);
 	xp->xp_fp = fp;
 	xp->xp_so = so;
 	xp->xp_nam = nam;

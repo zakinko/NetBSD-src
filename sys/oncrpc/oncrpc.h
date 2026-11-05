@@ -123,6 +123,7 @@ struct oncrpc_req {
 	uint32_t	rq_flavor;
 	kauth_cred_t	rq_cred;	/* NULL for AUTH_NONE */
 	struct mbuf	*rq_nam;	/* peer, as MT_SONAME; may be NULL */
+	uint64_t	rq_connid;	/* the connection; none is used twice */
 	void		*rq_arg;	/* op_arg */
 	XDR		*rq_args;
 	XDR		*rq_res;

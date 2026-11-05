@@ -77,9 +77,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * refuses much more than this at the default sb_max, and a stream
  * message may be larger than its buffer anyway.  ONCRPC_XPRT_MAXREQS
  * bounds the calls one peer can have in progress; beyond that its data
- * stays in the socket and TCP pushes back.
+ * stays in the socket and TCP pushes back.  ONCRPC_MAXDGRAM is what
+ * fits UDP over IPv4 less the header of an accepted reply.
  */
 #define	ONCRPC_MAXMSG		(1024 * 1024)
+#define	ONCRPC_MAXDGRAM		(65507 - 24)
 #define	ONCRPC_SOCKBUF		(128 * 1024)
 #define	ONCRPC_XPRT_MAXREQS	64
 
@@ -517,7 +519,10 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	rq->rq_nam = ir->ir_nam != NULL ? ir->ir_nam : ir->ir_xprt->xp_nam;
 	rq->rq_arg = op->op_arg;
 	rq->rq_args = &ir->ir_args.xm_xdr;
-	oncrpc_xdrmbuf_create(&ir->ir_res, NULL, ONCRPC_MAXMSG, XDR_ENCODE);
+	/* A result too large to send becomes SYSTEM_ERR, not silence. */
+	oncrpc_xdrmbuf_create(&ir->ir_res, NULL,
+	    ir->ir_xprt->xp_so->so_type == SOCK_STREAM ? ONCRPC_MAXMSG :
+	    ONCRPC_MAXDGRAM, XDR_ENCODE);
 	rq->rq_res = &ir->ir_res.xm_xdr;
 
 	if (op->op_nprocs != 0 && c->c_proc >= op->op_nprocs)

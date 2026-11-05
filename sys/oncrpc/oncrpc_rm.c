@@ -45,8 +45,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/oncrpc_var.h>
 
-/* Not from the RFC; the same as NFS_MAX_FRAG. */
-#define	ONCRPC_RM_MAXFRAG	64
+/*
+ * Not from the RFC.  NFS_MAX_FRAG, 64, was tried first and is too few:
+ * pynfs cuts every record into fragments of 2048 bytes, so anything past
+ * 128 KB lost the connection.  This many of 1 KB make a record of
+ * ONCRPC_MAXMSG, so the mbufs of tiny fragments cost about what a record
+ * of that size does.
+ */
+#define	ONCRPC_RM_MAXFRAG	1024
 
 void
 oncrpc_rm_init(struct oncrpc_rm *rm, u_int max)

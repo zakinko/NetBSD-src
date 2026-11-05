@@ -504,9 +504,16 @@ t_rm_limit(void)
 	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
 	oncrpc_rm_fini(&rm);
 
+	/* A peer may cut a record finely: pynfs uses 2048 bytes. */
+	oncrpc_rm_init(&rm, 16);
+	for (i = 0; i < 512; i++)
+		rm_feed(&rm, empty, sizeof(empty), 0, 0);
+	CHECK(oncrpc_rm_next(&rm, &rec) == EAGAIN);
+	oncrpc_rm_fini(&rm);
+
 	/* Fragments of nothing still cost something. */
 	oncrpc_rm_init(&rm, 16);
-	for (i = 0; i < 65; i++)
+	for (i = 0; i < 1025; i++)
 		rm_feed(&rm, empty, sizeof(empty), 0, 0);
 	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
 	oncrpc_rm_fini(&rm);

@@ -24,6 +24,13 @@ if [ ! -d "$HOME/pynfs" ]; then
 	    "$HOME/pynfs/nfs4.0/testserver.py"
 	(cd "$HOME/pynfs" && python3 setup.py build) >"$OUT/pynfs-build.log" 2>&1
 fi
+# The tests of the conformance table of version 4.2 go in with pynfs's.
+if [ -f ci/nfsv4/pynfs42/st_v42.py ]; then
+	cp ci/nfsv4/pynfs42/st_v42.py "$HOME/pynfs/nfs4.1/server41tests/"
+	grep -q st_v42 "$HOME/pynfs/nfs4.1/server41tests/__init__.py" ||
+	    sed -i 's/"st_sparse.py",/"st_sparse.py", "st_v42.py",/' \
+	    "$HOME/pynfs/nfs4.1/server41tests/__init__.py"
+fi
 cd "$HOME/pynfs/${SUITE:-nfs4.0}"
 rc=0
 # As root, as the base line was: MKNOD and chown need it.

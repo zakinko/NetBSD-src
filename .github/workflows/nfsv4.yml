@@ -141,9 +141,10 @@ jobs:
         run: VERS=4.2 sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: What version 4.2 adds, from the Linux client
         run: sh ci/nfsv4/linux-42.sh "$PWD/out"
-      - run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 all' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs42
-      - run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
+      - run: SUITE=nfs4.1 V42FS=ffs PYNFS_ARGS='--minorversion 2 v42 sparse' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs42
+      - run: SUITE=nfs4.1 V42FS=acl PYNFS_ARGS='--minorversion 2 v42 v42x xattr sparse' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
       - continue-on-error: true
+        run: SUITE=nfs4.1 V42FS=zfs PYNFS_ARGS='--minorversion 2 v42 v42x sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
         run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
       - name: The 4.1 suite, with the write delegations the client test turned off
         run: |

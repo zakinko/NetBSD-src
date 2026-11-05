@@ -6,7 +6,7 @@ KMOD=	nfsv4
 
 .PATH:	${S}/fs/nfsv4
 
-SRCS+=	nfsv4_compound.c nfsv4_xdr.c
+SRCS+=	nfsv4_compound.c nfsv4_fh.c nfsv4_xdr.c
 
 WARNS=	3
 

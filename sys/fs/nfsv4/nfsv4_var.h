@@ -33,6 +33,23 @@
 
 #include <fs/nfsv4/nfsv4_xdr.h>
 
+struct mount;
+struct vnode;
+
+/*
+ * A current or saved filehandle.  A real one holds a reference to its
+ * vnode, unlocked, and the credential to use on it: which credential
+ * that is depends on the export, so on the file system of the handle.
+ * A node of the pseudo file system has neither, RFC 7530 s7.3.
+ */
+struct nfsv4_cfh {
+	bool		cf_set;
+	struct nfsv4_fh	cf_fh;
+	struct vnode	*cf_vp;		/* NULL in the pseudo file system */
+	kauth_cred_t	cf_cred;
+	int		cf_exflags;
+};
+
 /*
  * What is being done for one COMPOUND.  Its operations run in order in
  * one thread, so nothing here needs a lock.
@@ -41,6 +58,8 @@ struct nfsv4_compound {
 	struct oncrpc_req *c_rq;
 	XDR		*c_ax;		/* arguments */
 	XDR		*c_rx;		/* results */
+	struct nfsv4_cfh c_cur;		/* RFC 7530 s15.2.4.1 */
+	struct nfsv4_cfh c_saved;
 };
 
 /*
@@ -50,5 +69,24 @@ struct nfsv4_compound {
  * result's union, because the COMPOUND cannot take bytes back.
  */
 typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
+
+uint32_t nfsv4_errno(int);
+uint32_t nfsv4_name_check(const struct nfsv4_name *);
+
+void	nfsv4_cfh_clear(struct nfsv4_cfh *);
+const char *nfsv4_cfh_path(const struct nfsv4_cfh *, size_t *);
+int	nfsv4_lookup_vp(struct vnode *, const char *, kauth_cred_t,
+	    struct vnode **);
+int	nfsv4_pseudo_walk(struct nfsv4_compound *, const char *, size_t,
+	    int (*)(struct mount *, const char *, size_t, void *), void *);
+
+uint32_t nfsv4_op_getfh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_lookup(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_putfh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_putpubfh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_restorefh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_savefh(struct nfsv4_compound *, union nfsv4_args *);
 
 #endif /* !_FS_NFSV4_NFSV4_VAR_H_ */

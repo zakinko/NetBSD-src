@@ -53,6 +53,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/socketvar.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/vnode.h>
+
+#include <nfs/rpcv2.h>
+#include <nfs/nfsproto.h>
+#include <nfs/nfs.h>
+#include <nfs/nfs_var.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
 
@@ -77,6 +83,14 @@ struct nfsv4_opdesc {
 
 static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
+	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
+	[NFSV4_OP_LOOKUP]	= { nfsv4_op_lookup,	NFSV4_OPF_FH },
+	[NFSV4_OP_LOOKUPP]	= { nfsv4_op_lookupp,	NFSV4_OPF_FH },
+	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	0 },
+	[NFSV4_OP_PUTPUBFH]	= { nfsv4_op_putpubfh,	0 },
+	[NFSV4_OP_PUTROOTFH]	= { nfsv4_op_putrootfh,	0 },
+	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
+	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
 };
 
 static struct oncrpc_svc *nfsv4_svc;
@@ -139,6 +153,8 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	od = &nfsv4_ops[op];
 	if (od->od_func == NULL)
 		return NFS4ERR_NOTSUPP;
+	if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
+		return NFS4ERR_NOFILEHANDLE;
 	return (*od->od_func)(c, a);
 }
 
@@ -178,6 +194,9 @@ nfsv4_compound(struct oncrpc_req *rq)
 	c.c_ax = ax;
 	c.c_rx = rx;
 	a = kmem_alloc(sizeof(*a), KM_SLEEP);
+
+	/* As versions 2 and 3: the exports hold still for the whole call. */
+	netexport_rdlock();
 
 	disp = ONCRPC_ERR_SYSTEM;
 	status = NFS4_OK;
@@ -223,6 +242,9 @@ nfsv4_compound(struct oncrpc_req *rq)
 	if (nfsv4_patch32(rx, numpos, n) && nfsv4_patch32(rx, 0, status))
 		disp = ONCRPC_DONE;
 out:
+	nfsv4_cfh_clear(&c.c_cur);
+	nfsv4_cfh_clear(&c.c_saved);
+	netexport_rdunlock();
 	kmem_free(a, sizeof(*a));
 	return disp;
 }

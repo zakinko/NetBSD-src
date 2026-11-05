@@ -63,11 +63,17 @@
 #define	ONCRPC_RPC_MISMATCH	0
 #define	ONCRPC_AUTH_ERROR	1
 
-/* RFC 5531 s9, enum auth_stat; only those a server here can return */
+/* RFC 5531 s9, enum auth_stat */
 #define	ONCRPC_AUTH_OK		0
 #define	ONCRPC_AUTH_BADCRED	1
 #define	ONCRPC_AUTH_REJECTEDCRED 2
 #define	ONCRPC_AUTH_BADVERF	3
+#define	ONCRPC_AUTH_REJECTEDVERF 4
+#define	ONCRPC_AUTH_TOOWEAK	5
+#define	ONCRPC_AUTH_INVALIDRESP	6
+#define	ONCRPC_AUTH_FAILED	7
+#define	ONCRPC_RPCSEC_GSS_CREDPROBLEM 13
+#define	ONCRPC_RPCSEC_GSS_CTXPROBLEM 14
 
 /* RFC 5531 s8.2, enum auth_flavor */
 #define	ONCRPC_AUTH_NONE	0
@@ -91,6 +97,7 @@ struct oncrpc_req;
 enum oncrpc_dispatch {
 	ONCRPC_DONE,		/* send SUCCESS and what is in rq_res */
 	ONCRPC_NOREPLY,		/* no reply, RFC 5531 s8.4.1 */
+	ONCRPC_ERR_TOOWEAK,	/* MSG_DENIED, AUTH_TOOWEAK, RFC 5531 s8.2 */
 	ONCRPC_ERR_PROC,	/* PROC_UNAVAIL */
 	ONCRPC_ERR_ARGS,	/* GARBAGE_ARGS */
 	ONCRPC_ERR_SYSTEM	/* SYSTEM_ERR */

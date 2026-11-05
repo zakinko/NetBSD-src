@@ -538,7 +538,11 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	}
 	if (stat != ONCRPC_SUCCESS)
 		XDR_DESTROY(rq->rq_res);
-	ok = oncrpc_msg_encode_accepted(x, c->c_xid, stat, 0, 0);
+	if (disp == ONCRPC_ERR_TOOWEAK)
+		ok = oncrpc_msg_encode_denied_auth(x, c->c_xid,
+		    ONCRPC_AUTH_TOOWEAK);
+	else
+		ok = oncrpc_msg_encode_accepted(x, c->c_xid, stat, 0, 0);
 
 reply:
 	if (!ok) {

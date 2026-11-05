@@ -21,8 +21,7 @@ flush() {
 	sync
 	sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'
 }
-seekcheck() {
-	python3 - "$1" "$2" <<'P'
+cat >"$OUT/seekcheck.py" <<'P'
 import os, sys
 fd = os.open(sys.argv[1], os.O_RDONLY)
 d = os.lseek(fd, 0, os.SEEK_DATA)
@@ -32,7 +31,6 @@ assert d <= 1048576 < h <= 4194304
 if sys.argv[2] == "holes":
     assert d > 0 and h < 4194304
 P
-}
 # Which operations the client really sent.
 ops() {
 	grep -E "^ *($1):" /proc/self/mountstats | sort -u
@@ -52,7 +50,7 @@ one() {
 	t truncate -s 4M "$d/sp"
 	t sh -c "printf x | dd of='$d/sp' bs=1 seek=1048576 conv=notrunc status=none"
 	flush
-	t seekcheck "$d/sp" "$holes"
+	t python3 "$OUT/seekcheck.py" "$d/sp" "$holes"
 	t sh -c "python3 -c \"import sys;b=bytearray(4194304);b[1048576]=120;sys.stdout.buffer.write(b)\" >'$OUT/sp'"
 	t cmp "$d/sp" "$OUT/sp"
 
@@ -138,5 +136,5 @@ n=len(b)-5;assert b[:5]==bytes(5) and b[5:]==a[1000000:1000000+n] and n>0;print(
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 } >"$LOG" 2>&1
-rm -f "$OUT/sp" "$OUT/da"
+rm -f "$OUT/sp" "$OUT/da" "$OUT/seekcheck.py"
 cat "$LOG"

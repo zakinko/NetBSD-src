@@ -35,9 +35,8 @@
  * neither has them left out of supported_attrs as s16.7.4 allows.  acl and aclsupport are in it only
  * where the file system has ACLs.
  *
- * Of those of version 4.2, sec_label is not given either: labels need a
- * MAC model and the kernel has none to enforce one, and RFC 7862 s13
- * has Labeled NFS OPTIONAL.
+ * sec_label is given in the Limited Server Mode of RFC 7862 s9.5.2, see
+ * nfsv4_label.c.
  */
 
 #include <sys/cdefs.h>
@@ -289,6 +288,8 @@ attr_more(const struct nfsv4_bitmap *bm, struct vnode *vp, uint32_t minor)
 	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
 	if (minor != 0)
 		w2 &= ~(W2_ALL | W2_RETENTION | W2_PNFS);
+	if (minor >= 2)
+		w2 &= ~W2(FATTR4_SEC_LABEL);	/* the caller looks at that */
 	return bm->bm_more || (w2 & ~attr_w2_by(vp, minor)) != 0;
 }
 
@@ -366,10 +367,15 @@ nfsv4_attr_supported(const struct nfsv4_compound *c,
 
 	uint64_t m = attr_supported_full(vp);
 
+	if (c->c_minor >= 2 && bm->bm_n > 2 &&
+	    (bm->bm_w[2] & W2(FATTR4_SEC_LABEL)) != 0 &&
+	    !nfsv4_label_supported(vp))
+		return false;
 	if (c->c_minor == 0)
 		m &= ~attr_v41;
 	if (c->c_minor != 0 && bm->bm_n > 2 && (bm->bm_w[2] &
-	    ~(attr_w2_supported(vp) | attr_w2_by(vp, c->c_minor))) != 0)
+	    ~(attr_w2_supported(vp) | attr_w2_by(vp, c->c_minor) |
+	    (c->c_minor >= 2 ? W2(FATTR4_SEC_LABEL) : 0))) != 0)
 		return false;
 	return !attr_more(bm, vp, c->c_minor) && (attr_mask(bm) & ~m) == 0;
 }
@@ -795,7 +801,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	struct vattr va;
 	struct timespec boot;
 	uint64_t m, out, id, maxsize, sup;
-	uint32_t st, w2, w2v42, w2out;
+	uint32_t st, w2, w2v42, w2out, w2sup;
 	u_int n;
 	bool ok;
 	XDR x;
@@ -814,8 +820,13 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		m &= attr_absent;
 	else if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);
-	w2v42 = (want->bm_n > 2 ? want->bm_w[2] : 0) &
-	    attr_w2_by(vp, c->c_minor);
+	w2sup = attr_w2_by(vp, c->c_minor);
+	w2v42 = want->bm_n > 2 ? want->bm_w[2] : 0;
+	/* Finding out takes the vnode, so only when it matters. */
+	if (c->c_minor >= 2 && ((m & BIT(FATTR4_SUPPORTED_ATTRS)) != 0 ||
+	    (w2v42 & W2(FATTR4_SEC_LABEL)) != 0) && nfsv4_label_supported(vp))
+		w2sup |= W2(FATTR4_SEC_LABEL);
+	w2v42 &= w2sup;
 	if (rderr != NFS4_OK)
 		w2v42 = 0;
 
@@ -892,8 +903,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			    attr_u32(&x, W0(sup)) && attr_u32(&x, W1(sup));
 			if (ok && c->c_minor != 0)
 				ok = attr_u32(&x, (cf->cf_attr == 0 ?
-				    attr_w2_supported(vp) : W2_ALL) |
-				    attr_w2_by(vp, c->c_minor));
+				    attr_w2_supported(vp) : W2_ALL) | w2sup);
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
@@ -1182,7 +1192,11 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		ok = attr_u32(&x, attr_change_type(vp));
 		w2out |= W2(FATTR4_CHANGE_ATTR_TYPE);
 	}
-	if (ok && (w2 & W2(FATTR4_XATTR_SUPPORT)) != 0) {
+	if (ok && (w2v42 & W2(FATTR4_SEC_LABEL)) != 0) {
+		ok = nfsv4_label_put(&x, vp);
+		w2out |= W2(FATTR4_SEC_LABEL);
+	}
+	if (ok && (w2v42 & W2(FATTR4_XATTR_SUPPORT)) != 0) {
 		ok = attr_u32(&x, nfsv4_xattr_supported(vp, cf->cf_cred));
 		w2out |= W2(FATTR4_XATTR_SUPPORT);
 	}
@@ -1382,8 +1396,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 {
 	XDR *x = c->c_ax;
 	uint64_t m = attr_mask(&fa->fa_mask);
+	struct nfsv4_bitmap bm = fa->fa_mask;
 	uint32_t st, v, id, w2;
 	u_int n, end;
+	bool label = false;
 
 	vattr_null(va);
 	*setp = 0;
@@ -1401,11 +1417,19 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	if (c->c_minor >= 2 && fa->fa_mask.bm_n > 2 &&
 	    (fa->fa_mask.bm_w[2] & attr_w2_by(c->c_cur.cf_vp, c->c_minor)) != 0)
 		return NFS4ERR_INVAL;
+	if (c->c_minor >= 2 && bm.bm_n > 2 &&
+	    (bm.bm_w[2] & W2(FATTR4_SEC_LABEL)) != 0) {
+		if (!nfsv4_label_supported(c->c_cur.cf_vp))
+			return NFS4ERR_ATTRNOTSUPP;
+		bm.bm_w[2] &= ~W2(FATTR4_SEC_LABEL);
+		w2 &= ~W2(FATTR4_SEC_LABEL);
+		label = true;
+	}
 	/* RFC 8881 s5.5: it is known, and get-only. */
-	if (!attr_more(&fa->fa_mask, c->c_cur.cf_vp, c->c_minor) &&
+	if (!attr_more(&bm, c->c_cur.cf_vp, c->c_minor) &&
 	    (w2 & ~(W2_SETONLY | W2_HOLD | W2_MODEMASK)) != 0)
 		return NFS4ERR_INVAL;
-	if (attr_more(&fa->fa_mask, c->c_cur.cf_vp, c->c_minor) ||
+	if (attr_more(&bm, c->c_cur.cf_vp, c->c_minor) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota |
 	    BIT(FATTR4_DACL) | (nfsv4_pnfs_on() ? attr_pnfs : 0))) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
@@ -1563,6 +1587,8 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		c->c_xs.xs_set2 = w2 & ~W2_MODEMASK;
 		c->c_xs.xs_masked = (w2 & W2_MODEMASK) != 0;
 	}
+	if (st == NFS4_OK && label)
+		st = nfsv4_label_parse(c, x);
 	if (st == NFS4_OK && XDR_GETPOS(x) != fa->fa_pos + fa->fa_len)
 		st = NFS4ERR_BADXDR;
 	if (!XDR_SETPOS(x, end))

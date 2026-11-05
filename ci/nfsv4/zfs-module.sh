@@ -19,6 +19,14 @@ p='module/os/bsd/zfs/kmod_core.c';s=open(p).read()
 a='MODULE(MODULE_CLASS_DRIVER, zfs, "zlib");'
 assert s.count(a)==1
 open(p,'w').write(s.replace(a,'MODULE(MODULE_CLASS_DRIVER, zfs, "zlib,xdr");'))
+# Current has no struct uvm to look into; 11.0, which the port follows, has.
+import subprocess
+for f in subprocess.check_output('grep -rl pagedaemon_lwp module/os/bsd',shell=True,text=True).split():
+    t=open(f).read()
+    t2=re.sub(r'curlwp\s*==\s*uvm\.pagedaemon_lwp','uvm_lwp_is_pagedaemon(curlwp)',t)
+    t2=re.sub(r'curlwp\s*!=\s*uvm\.pagedaemon_lwp','!uvm_lwp_is_pagedaemon(curlwp)',t2)
+    assert t2!=t,f
+    open(f,'w').write(t2)
 P
 mkdir -p "$W/zobj"; cd module
 "$W/tools/bin/nbmake-amd64" -f Makefile.netbsd S="$S" MAKEOBJDIR="$W/zobj" \

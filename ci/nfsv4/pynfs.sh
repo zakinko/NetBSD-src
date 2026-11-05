@@ -14,13 +14,18 @@ if [ ! -d "$HOME/pynfs" ]; then
 	    python3-ply python3-setuptools >/dev/null
 	git clone -q git://git.linux-nfs.org/projects/cdmackay/pynfs.git "$HOME/pynfs"
 	git -C "$HOME/pynfs" checkout -q "$REV"
+	# The server calls back through the tunnel, so the ports must be
+	# known beforehand, and pynfs picks any.
+	sed -i -e 's/^        self.port = 0$/        self.port = next(_cb_ports)/' \
+	    -e '0,/^class CBServer/s//_cb_ports = iter(range(40001, 40005))\n&/' \
+	    "$HOME/pynfs/nfs4.0/nfs4lib.py"
 	(cd "$HOME/pynfs" && python3 setup.py build) >"$OUT/pynfs-build.log" 2>&1
 fi
 cd "$HOME/pynfs/nfs4.0"
 rc=0
 # As root, as the base line was: MKNOD and chown need it.
 timeout "$LIMIT" sudo -E python3 ./testserver.py 127.0.0.1:"$EXPORT" --maketree \
-    --rundeps --json="$OUT/$NAME.json" ${PYNFS_ARGS:-all} \
+    --rundeps --json="$OUT/$NAME.json" ${PYNFS_ARGS:-all} </dev/null \
     >"$OUT/$NAME.log" 2>&1 || rc=$?
 echo "testserver.py exit status $rc"
 tail -5 "$OUT/$NAME.log"

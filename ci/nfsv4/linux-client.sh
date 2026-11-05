@@ -11,6 +11,8 @@ sudo modprobe nfs || {
 	sudo modprobe nfs
 }
 sudo modprobe nfsv4
+# The server calls back through the tunnel, to a port it can be told.
+echo 40100 | sudo tee /sys/module/nfs/parameters/callback_tcpport >/dev/null
 fails=0
 t() {
 	echo "\$ $*"

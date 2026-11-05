@@ -32,10 +32,7 @@
  *
  * There is no stable storage, so nothing survives a restart, and no
  * grace period: a client finds out by NFS4ERR_STALE_CLIENTID that it
- * lost everything, and CLAIM_PREVIOUS gets NFS4ERR_NO_GRACE.  There is
- * no duplicate request cache either, which s16.33.5 assumes, so a
- * SETCLIENTID that is resent is done again; the client sees a different
- * confirm verifier and goes on with whichever reply it got.
+ * lost everything, and CLAIM_PREVIOUS gets NFS4ERR_NO_GRACE.
  */
 
 #include <sys/cdefs.h>

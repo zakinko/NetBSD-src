@@ -76,6 +76,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 /* flags of an operation */
 #define	NFSV4_OPF_FH		0x01	/* needs the current filehandle */
+#define	NFSV4_OPF_DRC		0x02	/* its reply is for the DRC */
 
 struct nfsv4_opdesc {
 	nfsv4_op_t	od_func;	/* NULL for NFS4ERR_NOTSUPP */
@@ -87,10 +88,10 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
 	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
-	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH },
+	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
-	[NFSV4_OP_LINK]		= { nfsv4_op_link,	NFSV4_OPF_FH },
+	[NFSV4_OP_LINK]		= { nfsv4_op_link,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_LOCK]		= { nfsv4_op_lock,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOCKT]	= { nfsv4_op_lockt,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOCKU]	= { nfsv4_op_locku,	NFSV4_OPF_FH },
@@ -109,18 +110,18 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
 	[NFSV4_OP_RELEASE_LOCKOWNER] =
 				  { nfsv4_op_release_lockowner, 0 },
-	[NFSV4_OP_REMOVE]	= { nfsv4_op_remove,	NFSV4_OPF_FH },
-	[NFSV4_OP_RENAME]	= { nfsv4_op_rename,	NFSV4_OPF_FH },
+	[NFSV4_OP_REMOVE]	= { nfsv4_op_remove,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_RENAME]	= { nfsv4_op_rename,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_RENEW]	= { nfsv4_op_renew,	0 },
 	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
 	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO]	= { nfsv4_op_secinfo,	NFSV4_OPF_FH },
-	[NFSV4_OP_SETATTR]	= { nfsv4_op_setattr,	NFSV4_OPF_FH },
-	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid, 0 },
+	[NFSV4_OP_SETATTR]	= { nfsv4_op_setattr,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid, NFSV4_OPF_DRC },
 	[NFSV4_OP_SETCLIENTID_CONFIRM] =
-				  { nfsv4_op_setclientid_confirm, 0 },
+				  { nfsv4_op_setclientid_confirm, NFSV4_OPF_DRC },
 	[NFSV4_OP_VERIFY]	= { nfsv4_op_verify,	NFSV4_OPF_FH },
-	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH },
+	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 };
 
 static struct oncrpc_svc *nfsv4_svc;
@@ -185,8 +186,11 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		st = NFS4ERR_NOTSUPP;
 	else if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
 		st = NFS4ERR_NOFILEHANDLE;
-	else
+	else {
+		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
+			c->c_drc = true;
 		return (*od->od_func)(c, a);
+	}
 
 	/* SETATTR4res has its bitmap whatever the status, s16.32.3. */
 	if (op == NFSV4_OP_SETATTR && !nfsv4_attr_put_mask(c->c_rx, 0))
@@ -195,7 +199,7 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 }
 
 static enum oncrpc_dispatch
-nfsv4_compound(struct oncrpc_req *rq)
+nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 {
 	struct nfsv4_compound c;
 	union nfsv4_args *a;
@@ -279,6 +283,7 @@ nfsv4_compound(struct oncrpc_req *rq)
 	if (nfsv4_patch32(rx, numpos, n) && nfsv4_patch32(rx, 0, status))
 		disp = ONCRPC_DONE;
 out:
+	*drc = c.c_drc;
 	nfsv4_cfh_clear(&c.c_cur);
 	nfsv4_cfh_clear(&c.c_saved);
 	nfsv4_cfh_clear(&c.c_scratch);
@@ -291,12 +296,20 @@ out:
 static enum oncrpc_dispatch
 nfsv4_dispatch(struct oncrpc_req *rq)
 {
+	struct nfsv4_drc d;
+	enum oncrpc_dispatch disp;
+	bool drc = false;
 
 	switch (rq->rq_proc) {
 	case NFSV4_PROC_NULL:
 		return ONCRPC_DONE;
 	case NFSV4_PROC_COMPOUND:
-		return nfsv4_compound(rq);
+		if (nfsv4_drc_start(rq, &d))
+			return nfsv4_drc_replay(rq, &d) ? ONCRPC_DONE :
+			    ONCRPC_ERR_SYSTEM;
+		disp = nfsv4_compound(rq, &drc);
+		nfsv4_drc_end(&d, disp == ONCRPC_DONE && drc ? rq : NULL);
+		return disp;
 	default:
 		return ONCRPC_ERR_PROC;
 	}
@@ -371,14 +384,17 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 	switch (cmd) {
 	case MODULE_CMD_INIT:
 		nfsv4_state_init();
+		nfsv4_drc_init();
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
+			nfsv4_drc_fini();
 			nfsv4_state_fini();
 			return error;
 		}
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
 			oncrpc_svc_destroy(nfsv4_svc);
+			nfsv4_drc_fini();
 			nfsv4_state_fini();
 			return error;
 		}
@@ -388,6 +404,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
 		oncrpc_svc_destroy(nfsv4_svc);
+		nfsv4_drc_fini();
 		nfsv4_state_fini();
 		return 0;
 	default:

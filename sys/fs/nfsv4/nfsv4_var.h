@@ -64,6 +64,19 @@ struct nfsv4_compound {
 	struct nfsv4_cfh c_saved;
 	struct nfsv4_cfh c_scratch;	/* for a lookup that is thrown away */
 	char		*c_rbuf;	/* NFSV4_REPLAY_MAX, for seqid replies */
+	bool		c_drc;		/* an operation that the DRC keeps ran */
+};
+
+/* A COMPOUND in the duplicate request cache's hands; see nfsv4_drc.c. */
+struct nfsv4_drc {
+	bool		d_on;		/* the cache knows of it */
+	uint32_t	d_xid;
+	uint32_t	d_sum;
+	uint32_t	d_uid;
+	uint32_t	d_hash;
+	uint8_t		d_addr[16];
+	char		*d_buf;		/* the reply to replay */
+	u_int		d_len;
 };
 
 /*
@@ -87,6 +100,12 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
 
 /* Room for one object's attributes, not counting the bitmap. */
 #define	NFSV4_ATTRBUF		2048
+
+void	nfsv4_drc_init(void);
+void	nfsv4_drc_fini(void);
+bool	nfsv4_drc_start(struct oncrpc_req *, struct nfsv4_drc *);
+bool	nfsv4_drc_replay(struct oncrpc_req *, struct nfsv4_drc *);
+void	nfsv4_drc_end(struct nfsv4_drc *, struct oncrpc_req *);
 
 uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    const struct nfsv4_bitmap *, uint32_t, char *, size_t,

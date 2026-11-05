@@ -510,17 +510,53 @@ lookup_cross(struct nfsv4_compound *c, struct vnode **vpp)
 	return 0;
 }
 
+/*
+ * Set to the object called name in the directory dir, with the rules of
+ * LOOKUP but for the name having been checked.  to may be dir.
+ */
 uint32_t
-nfsv4_op_lookup(struct nfsv4_compound *c, union nfsv4_args *a)
+nfsv4_cfh_lookup(struct nfsv4_compound *c, struct nfsv4_cfh *dir,
+    const char *name, size_t namelen, struct nfsv4_cfh *to)
 {
-	const struct nfsv4_name *nm = &a->name.name;
-	struct nfsv4_cfh *cf = &c->c_cur;
 	struct vnode *vp;
 	char path[NFSV4_FH_PATHMAX + 1];
 	const char *cur;
 	size_t curlen;
 	uint32_t st;
 	int error;
+
+	if (dir->cf_vp == NULL) {
+		cur = nfsv4_cfh_path(dir, &curlen);
+		if (curlen == 1)	/* "/" */
+			curlen = 0;
+		if (curlen + 1 + namelen > NFSV4_FH_PATHMAX)
+			return NFS4ERR_NOENT;
+		memcpy(path, cur, curlen);
+		path[curlen] = '/';
+		memcpy(path + curlen + 1, name, namelen);
+		return cfh_setpath(c, to, path, curlen + 1 + namelen);
+	}
+
+	error = nfsv4_lookup_vp(dir->cf_vp, name, dir->cf_cred, &vp);
+	if (error != 0)
+		return nfsv4_errno(error);
+	error = lookup_cross(c, &vp);
+	if (error != 0) {
+		vrele(vp);
+		return nfsv4_errno(error);
+	}
+	st = cfh_setreal(c, to, vp);
+	if (st != NFS4_OK)
+		vrele(vp);
+	return st;
+}
+
+uint32_t
+nfsv4_op_lookup(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	const struct nfsv4_name *nm = &a->name.name;
+	struct nfsv4_cfh *cf = &c->c_cur;
+	uint32_t st;
 
 	/* RFC 7530 s16.13.5 */
 	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
@@ -529,32 +565,7 @@ nfsv4_op_lookup(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_name_check(nm);
 	if (st != NFS4_OK)
 		return st;
-
-	if (cf->cf_vp == NULL) {
-		cur = nfsv4_cfh_path(cf, &curlen);
-		if (curlen == 1)	/* "/" */
-			curlen = 0;
-		if (curlen + 1 + nm->nm_len > NFSV4_FH_PATHMAX)
-			return NFS4ERR_NOENT;
-		memcpy(path, cur, curlen);
-		path[curlen] = '/';
-		memcpy(path + curlen + 1, nm->nm_str, nm->nm_len);
-		return cfh_setpath(c, cf, path, curlen + 1 + nm->nm_len);
-	}
-
-	error = nfsv4_lookup_vp(cf->cf_vp, nm->nm_str, cf->cf_cred, &vp);
-	if (error == 0)
-		error = lookup_cross(c, &vp);
-	else
-		return nfsv4_errno(error);
-	if (error != 0) {
-		vrele(vp);
-		return nfsv4_errno(error);
-	}
-	st = cfh_setreal(c, cf, vp);
-	if (st != NFS4_OK)
-		vrele(vp);
-	return st;
+	return nfsv4_cfh_lookup(c, cf, nm->nm_str, nm->nm_len, cf);
 }
 
 /*

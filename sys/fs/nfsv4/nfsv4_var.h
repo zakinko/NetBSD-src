@@ -34,6 +34,7 @@
 #include <fs/nfsv4/nfsv4_xdr.h>
 
 struct mount;
+struct vattr;
 struct vnode;
 
 /*
@@ -70,16 +71,41 @@ struct nfsv4_compound {
  */
 typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
 
+/*
+ * Limits chosen here, none from the RFC.  NFSV4_MAXIO is the maxread
+ * and maxwrite attributes and bounds what one READ can ask to hold in
+ * memory.  NFSV4_LEASE is the lease_time attribute, in seconds.
+ */
+#define	NFSV4_MAXIO		(128 * 1024)
+#define	NFSV4_LEASE		90
+
+/* Room for one object's attributes, not counting the bitmap. */
+#define	NFSV4_ATTRBUF		2048
+
+uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
+	    const struct nfsv4_bitmap *, uint32_t, char *, size_t,
+	    struct nfsv4_bitmap *, u_int *);
+uint64_t nfsv4_attr_change(const struct vattr *);
+bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
+int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
+
 uint32_t nfsv4_errno(int);
 uint32_t nfsv4_name_check(const struct nfsv4_name *);
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
+uint32_t nfsv4_cfh_lookup(struct nfsv4_compound *, struct nfsv4_cfh *,
+	    const char *, size_t, struct nfsv4_cfh *);
 const char *nfsv4_cfh_path(const struct nfsv4_cfh *, size_t *);
 int	nfsv4_lookup_vp(struct vnode *, const char *, kauth_cred_t,
 	    struct vnode **);
 int	nfsv4_pseudo_walk(struct nfsv4_compound *, const char *, size_t,
 	    int (*)(struct mount *, const char *, size_t, void *), void *);
 
+uint32_t nfsv4_op_access(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_getattr(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_readdir(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_readlink(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_secinfo(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_getfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookup(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);

@@ -83,14 +83,19 @@ struct nfsv4_opdesc {
 
 static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
+	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
+	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUP]	= { nfsv4_op_lookup,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUPP]	= { nfsv4_op_lookupp,	NFSV4_OPF_FH },
 	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	0 },
 	[NFSV4_OP_PUTPUBFH]	= { nfsv4_op_putpubfh,	0 },
 	[NFSV4_OP_PUTROOTFH]	= { nfsv4_op_putrootfh,	0 },
+	[NFSV4_OP_READDIR]	= { nfsv4_op_readdir,	NFSV4_OPF_FH },
+	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
 	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
 	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
+	[NFSV4_OP_SECINFO]	= { nfsv4_op_secinfo,	NFSV4_OPF_FH },
 };
 
 static struct oncrpc_svc *nfsv4_svc;

@@ -1145,6 +1145,7 @@ tmpfs_chtimes(vnode_t *vp, const struct timespec *atime,
     int vaflags, kauth_cred_t cred, lwp_t *l)
 {
 	tmpfs_node_t *node = VP_TO_TMPFS_NODE(vp);
+	struct timespec nowtm;
 	int changed = 0;
 	int error;
 
@@ -1183,7 +1184,9 @@ tmpfs_chtimes(vnode_t *vp, const struct timespec *atime,
 	if (changed) {
 		changed |= TMPFS_UPDATE_CTIME;
 		atomic_and_uint(&node->tn_tflags, ~changed);
-		vfs_timestamp(&node->tn_ctime);
+		vfs_timestamp(&nowtm);
+		vfs_timestamp_after(&nowtm, &node->tn_ctime);
+		node->tn_ctime = nowtm;
 	}
 	mutex_exit(&node->tn_timelock);
 	return 0;
@@ -1212,6 +1215,7 @@ tmpfs_update_locked(vnode_t *vp, unsigned tflags)
 		node->tn_mtime = nowtm;
 	}
 	if (tflags & TMPFS_UPDATE_CTIME) {
+		vfs_timestamp_after(&nowtm, &node->tn_ctime);
 		node->tn_ctime = nowtm;
 	}
 }

@@ -147,13 +147,12 @@ attr_ftype(enum vtype t)
 }
 
 /*
- * The change attribute.  decisions.md has it be va_ctime folded into 64
- * bits, RFC 7530 s5.8.1.4 allowing time_metadata for objects that cannot
- * change faster than its resolution.  That condition is not met yet: the
- * file systems do not make ctime increase on every change, so two
- * changes within one tick of the clock look like one, and a clock set
- * back can repeat a value.  Making it strictly increasing belongs in
- * ffs_itimes() and tmpfs_update_locked(); only then is this correct.
+ * The change attribute: va_ctime folded into 64 bits, RFC 7530 s5.8.1.4
+ * allowing time_metadata for objects that cannot change faster than its
+ * resolution.  ffs_itimes() and tmpfs_update_locked() see to that by
+ * moving ctime on by at least a nanosecond each time, whatever the clock
+ * does, so a file system whose ctime is not kept that way must not be
+ * trusted here.  ZFS will have to give its own value.
  */
 uint64_t
 nfsv4_attr_change(const struct vattr *va)

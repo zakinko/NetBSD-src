@@ -1388,6 +1388,25 @@ enum { TSP_SEC, TSP_HZ, TSP_USEC, TSP_NSEC };
 
 int vfs_timestamp_precision __read_mostly = TSP_NSEC;
 
+/*
+ * Make *tsp, the time of a change, later than the time of the one before:
+ * a clock that is coarse or was set back would otherwise repeat a value,
+ * and a value that moves on every change is what ctime is to an NFSv4
+ * client, RFC 7530 s5.8.1.4.
+ */
+void
+vfs_timestamp_after(struct timespec *tsp, const struct timespec *old)
+{
+
+	if (timespeccmp(tsp, old, >))
+		return;
+	*tsp = *old;
+	if (++tsp->tv_nsec >= 1000000000L) {
+		tsp->tv_sec++;
+		tsp->tv_nsec = 0;
+	}
+}
+
 void
 vfs_timestamp(struct timespec *tsp)
 {

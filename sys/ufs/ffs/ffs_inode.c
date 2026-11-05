@@ -807,7 +807,7 @@ void
 ffs_itimes(struct inode *ip, const struct timespec *acc,
     const struct timespec *mod, const struct timespec *cre)
 {
-	struct timespec now;
+	struct timespec now, chg, oldc;
 
 	if (!(ip->i_flag & (IN_ACCESS | IN_CHANGE | IN_UPDATE | IN_MODIFY))) {
 		return;
@@ -830,10 +830,12 @@ ffs_itimes(struct inode *ip, const struct timespec *acc,
 		ip->i_modrev++;
 	}
 	if (ip->i_flag & (IN_CHANGE | IN_MODIFY)) {
-		if (cre == NULL)
-			cre = &now;
-		DIP_ASSIGN(ip, ctime, cre->tv_sec);
-		DIP_ASSIGN(ip, ctimensec, cre->tv_nsec);
+		chg = cre == NULL ? now : *cre;
+		oldc.tv_sec = DIP(ip, ctime);
+		oldc.tv_nsec = DIP(ip, ctimensec);
+		vfs_timestamp_after(&chg, &oldc);
+		DIP_ASSIGN(ip, ctime, chg.tv_sec);
+		DIP_ASSIGN(ip, ctimensec, chg.tv_nsec);
 	}
 	if (ip->i_flag & (IN_ACCESS | IN_MODIFY))
 		ip->i_flag |= IN_ACCESSED;

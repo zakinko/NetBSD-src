@@ -667,6 +667,7 @@ uint8_t	vtype2dt(enum vtype);
 int	vfs_unixify_accmode(accmode_t *);
 void	vfs_getnewfsid(struct mount *);
 void	vfs_timestamp(struct timespec *);
+void	vfs_timestamp_after(struct timespec *, const struct timespec *);
 #if defined(DDB) || defined(DEBUGPRINT)
 void	vfs_vnode_print(struct vnode *, int, void (*)(const char *, ...)
     __printflike(1, 2));

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Mount the server from the Linux client of the runner, through the
-# tunnel, version 4.0 by name, and do what a user does on both exports.
-# The failures are the measurement.  linux-client.sh OUT
+# tunnel, version 4.0 by name or VERS, and do what a user does on both
+# exports.  The failures are the measurement.  linux-client.sh OUT
 OUT=$1
-LOG=$OUT/linux-client.txt
+VERS=${VERS:-4.0}
+LOG=$OUT/linux-client-$VERS.txt
 BIN=$OUT/lc.bin
 sudo apt-get install -y -q nfs-common nfs4-acl-tools >/dev/null 2>&1
 sudo modprobe nfs || {
@@ -22,7 +23,7 @@ one() {
 	export_=$1
 	m=/mnt/nfsv4$(basename "$export_")
 	sudo mkdir -p "$m"
-	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
+	t sudo mount -v -t nfs -o vers=$VERS,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
 	    "127.0.0.1:$export_" "$m"
 	grep "$m" /proc/mounts || return
 	t sudo mkdir "$m/lc"
@@ -94,7 +95,7 @@ acl() {
 	x=$1
 	m=/mnt/nfsv4$(basename "$x")
 	sudo mkdir -p "$m"
-	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,noresvport,nolock \
+	t sudo mount -v -t nfs -o vers=$VERS,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,noresvport,nolock \
 	    "127.0.0.1:$x" "$m"
 	grep "$m" /proc/mounts || return
 	t sudo sh -c "echo hello >$m/f; chmod 640 $m/f"

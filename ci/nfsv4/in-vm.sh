@@ -46,14 +46,17 @@ chmod 1777 /export/quota
 edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
 repquota -u /export/quota || :
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
-modload zfs
-# The port installs its libraries in /lib, outside the default search.
-export LD_LIBRARY_PATH=/lib
-dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
-zpool create -f tank /var/tmp/tank.img
-zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
-chmod 1777 /tank/x
-zfs list
+# Without the module or its tools the other exports are still served.
+if [ -f "$D/modules/zfs.kmod" ] && command -v zpool >/dev/null; then
+	modload zfs
+	# The port installs its libraries in /lib, outside the default search.
+	export LD_LIBRARY_PATH=/lib
+	dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
+	zpool create -f tank /var/tmp/tank.img
+	zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
+	chmod 1777 /tank/x
+	zfs list
+fi
 mount | grep /export/
 # pynfs comes from a high port through the tunnel.
 cat >/etc/exports <<EOF

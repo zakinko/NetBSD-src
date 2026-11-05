@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run pynfs's 4.0 suite against the server in the VM, through an ssh
+# Run a pynfs suite, by default 4.0's (SUITE=nfs4.1 for the other), against the server in the VM, through an ssh
 # tunnel.  pynfs's failures are the measurement, so they do not fail the
 # job; the rig failing does.  pynfs.sh OUT [EXPORT [NAME]]
 set -eu
@@ -24,7 +24,7 @@ if [ ! -d "$HOME/pynfs" ]; then
 	    "$HOME/pynfs/nfs4.0/testserver.py"
 	(cd "$HOME/pynfs" && python3 setup.py build) >"$OUT/pynfs-build.log" 2>&1
 fi
-cd "$HOME/pynfs/nfs4.0"
+cd "$HOME/pynfs/${SUITE:-nfs4.0}"
 rc=0
 # As root, as the base line was: MKNOD and chown need it.
 timeout "$LIMIT" sudo -E python3 ./testserver.py 127.0.0.1:"$EXPORT" --maketree \

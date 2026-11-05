@@ -1,7 +1,7 @@
 name: nfsv4
 on:
   push:
-    branches: [nfsv4, nfsv4-acl, nfsv40]
+    branches: [nfsv4, nfsv4-acl, nfsv40, nfsv41]
     paths:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
@@ -58,7 +58,9 @@ jobs:
           path: nb/netbsd
           key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
-      - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
+      # ZFS failing must not keep FFS and tmpfs from being measured.
+      - continue-on-error: true
+        run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
@@ -102,6 +104,7 @@ jobs:
           scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
       - name: The ZFS userland, on the stock kernel
+        continue-on-error: true
         run: |
           scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
           ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
@@ -131,6 +134,9 @@ jobs:
           done 2>&1 | tee "$OLDPWD/out/edge.txt"
       - name: The Linux client
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - name: The Linux client, version 4.1
+        run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - run: SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs41
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -174,6 +180,7 @@ jobs:
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
       - if: inputs.quick != 'true'
+        continue-on-error: true
         run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
       - name: What the kernel said
         if: always()
@@ -182,6 +189,7 @@ jobs:
       - name: Summarise
         if: always()
         run: |
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs41.json out/pynfs41.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-deleg.json out/pynfs-deleg.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-reboot.json out/pynfs-reboot.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
@@ -197,7 +205,7 @@ jobs:
             out/pynfs*
             out/summary.txt
             out/ctime-*.txt
-            out/linux-client.txt
+            out/linux-client-*.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

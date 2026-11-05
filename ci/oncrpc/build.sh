@@ -20,7 +20,9 @@ for d in sys/modules/xdr sys/modules/oncrpc sys/modules/solaris \
     tests/modules/k_oncrpc; do
 	[ -d "$d" ] || continue
 	m=${d##*/}
-	(cd "$d" && "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no obj dependall) \
+	# Two runs: the machine links are made in an objdir that exists.
+	(cd "$d" && "$T/bin/nbmake-amd64" obj &&
+	 "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) \
 	    >"$OUT/$m.log" 2>&1 || { tail -40 "$OUT/$m.log"; exit 1; }
 	cp "$O/$d/$m.kmod" "$OUT/modules/"
 done

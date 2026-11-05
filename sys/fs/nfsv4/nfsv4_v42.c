@@ -427,7 +427,8 @@ allocate_fallback(const struct nfsv4_cfh *cf, uint64_t off, uint64_t end)
 	int error;
 
 	tmpfs = strcmp(fstype, MOUNT_TMPFS) == 0;
-	if (!tmpfs && strcmp(fstype, MOUNT_FFS) != 0)
+	if (!tmpfs && strcmp(fstype, MOUNT_FFS) != 0 &&
+	    strcmp(fstype, MOUNT_MFS) != 0)
 		return EOPNOTSUPP;
 
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);

@@ -1,7 +1,7 @@
 name: oncrpc
 on:
   push:
-    branches: [oncrpc]
+    branches: [oncrpc, rpcfix]
     paths:
       - 'sys/oncrpc/**'
       - 'sys/modules/oncrpc/**'
@@ -19,6 +19,19 @@ concurrency:
   group: oncrpc-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/oncrpc
+            common/include/rpc
+            common/lib/libc/rpc
+            sys/oncrpc
+            sys/sys/queue.h
+      - run: sh ci/oncrpc/unit/run.sh "$PWD/unit"
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 180

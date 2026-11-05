@@ -85,16 +85,18 @@ nfsv4_access_vp(const struct nfsv4_cfh *cf, int mode)
 /* RFC 7530 s16.1.2 */
 #define	ACCESS4_ALL	(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY | \
 			 ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE)
+#define	ACCESS4_XATTRS	(ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
 
 uint32_t
 nfsv4_op_access(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	const struct nfsv4_cfh *cf = &c->c_cur;
 	struct vnode *vp = cf->cf_vp;
-	uint32_t want = a->access.access, sup, got = 0;
+	uint32_t want = a->access.access, sup, got = 0, known;
 	bool isdir;
 
-	if ((want & ~ACCESS4_ALL) != 0)
+	known = ACCESS4_ALL | (c->c_minor >= 2 ? ACCESS4_XATTRS : 0);
+	if ((want & ~known) != 0)
 		return NFS4ERR_INVAL;
 
 	isdir = vp == NULL || vp->v_type == VDIR;
@@ -108,6 +110,9 @@ nfsv4_op_access(struct nfsv4_compound *c, union nfsv4_args *a)
 		sup &= ~(ACCESS4_DELETE | ACCESS4_LOOKUP);
 	else
 		sup &= ~ACCESS4_EXECUTE;
+	if ((want & ACCESS4_XATTRS) != 0 &&
+	    !nfsv4_xattr_supported(vp, cf->cf_cred))
+		sup &= ~ACCESS4_XATTRS;
 
 	if (vp == NULL)
 		/* s7.3: the pseudo file system is read-only. */
@@ -123,6 +128,13 @@ nfsv4_op_access(struct nfsv4_compound *c, union nfsv4_args *a)
 		    ACCESS4_DELETE)) != 0 && nfsv4_access_vp(cf, VWRITE) == 0)
 			got |= sup & (ACCESS4_MODIFY | ACCESS4_EXTEND |
 			    ACCESS4_DELETE);
+		/* RFC 8276 s8.5, as extattr_check_cred() does the user's. */
+		if ((sup & (ACCESS4_XAREAD | ACCESS4_XALIST)) != 0 &&
+		    nfsv4_access_vp(cf, VREAD) == 0)
+			got |= sup & (ACCESS4_XAREAD | ACCESS4_XALIST);
+		if ((sup & ACCESS4_XAWRITE) != 0 &&
+		    nfsv4_access_vp(cf, VWRITE) == 0)
+			got |= ACCESS4_XAWRITE;
 	}
 	return xdr_u_int32_t(c->c_rx, &sup) && xdr_u_int32_t(c->c_rx, &got) ?
 	    NFS4_OK : NFS4ERR_RESOURCE;

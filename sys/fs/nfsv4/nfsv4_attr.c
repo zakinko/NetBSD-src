@@ -218,7 +218,7 @@ const uint64_t nfsv4_attr_exclcreat =
 
 /*
  * What the third word has for this object in this minor version, RFC
- * 7862 s12.1.  CLONE goes with clone_blksize, s4.1.2.
+ * 7862 s12.1 and RFC 8276 s8.2.  CLONE goes with clone_blksize, s4.1.2.
  * space_freed is left out on ZFS, as what deleting a file would free
  * depends on the blocks and snapshots that share it, which nothing here
  * can find out.
@@ -232,7 +232,7 @@ attr_w2_by(struct vnode *vp, uint32_t minor)
 	if (minor != 0)
 		w2 |= W2_ALL;
 	if (minor >= 2) {
-		w2 |= W2(FATTR4_CHANGE_ATTR_TYPE);
+		w2 |= W2(FATTR4_CHANGE_ATTR_TYPE) | W2(FATTR4_XATTR_SUPPORT);
 		zfs = vp != NULL && strcmp(vp->v_mount->mnt_stat.f_fstypename,
 		    MOUNT_ZFS) == 0;
 		w2 |= zfs ? W2(FATTR4_CLONE_BLKSIZE) :
@@ -894,6 +894,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	if (ok && (w2 & W2(FATTR4_CHANGE_ATTR_TYPE)) != 0) {
 		ok = attr_u32(&x, attr_change_type(vp));
 		w2out |= W2(FATTR4_CHANGE_ATTR_TYPE);
+	}
+	if (ok && (w2 & W2(FATTR4_XATTR_SUPPORT)) != 0) {
+		ok = attr_u32(&x, nfsv4_xattr_supported(vp, cf->cf_cred));
+		w2out |= W2(FATTR4_XATTR_SUPPORT);
 	}
 
 	if (sb != NULL)

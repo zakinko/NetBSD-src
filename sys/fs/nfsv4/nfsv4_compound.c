@@ -187,6 +187,10 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 	[NFSV4_OP_SEEK]		= { nfsv4_op_seek,	NFSV4_OPF_FH },
 	[NFSV4_OP_WRITE_SAME]	= { nfsv4_op_write_same, NFSV4_OPF_FH },
 	[NFSV4_OP_CLONE]	= { nfsv4_op_clone,	NFSV4_OPF_FH },
+	[NFSV4_OP_GETXATTR]	= { nfsv4_op_getxattr,	NFSV4_OPF_FH },
+	[NFSV4_OP_SETXATTR]	= { nfsv4_op_setxattr,	NFSV4_OPF_FH },
+	[NFSV4_OP_LISTXATTRS]	= { nfsv4_op_listxattrs, NFSV4_OPF_FH },
+	[NFSV4_OP_REMOVEXATTR]	= { nfsv4_op_removexattr, NFSV4_OPF_FH },
 };
 
 static struct oncrpc_svc *nfsv4_svc;

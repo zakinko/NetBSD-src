@@ -347,5 +347,10 @@ uint32_t nfsv4_op_offload(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_read_plus(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_seek(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_write_same(struct nfsv4_compound *, union nfsv4_args *);
+bool	nfsv4_xattr_supported(struct vnode *, kauth_cred_t);
+uint32_t nfsv4_op_getxattr(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_listxattrs(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_removexattr(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_setxattr(struct nfsv4_compound *, union nfsv4_args *);
 
 #endif /* !_FS_NFSV4_NFSV4_VAR_H_ */

@@ -76,6 +76,7 @@ struct nfsv4_client {
 	time_t		cl_prevend;	/* end of s10.2.1's reclaims, or 0 */
 	bool		cl_purged;	/* DELEGPURGE was done */
 	bool		cl_stable;	/* stable storage has it */
+	bool		cl_revoked;	/* and must hear of a revocation */
 	bool		cl_confirmed;
 	bool		cl_expired;	/* state gone; stateids still known */
 	time_t		cl_expire;	/* lease, in time_uptime */

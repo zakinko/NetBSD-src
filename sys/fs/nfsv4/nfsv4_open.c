@@ -395,6 +395,7 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		return NFS4ERR_ISDIR;
 	if (vp->v_type != VREG)
 		return NFS4ERR_SYMLINK;
+	sw->sw_confirmed = true;	/* s9.1.11, s16.18.5 */
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, cf, NULL, NULL);
 	if (st != NFS4_OK)
@@ -530,8 +531,11 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	if (oa->claim == CLAIM_DELEGATE_CUR)
 		st = nfsv4_deleg_claim_cur(sw->sw_client,
 		    &oa->delegate_stateid, vp);
-	else if (oa->claim == CLAIM_DELEGATE_PREV)
+	else if (oa->claim == CLAIM_DELEGATE_PREV) {
 		st = nfsv4_deleg_claim_prev(sw->sw_client, vp, &od);
+		if (st == NFS4_OK)
+			sw->sw_confirmed = true;  /* s9.1.11, s16.18.5 */
+	}
 	if (st != NFS4_OK)
 		goto bad;
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
@@ -966,7 +970,7 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 	}
 	/* s10.4.1: without an open, these are the equivalent of one. */
 	if (aname == NULL) {
-		status = nfsv4_deleg_conflict(vp, self, 0,
+		status = nfsv4_deleg_conflict(vp, self, c->c_rq->rq_connid,
 		    write ? NFSV4_DC_WRITE : NFSV4_DC_READ);
 		if (status != NFS4_OK)
 			goto out;

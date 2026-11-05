@@ -691,6 +691,21 @@ lease_thread(void *arg)
 				    cl->cl_cbstate == NFSV4_CB_DOWN &&
 				    time_uptime >= cl->cl_cbnext)
 					nfsv4_cb_probe(cl);
+				if (cl->cl_revoked) {
+					uint32_t idlen = cl->cl_idlen;
+					bool stable = cl->cl_stable;
+
+					cl->cl_revoked = false;
+					if (stable) {
+						memcpy(idbuf, cl->cl_idstr,
+						    idlen);
+						mutex_exit(&nfsv4_state_lock);
+						nfsv4_stable_gone(idbuf, idlen);
+						mutex_enter(&nfsv4_state_lock);
+						again = true;
+						break;
+					}
+				}
 				if (time_uptime <= cl->cl_expire)
 					continue;
 				if (!client_owners_idle(cl))

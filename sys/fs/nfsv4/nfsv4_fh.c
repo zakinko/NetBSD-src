@@ -97,6 +97,7 @@ nfsv4_errno(int error)
 	case ENOTDIR:		return NFS4ERR_NOTDIR;
 	case EISDIR:		return NFS4ERR_ISDIR;
 	case EINVAL:		return NFS4ERR_INVAL;
+	case EILSEQ:		return NFS4ERR_INVAL;	/* s12.7, utf8only */
 	case EFBIG:		return NFS4ERR_FBIG;
 	case ENOSPC:		return NFS4ERR_NOSPC;
 	case EROFS:		return NFS4ERR_ROFS;

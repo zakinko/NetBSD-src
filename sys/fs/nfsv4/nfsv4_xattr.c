@@ -576,6 +576,8 @@ nfsv4_xattr_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a,
 		return dir ? NFS4ERR_ISDIR : xa_op_write(c, a);
 	case NFSV4_OP_COMMIT:
 		return dir ? NFS4ERR_ISDIR : xa_op_commit(c, a);
+	case NFSV4_OP_LINK:
+		return dir ? NFS4ERR_XDEV : NFS4ERR_NOTDIR;	/* s16.9.5 */
 	case NFSV4_OP_SETATTR:
 		if (!dir)
 			return xa_op_setattr(c, a);

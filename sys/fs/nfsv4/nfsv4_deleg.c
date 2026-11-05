@@ -265,8 +265,11 @@ nfsv4_deleg_scan(struct nfsv4_reap *reap)
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
 	LIST_FOREACH_SAFE(st, &deleg_recalled, st_rlist, next) {
-		if (time_uptime >= st->st_recall_end)
+		if (time_uptime >= st->st_recall_end) {
+			/* s10.2.1 and the boolean of s9.6.3.4.3 */
+			st->st_owner->sw_client->cl_revoked = true;
 			nfsv4_state_unlink(st, reap, false);
+		}
 		else if (st->st_cbnext != 0 && time_uptime >= st->st_cbnext)
 			nfsv4_cb_recall(st);
 	}

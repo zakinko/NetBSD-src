@@ -35,6 +35,7 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/errno.h>
 #include <sys/systm.h>
 
 #include <oncrpc/oncrpc_var.h>
@@ -135,4 +136,52 @@ oncrpc_msg_encode_denied_auth(XDR *xdrs, uint32_t xid, uint32_t why)
 	return msg_encode_head(xdrs, xid, ONCRPC_MSG_DENIED) &&
 	    xdr_u_int32_t(xdrs, &stat) &&
 	    xdr_u_int32_t(xdrs, &why);
+}
+
+/* A call up to the arguments, RFC 5531 s9, with an AUTH_NONE verifier. */
+bool
+oncrpc_msg_encode_call(XDR *xdrs, uint32_t xid,
+    const struct oncrpc_clnt_call *cc)
+{
+	uint32_t mtype = ONCRPC_CALL, rpcvers = ONCRPC_VERS;
+	uint32_t flavor = cc->cc_flavor, len = cc->cc_credlen;
+	uint32_t prog = cc->cc_prog, vers = cc->cc_vers, proc = cc->cc_proc;
+	uint32_t vflavor = ONCRPC_AUTH_NONE, vlen = 0;
+
+	return xdr_u_int32_t(xdrs, &xid) &&
+	    xdr_u_int32_t(xdrs, &mtype) &&
+	    xdr_u_int32_t(xdrs, &rpcvers) &&
+	    xdr_u_int32_t(xdrs, &prog) &&
+	    xdr_u_int32_t(xdrs, &vers) &&
+	    xdr_u_int32_t(xdrs, &proc) &&
+	    xdr_u_int32_t(xdrs, &flavor) &&
+	    xdr_u_int32_t(xdrs, &len) &&
+	    (len == 0 || xdr_opaque(xdrs, __UNCONST(cc->cc_cred), len)) &&
+	    xdr_u_int32_t(xdrs, &vflavor) &&
+	    xdr_u_int32_t(xdrs, &vlen);
+}
+
+/*
+ * A reply up to the results, RFC 5531 s9: 0 if the call was accepted
+ * and succeeded, and the stream is at the results.
+ */
+int
+oncrpc_msg_decode_reply(XDR *xdrs, uint32_t xid)
+{
+	struct oncrpc_opaque_auth oa;
+	uint32_t rxid, mtype, rstat, astat;
+	bool toolong = false;
+
+	if (!xdr_u_int32_t(xdrs, &rxid) ||
+	    !xdr_u_int32_t(xdrs, &mtype) ||
+	    !xdr_u_int32_t(xdrs, &rstat))
+		return EBADRPC;
+	if (rxid != xid || mtype != ONCRPC_REPLY)
+		return EBADRPC;
+	if (rstat != ONCRPC_MSG_ACCEPTED)
+		return EPROTO;
+	if (!msg_decode_auth(xdrs, &oa, &toolong) ||
+	    !xdr_u_int32_t(xdrs, &astat))
+		return EBADRPC;
+	return astat == ONCRPC_SUCCESS ? 0 : EPROTO;
 }

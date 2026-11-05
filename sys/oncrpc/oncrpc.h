@@ -86,6 +86,21 @@ struct file;
 struct mbuf;
 struct oncrpc_svc;
 struct oncrpc_req;
+struct sockaddr;
+
+/* One call, for oncrpc_clnt_call(). */
+struct oncrpc_clnt_call {
+	uint32_t	cc_prog;
+	uint32_t	cc_vers;
+	uint32_t	cc_proc;
+	uint32_t	cc_flavor;	/* of the credential below */
+	const void	*cc_cred;	/* the body of an opaque_auth */
+	uint32_t	cc_credlen;
+	bool		(*cc_encode)(XDR *, void *);
+	void		*cc_arg;
+	bool		(*cc_decode)(XDR *, void *);
+	void		*cc_res;
+};
 
 /* What a program's dispatch wants done with the request. */
 enum oncrpc_dispatch {
@@ -136,5 +151,7 @@ void	oncrpc_svc_unregister(struct oncrpc_svc *,
 	    const struct oncrpc_program *);
 int	oncrpc_svc_addsock(struct oncrpc_svc *, struct file *, struct mbuf *);
 u_int	oncrpc_svc_nxprt(struct oncrpc_svc *);
+int	oncrpc_clnt_call(const struct sockaddr *,
+	    const struct oncrpc_clnt_call *, int);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

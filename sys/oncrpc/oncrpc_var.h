@@ -65,6 +65,9 @@ bool	oncrpc_msg_encode_accepted(XDR *, uint32_t, uint32_t, uint32_t,
 	    uint32_t);
 bool	oncrpc_msg_encode_denied_vers(XDR *, uint32_t);
 bool	oncrpc_msg_encode_denied_auth(XDR *, uint32_t, uint32_t);
+bool	oncrpc_msg_encode_call(XDR *, uint32_t,
+	    const struct oncrpc_clnt_call *);
+int	oncrpc_msg_decode_reply(XDR *, uint32_t);
 
 /*
  * An authentication flavor, server side.  Returns an auth_stat, and on

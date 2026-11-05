@@ -6,6 +6,7 @@ defflag				ONCRPC: xdr
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc
+file	oncrpc/oncrpc_gss.c		oncrpc
 file	oncrpc/oncrpc_msg.c		oncrpc
 file	oncrpc/oncrpc_rm.c		oncrpc
 file	oncrpc/oncrpc_svc.c		oncrpc

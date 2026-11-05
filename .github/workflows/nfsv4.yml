@@ -11,6 +11,7 @@ on:
       - 'sys/ufs/ffs/ffs_inode.c'
       - 'sys/fs/tmpfs/tmpfs_subr.c'
       - 'tests/fs/nfsv4/**'
+      - 'tests/oncrpc/**'
       - 'ci/nfsv4/**'
       - '.github/workflows/nfsv4.yml'
   workflow_dispatch:
@@ -57,6 +58,9 @@ jobs:
           mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
           cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
           ./t
+          mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -ltirpc
+          ./t2
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -325,10 +325,16 @@ md_sync_timebase(volatile struct cpu_hatch_data *h)
 	u_int tbu = h->hatch_tbu;
 	u_int tbl = h->hatch_tbl;
 
-	if (MD_TIMEBASE_IS_PLATFORMS())
-		return;
+	/*
+	 * Wait even when the timebase is the platform's: cpu_spinup()
+	 * stores 0 here after the acknowledgement, and a processor that
+	 * went on to store 1 first had it overwritten, so cpu_spinup()
+	 * timed out with this one running ("didn't start").
+	 */
 	while (h->hatch_running == -1)
 		;
+	if (MD_TIMEBASE_IS_PLATFORMS())
+		return;
 	__asm volatile ("sync; isync");
 	__asm volatile ("mttbl %0" :: "r"(0));
 	__asm volatile ("mttbu %0" :: "r"(tbu));

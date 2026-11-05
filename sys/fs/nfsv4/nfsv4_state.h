@@ -73,6 +73,9 @@ struct nfsv4_client {
 	uint32_t	cl_cbgen;	/* of cl_cb, for a call that returns */
 	bool		cl_cbqueued;	/* on cl_cbq */
 	time_t		cl_cbnext;	/* time to probe a dead path again */
+	time_t		cl_prevend;	/* end of s10.2.1's reclaims, or 0 */
+	bool		cl_purged;	/* DELEGPURGE was done */
+	bool		cl_stable;	/* stable storage has it */
 	bool		cl_confirmed;
 	bool		cl_expired;	/* state gone; stateids still known */
 	time_t		cl_expire;	/* lease, in time_uptime */
@@ -177,6 +180,14 @@ void	nfsv4_state_fini(void);
 void	nfsv4_cb_init(void);
 void	nfsv4_cb_fini(void);
 void	nfsv4_deleg_init(void);
+void	nfsv4_stable_init(void);
+void	nfsv4_stable_fini(void);
+void	nfsv4_grace_scan(void);
+int	nfsv4_stable_open(const char *);
+void	nfsv4_stable_good(const uint8_t *, uint32_t);
+void	nfsv4_stable_gone(const uint8_t *, uint32_t);
+bool	nfsv4_grace_active(void);
+uint32_t nfsv4_reclaim_check(const struct nfsv4_client *);
 
 /* These want nfsv4_state_lock held. */
 uint32_t nfsv4_client_get(uint64_t, struct nfsv4_client **);
@@ -224,6 +235,13 @@ void	nfsv4_deleg_add(struct nfsv4_client *, struct vnode *,
 	    const struct nfsv4_fh *, uint32_t, struct nfsv4_deleg_spare *,
 	    struct nfsv4_open_deleg *);
 void	nfsv4_deleg_gone(struct nfsv4_state *);
+uint32_t nfsv4_deleg_claim_cur(struct nfsv4_client *,
+	    const struct nfsv4_stateid *, struct vnode *);
+uint32_t nfsv4_deleg_claim_prev(struct nfsv4_client *, struct vnode *,
+	    struct nfsv4_open_deleg *);
+void	nfsv4_deleg_carry(struct nfsv4_client *, struct nfsv4_client *,
+	    struct nfsv4_owner_s **);
+void	nfsv4_deleg_drop_prev(struct nfsv4_client *, struct nfsv4_reap *);
 void	nfsv4_deleg_scan(struct nfsv4_reap *);
 bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 

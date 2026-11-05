@@ -290,8 +290,11 @@ have_owner:
 	}
 	mutex_exit(&nfsv4_state_lock);
 
+	/* s9.6.2 */
 	if (status == NFS4_OK && la->reclaim)
-		status = NFS4ERR_NO_GRACE;
+		status = nfsv4_reclaim_check(lo->sw_client);
+	else if (status == NFS4_OK && nfsv4_grace_active())
+		status = NFS4ERR_GRACE;
 	if (status == NFS4_OK)
 		status = lock_range(la->offset, la->length, &fl);
 	if (status == NFS4_OK) {
@@ -345,6 +348,8 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = lock_type(la->type, &type);
 	if (status == NFS4_OK)
 		status = lock_range(la->offset, la->length, &q.lfq_fl);
+	if (status == NFS4_OK && nfsv4_grace_active())
+		status = NFS4ERR_GRACE;		/* s13.2, s9.6.2 */
 	if (status != NFS4_OK)
 		return status;
 

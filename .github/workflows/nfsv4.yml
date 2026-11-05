@@ -99,7 +99,7 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
@@ -113,7 +113,9 @@ jobs:
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: Delegations, which are not in all
-        run: PYNFS_ARGS='delegations writedelegations' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
+        run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
+      - name: Restarts, which are not in all
+        run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh reboot" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-reboot
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
@@ -126,6 +128,7 @@ jobs:
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-deleg.json out/pynfs-deleg.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-reboot.json out/pynfs-reboot.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-acl.json out/pynfs-acl.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true

@@ -16,10 +16,15 @@
 #include <unistd.h>
 
 int
-main(void)
+main(int argc, char **argv)
 {
 	struct sockaddr_in sin;
 	int ls, s, on = 1;
+
+	/* The file of clients that can reclaim, before any client comes. */
+	if (argc > 1 && sysctlbyname("vfs.nfsv4.stable", NULL, NULL, argv[1],
+	    strlen(argv[1]) + 1) == -1)
+		err(1, "stable");
 
 	if ((ls = socket(AF_INET, SOCK_STREAM, 0)) == -1)
 		err(1, "socket");

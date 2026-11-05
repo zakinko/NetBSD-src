@@ -304,6 +304,140 @@ nfsv4_deleg_path_down(struct nfsv4_client *cl)
 	return true;
 }
 
+/*
+ * CLAIM_DELEGATE_CUR, s16.16.5: the stateid must be a delegation that the
+ * client holds of the file.
+ */
+uint32_t
+nfsv4_deleg_claim_cur(struct nfsv4_client *cl, const struct nfsv4_stateid *si,
+    struct vnode *vp)
+{
+	struct nfsv4_state *st;
+	uint32_t status;
+
+	mutex_enter(&nfsv4_state_lock);
+	status = nfsv4_stateid_lookup(si, &st);
+	if (status == NFS4_OK)
+		status = nfsv4_stateid_check(si, st, vp, NFSV4_ST_DELEG);
+	if (status == NFS4_OK && st->st_owner->sw_client != cl)
+		status = NFS4ERR_BAD_STATEID;
+	mutex_exit(&nfsv4_state_lock);
+	return status;
+}
+
+/*
+ * CLAIM_DELEGATE_PREV, s16.16.5, and the period goes on from here,
+ * s10.2.1.  With a record, the delegation is the client's again, and the
+ * reply carries it.
+ */
+uint32_t
+nfsv4_deleg_claim_prev(struct nfsv4_client *cl, struct vnode *vp,
+    struct nfsv4_open_deleg *od)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	uint32_t status = NFS4ERR_RECLAIM_BAD;
+
+	mutex_enter(&nfsv4_state_lock);
+	if (cl->cl_purged)
+		status = NFS4ERR_INVAL;
+	else if ((f = nfsv4_file_find(vp)) != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type != NFSV4_ST_DELEG || !st->st_prev ||
+			    st->st_owner->sw_client != cl)
+				continue;
+			st->st_prev = false;
+			cl->cl_prevend = time_uptime + NFSV4_LEASE;
+			od->od_type = st->st_dtype;
+			nfsv4_stateid_out(st, &od->od_stateid);
+			status = NFS4_OK;
+			break;
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return status;
+}
+
+/*
+ * The client old has restarted and is replaced by new.  s10.2.1: having
+ * CLAIM_DELEGATE_PREV, the server must not let its delegations go on
+ * SETCLIENTID_CONFIRM.  They move to the new record to wait for a lease.
+ * spare is used if the new one has no place for them yet.
+ */
+void
+nfsv4_deleg_carry(struct nfsv4_client *old, struct nfsv4_client *new,
+    struct nfsv4_owner_s **spare)
+{
+	struct nfsv4_owner_s *from, *to;
+	struct nfsv4_state *st, *next;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	from = nfsv4_owner_find(old, NFSV4_OWNER_DELEG, (const uint8_t *)"", 0);
+	if (from == NULL)
+		return;
+	to = NULL;
+	LIST_FOREACH_SAFE(st, &from->sw_states, st_olist, next) {
+		if (st->st_file == NULL)
+			continue;
+		if (to == NULL) {
+			to = nfsv4_owner_add(new, spare, NFSV4_OWNER_DELEG,
+			    (const uint8_t *)"", 0);
+			to->sw_confirmed = true;
+		}
+		nfsv4_cb_forget_state(st);
+		if (st->st_recalled) {
+			LIST_REMOVE(st, st_rlist);
+			st->st_recalled = false;
+		}
+		LIST_REMOVE(st, st_olist);
+		LIST_INSERT_HEAD(&to->sw_states, st, st_olist);
+		st->st_owner = to;
+		st->st_prev = true;
+	}
+	if (to != NULL)
+		new->cl_prevend = time_uptime + NFSV4_LEASE;
+}
+
+/* The end of the period, by DELEGPURGE or the clock. */
+void
+nfsv4_deleg_drop_prev(struct nfsv4_client *cl, struct nfsv4_reap *reap)
+{
+	struct nfsv4_owner_s *dw;
+	struct nfsv4_state *st, *next;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	cl->cl_prevend = 0;
+	dw = nfsv4_owner_find(cl, NFSV4_OWNER_DELEG, (const uint8_t *)"", 0);
+	if (dw == NULL)
+		return;
+	LIST_FOREACH_SAFE(st, &dw->sw_states, st_olist, next) {
+		if (st->st_prev)
+			nfsv4_state_unlink(st, reap, false);
+	}
+}
+
+/* RFC 7530 s16.5 */
+uint32_t
+nfsv4_op_delegpurge(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	struct nfsv4_client *cl;
+	struct nfsv4_reap reap;
+	uint32_t status;
+
+	SLIST_INIT(&reap);
+	mutex_enter(&nfsv4_state_lock);
+	status = nfsv4_client_get(a->clientid.clientid, &cl);
+	if (status == NFS4_OK) {
+		nfsv4_deleg_drop_prev(cl, &reap);
+		cl->cl_purged = true;
+	}
+	mutex_exit(&nfsv4_state_lock);
+	nfsv4_reap_finish(&reap);
+	return status;
+}
+
 /* RFC 7530 s16.6 */
 uint32_t
 nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)

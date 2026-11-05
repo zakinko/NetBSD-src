@@ -227,6 +227,9 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		return st;
 	st = nfsv4_name_check(nm);
+	/* A reclaim to come may name the file, s9.6.2. */
+	if (st == NFS4_OK && nfsv4_grace_active())
+		st = NFS4ERR_GRACE;
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
 	if (st != NFS4_OK)
@@ -310,6 +313,8 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		return st;
 	if (sf->cf_vp->v_mount != tf->cf_vp->v_mount)
 		return NFS4ERR_XDEV;
+	if (nfsv4_grace_active())
+		return NFS4ERR_GRACE;		/* as for REMOVE */
 	/* s10.4.4, as source and as target. */
 	st = nfsv4_deleg_break_name(sf, ra->oldname.nm_str);
 	if (st == NFS4_OK)

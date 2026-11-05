@@ -30,9 +30,8 @@
  * Clients, owners, stateids and leases, RFC 7530 s9.  See nfsv4_state.h
  * for the locking.
  *
- * There is no stable storage, so nothing survives a restart, and no
- * grace period: a client finds out by NFS4ERR_STALE_CLIENTID that it
- * lost everything, and CLAIM_PREVIOUS gets NFS4ERR_NO_GRACE.
+ * A client finds out by NFS4ERR_STALE_CLIENTID that the server restarted
+ * and it lost everything, s9.6.2.  nfsv4_stable.c has what remains.
  */
 
 #include <sys/cdefs.h>
@@ -646,6 +645,7 @@ lease_thread(void *arg)
 	struct nfsv4_client *cl;
 	struct nfsv4_reap reap;
 	bool again;
+	static uint8_t idbuf[NFS4_OPAQUE_LIMIT];	/* one thread */
 
 	mutex_enter(&nfsv4_state_lock);
 	while (!nfsv4_dying) {
@@ -653,8 +653,14 @@ lease_thread(void *arg)
 		    NFSV4_LEASE_SCAN * hz);
 		SLIST_INIT(&reap);
 		nfsv4_deleg_scan(&reap);
+		LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
+			if (cl->cl_prevend != 0 &&
+			    time_uptime >= cl->cl_prevend)
+				nfsv4_deleg_drop_prev(cl, &reap);
+		}
 		mutex_exit(&nfsv4_state_lock);
 		nfsv4_reap_finish(&reap);
+		nfsv4_grace_scan();
 		mutex_enter(&nfsv4_state_lock);
 		do {
 			again = false;
@@ -676,11 +682,24 @@ lease_thread(void *arg)
 					break;
 				}
 				if (!cl->cl_expired) {
+					bool stable = cl->cl_stable;
+					uint32_t idlen = cl->cl_idlen;
+
+					/* Stays: it is only a name there. */
+					if (stable) {
+						KASSERT(idlen <=
+						    sizeof(idbuf));
+						memcpy(idbuf, cl->cl_idstr,
+						    idlen);
+					}
 					cl->cl_expired = true;
 					SLIST_INIT(&reap);
 					client_release(cl, &reap);
 					mutex_exit(&nfsv4_state_lock);
 					nfsv4_reap_finish(&reap);
+					/* s9.6.3.4.3 */
+					if (stable)
+						nfsv4_stable_gone(idbuf, idlen);
 					mutex_enter(&nfsv4_state_lock);
 					again = true;
 					break;
@@ -845,9 +864,11 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_setclientid_confirm *sa =
 	    &a->setclientid_confirm;
 	struct nfsv4_client *cl, *conf = NULL, *unconf = NULL, *old;
+	struct nfsv4_owner_s *spare;
 	uid_t uid = client_principal(c);
 	uint32_t st;
 
+	spare = kmem_zalloc(sizeof(*spare), KM_SLEEP);
 	mutex_enter(&nfsv4_state_lock);
 	if ((uint32_t)(sa->clientid >> 32) != nfsv4_boot) {
 		st = NFS4ERR_STALE_CLIENTID;
@@ -896,6 +917,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 				old->cl_idlen = UINT32_MAX;
 				old->cl_expired = true;
 				old->cl_expire = time_uptime;
+				nfsv4_deleg_carry(old, unconf, &spare);
 				SLIST_INIT(&reap);
 				client_release(old, &reap);
 				mutex_exit(&nfsv4_state_lock);
@@ -917,6 +939,8 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = NFS4ERR_STALE_CLIENTID;
 out:
 	mutex_exit(&nfsv4_state_lock);
+	if (spare != NULL)
+		kmem_free(spare, sizeof(*spare));
 	return st;
 }
 

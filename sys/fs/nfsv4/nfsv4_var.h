@@ -159,6 +159,7 @@ uint32_t nfsv4_op_readlink(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_secinfo(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_close(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_commit(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_delegpurge(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_delegreturn(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open_confirm(struct nfsv4_compound *, union nfsv4_args *);

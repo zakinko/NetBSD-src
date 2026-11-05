@@ -52,6 +52,7 @@ sleep 2
 
 cd "$D"
 cc -g -Wall -o nfsv4d nfsv4d.c
-./nfsv4d </dev/null >nfsv4d.log 2>&1 &
+./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
+echo $! >nfsv4d.pid
 sleep 1
 netstat -an -f inet | grep '\.2049 '

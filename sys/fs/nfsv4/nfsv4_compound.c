@@ -90,6 +90,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
 	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
 	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_DELEGPURGE]	= { nfsv4_op_delegpurge, 0 },
 	[NFSV4_OP_DELEGRETURN]	= { nfsv4_op_delegreturn, NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
@@ -319,6 +320,26 @@ nfsv4_dispatch(struct oncrpc_req *rq)
 	}
 }
 
+/*
+ * Write the path of the file of clients that can reclaim, once, before
+ * giving the server any socket.  See nfsv4_stable.c.
+ */
+static int
+nfsv4_sysctl_stable(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	char path[MAXPATHLEN];
+	int error;
+
+	path[0] = '\0';
+	node.sysctl_data = path;
+	node.sysctl_size = sizeof(path);
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error != 0 || newp == NULL)
+		return error;
+	return nfsv4_stable_open(path);
+}
+
 static const struct oncrpc_program nfsv4_program = {
 	.op_prog = NFSV4_PROGRAM,
 	.op_vers_low = NFSV4_VERSION,
@@ -376,6 +397,10 @@ nfsv4_sysctl_init(void)
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "addsock", SYSCTL_DESCR("Serve this descriptor"),
 	    nfsv4_sysctl_addsock, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "stable", SYSCTL_DESCR("File of clients that can reclaim"),
+	    nfsv4_sysctl_stable, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 }
 
 MODULE(MODULE_CLASS_MISC, nfsv4, "oncrpc,nfsserver");
@@ -390,8 +415,10 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_state_init();
 		nfsv4_drc_init();
 		nfsv4_cb_init();
+		nfsv4_stable_init();
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
+			nfsv4_stable_fini();
 			nfsv4_cb_fini();
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
@@ -400,6 +427,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
 			oncrpc_svc_destroy(nfsv4_svc);
+			nfsv4_stable_fini();
 			nfsv4_cb_fini();
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
@@ -414,6 +442,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_cb_fini();
 		nfsv4_drc_fini();
 		nfsv4_state_fini();
+		nfsv4_stable_fini();
 		return 0;
 	default:
 		return ENOTTY;

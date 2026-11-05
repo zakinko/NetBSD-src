@@ -319,9 +319,92 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 	mine->st_accbits |= 1U << access;
 	mine->st_denybits |= 1U << deny;
 	nfsv4_stateid_out(mine, si);
-	nfsv4_deleg_offer(sw, vp, &cf->cf_fh, access, ds, od);
+	if (ds != NULL)
+		nfsv4_deleg_offer(sw, vp, &cf->cf_fh, access, ds, od);
 	mutex_exit(&nfsv4_state_lock);
 	return NFS4_OK;
+}
+
+static uint32_t
+open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
+    struct nfsv4_stateid *si, struct nfsv4_change_info *ci, uint64_t set,
+    struct nfsv4_open_deleg *od, u_int *rlen)
+{
+	struct nfsv4_client *cl = sw->sw_client;
+	uint32_t rflags;
+	bool first;
+	XDR rb;
+
+	rflags = OPEN4_RESULT_LOCKTYPE_POSIX;
+	if (!sw->sw_confirmed)
+		rflags |= OPEN4_RESULT_CONFIRM;
+	sw->sw_rfh = c->c_cur.cf_fh;
+
+	/*
+	 * s9.6.3.4.3.  The owner is busy, so the client stays.  Two owners
+	 * at once may write it twice, which does no harm.
+	 */
+	mutex_enter(&nfsv4_state_lock);
+	first = !cl->cl_stable;
+	cl->cl_stable = true;
+	mutex_exit(&nfsv4_state_lock);
+	if (first)
+		nfsv4_stable_good(cl->cl_idstr, cl->cl_idlen);
+
+	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
+	if (!nfsv4_xdr_stateid(&rb, si) ||
+	    !nfsv4_xdr_change_info(&rb, ci) ||
+	    !xdr_u_int32_t(&rb, &rflags) ||
+	    !nfsv4_attr_put_mask(&rb, set) ||
+	    !nfsv4_xdr_open_deleg(&rb, od))
+		return NFS4ERR_SERVERFAULT;
+	*rlen = xdr_getpos(&rb);
+	return NFS4_OK;
+}
+
+/*
+ * CLAIM_PREVIOUS, s9.6.2: the file is the current handle.  A delegation
+ * claimed is granted whatever else, s10.2.1, and marked to be recalled
+ * at once if the client has not shown it can be called: a server that
+ * cannot recall has no business keeping it out.
+ */
+static uint32_t
+open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
+    struct nfsv4_owner_s *sw, struct nfsv4_state **spare,
+    struct nfsv4_file **sparef, struct nfsv4_deleg_spare *ds, u_int *rlen)
+{
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct nfsv4_change_info ci;
+	struct nfsv4_stateid si;
+	struct nfsv4_open_deleg od;
+	struct vnode *vp = cf->cf_vp;
+	uint32_t st;
+
+	memset(&ci, 0, sizeof(ci));
+	memset(&od, 0, sizeof(od));
+	if (!OPEN4_ACCESS_OK(oa->share_access) ||
+	    !OPEN4_DENY_OK(oa->share_deny) ||
+	    oa->delegate_type > OPEN_DELEGATE_WRITE)
+		return NFS4ERR_INVAL;
+	st = nfsv4_reclaim_check(sw->sw_client);
+	if (st != NFS4_OK)
+		return st;
+	if (vp == NULL || vp->v_type == VDIR)
+		return NFS4ERR_ISDIR;
+	if (vp->v_type != VREG)
+		return NFS4ERR_SYMLINK;
+	st = open_share(sw, vp, oa->share_access, oa->share_deny, spare,
+	    sparef, &si, cf, NULL, NULL);
+	if (st != NFS4_OK)
+		return st;
+	if (oa->delegate_type != OPEN_DELEGATE_NONE && ds->ds_st != NULL) {
+		mutex_enter(&nfsv4_state_lock);
+		nfsv4_deleg_add(sw->sw_client, vp, &cf->cf_fh,
+		    oa->delegate_type, ds, &od);
+		od.od_recall = sw->sw_client->cl_cbstate != NFSV4_CB_UP;
+		mutex_exit(&nfsv4_state_lock);
+	}
+	return open_reply(c, sw, &si, &ci, 0, &od, rlen);
 }
 
 static uint32_t
@@ -336,23 +419,29 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	struct vattr va;
 	uint64_t set = 0;
 	struct nfsv4_open_deleg od;
-	uint32_t st, rflags;
+	uint32_t st;
 	bool created = false, trunc;
-	XDR rb;
 	int error;
 
 	memset(&ci, 0, sizeof(ci));
 	memset(&od, 0, sizeof(od));
 
-	/* Nothing is remembered from before a restart. */
+	/*
+	 * s16.16.5.  A delegation is the one claim to go by name in the
+	 * grace period: of a reclaimed delegation, s10.2.1, or of a client
+	 * restarted, and neither can conflict with a reclaim to come.
+	 */
 	switch (oa->claim) {
 	case CLAIM_NULL:
+		if (nfsv4_grace_active())
+			return NFS4ERR_GRACE;
 		break;
 	case CLAIM_PREVIOUS:
-		return NFS4ERR_NO_GRACE;
+		return open_previous(c, oa, sw, spare, sparef, ds, rlen);
 	case CLAIM_DELEGATE_CUR:
-		return NFS4ERR_BAD_STATEID;
-	default:			/* s16.16.5 */
+	case CLAIM_DELEGATE_PREV:
+		break;
+	default:
 		return NFS4ERR_NOTSUPP;
 	}
 	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
@@ -377,6 +466,13 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		if (st != NFS4_OK)
 			goto bad;
 	}
+	if (oa->claim == CLAIM_DELEGATE_CUR)
+		st = nfsv4_deleg_claim_cur(sw->sw_client,
+		    &oa->delegate_stateid, vp);
+	else if (oa->claim == CLAIM_DELEGATE_PREV)
+		st = nfsv4_deleg_claim_prev(sw->sw_client, vp, &od);
+	if (st != NFS4_OK)
+		goto bad;
 	st = open_share(sw, vp, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, cf, ds, &od);
 	if (st != NFS4_OK)
@@ -398,21 +494,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	if (st != NFS4_OK)
 		goto bad;
 	vp = NULL;
-
-	rflags = OPEN4_RESULT_LOCKTYPE_POSIX;
-	if (!sw->sw_confirmed)
-		rflags |= OPEN4_RESULT_CONFIRM;
-	sw->sw_rfh = cf->cf_fh;
-
-	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
-	if (!nfsv4_xdr_stateid(&rb, &si) ||
-	    !nfsv4_xdr_change_info(&rb, &ci) ||
-	    !xdr_u_int32_t(&rb, &rflags) ||
-	    !nfsv4_attr_put_mask(&rb, set) ||
-	    !nfsv4_xdr_open_deleg(&rb, &od))
-		return NFS4ERR_SERVERFAULT;
-	*rlen = xdr_getpos(&rb);
-	return NFS4_OK;
+	return open_reply(c, sw, &si, &ci, set, &od, rlen);
 bad:
 	if (vp != NULL)
 		vrele(vp);
@@ -520,7 +602,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = NFS4ERR_BAD_SEQID;
 		break;
 	case NFSV4_SEQ_GO:
-		if (want_deleg) {
+		if (want_deleg || oa->claim == CLAIM_PREVIOUS) {
 			ds.ds_st = kmem_zalloc(sizeof(*ds.ds_st), KM_SLEEP);
 			ds.ds_sw = kmem_zalloc(sizeof(*ds.ds_sw), KM_SLEEP);
 			ds.ds_f = kmem_zalloc(sizeof(*ds.ds_f), KM_SLEEP);
@@ -787,6 +869,9 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 	uint32_t status = NFS4_OK, bit;
 
 	bit = write ? OPEN4_SHARE_DENY_WRITE : OPEN4_SHARE_DENY_READ;
+	/* s9.6.2: the simple way, whatever the stateid. */
+	if (nfsv4_grace_active())
+		return NFS4ERR_GRACE;
 	mutex_enter(&nfsv4_state_lock);
 	open = NULL;
 	if (nfsv4_stateid_special(si)) {

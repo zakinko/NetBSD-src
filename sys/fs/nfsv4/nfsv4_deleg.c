@@ -67,6 +67,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 /* A choice, to bound what clients can make this keep. */
 #define	NFSV4_DELEG_MAX		65536
 
+/*
+ * vfs.nfsv4.delegations: 0 for none, 1 for read, 2 for read and write.
+ * Processes on the server do not recall anything, and a client with a
+ * write delegation keeps its locks to itself, s10.4.2, so an export that
+ * local processes share with clients wants less than 2.
+ */
+int nfsv4_deleg_mode = 2;
+
 /* Recalled and not yet back. */
 static LIST_HEAD(, nfsv4_state) deleg_recalled;
 static volatile u_int deleg_count;
@@ -187,7 +195,8 @@ nfsv4_deleg_offer(struct nfsv4_owner_s *sw, struct vnode *vp,
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
 	if (cl->cl_cbstate != NFSV4_CB_UP || !sw->sw_confirmed ||
-	    ds->ds_st == NULL || deleg_count >= NFSV4_DELEG_MAX)
+	    ds->ds_st == NULL || deleg_count >= NFSV4_DELEG_MAX ||
+	    nfsv4_deleg_mode == 0 || (write && nfsv4_deleg_mode == 1))
 		return;
 	f = nfsv4_file_find(vp);
 	KASSERT(f != NULL);

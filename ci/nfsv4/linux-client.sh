@@ -125,8 +125,36 @@ acl() {
 	t sudo rm -rf "$m/f" "$m/d"
 	t sudo umount "$m"
 }
+# With write delegations, which the checks against processes on the
+# server in one() cannot have.  How many came back is the measurement.
+deleg() {
+	m=/mnt/nfsv4deleg
+	sudo mkdir -p "$m"
+	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'
+	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
+	    127.0.0.1:/export/pynfs "$m"
+	sleep 3
+	t sudo mkdir "$m/dg"
+	t sudo chmod 1777 "$m/dg"
+	t dd if=/dev/urandom of="$BIN" bs=1M count=4 status=none
+	t cp "$BIN" "$m/dg/a"
+	t cmp "$BIN" "$m/dg/a"
+	t sh -c "exec 3<>$m/dg/a; sleep 1; echo x >&3"
+	t python3 -c "
+import fcntl
+f=open('$m/dg/a','r+')
+fcntl.lockf(f,fcntl.LOCK_EX,10,0)
+fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
+	t mv "$m/dg/a" "$m/dg/b"
+	t sudo rm -rf "$m/dg"
+	grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -4
+	t sudo umount "$m"
+	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=1 || sysctl -w vfs.nfsv4.delegations=1'
+}
 {
 	uname -a
+	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=1 || sysctl -w vfs.nfsv4.delegations=1'
+	deleg
 	one /export/pynfs
 	one /export/tmpfs
 	one /tank/x

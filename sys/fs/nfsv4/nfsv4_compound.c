@@ -401,6 +401,10 @@ nfsv4_sysctl_init(void)
 	    nfsv4_sysctl_addsock, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "delegations", SYSCTL_DESCR("0 none, 1 read, 2 read and write"),
+	    NULL, 0, &nfsv4_deleg_mode, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "stable", SYSCTL_DESCR("File of clients that can reclaim"),
 	    nfsv4_sysctl_stable, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

@@ -170,6 +170,7 @@ struct nfsv4_deleg_spare {
 extern kmutex_t nfsv4_state_lock;
 extern kcondvar_t nfsv4_state_cv;
 extern uint32_t nfsv4_boot;
+extern int nfsv4_deleg_mode;
 
 /* What to do with a request after looking at its seqid, s9.1.7. */
 enum nfsv4_seq {

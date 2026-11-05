@@ -1195,10 +1195,24 @@ nfsv4_op_commit(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (ca->offset > (uint64_t)INT64_MAX ||
 	    (uint64_t)INT64_MAX - ca->offset < ca->count)
 		return NFS4ERR_INVAL;
-	end = ca->count == 0 ? 0 : ca->offset + ca->count;
 
+	/*
+	 * As nfsrv_commit().  An end of 0 with an offset is not "to the
+	 * end" to ffs_fsync(): the pages are flushed, as VOP_PUTPAGES takes
+	 * it so, but the indirect blocks are found from the end, and were
+	 * left unwritten.  An end past the size made ufs_getlbns() fail.
+	 * Offsets 0 and 0 stay as they are, the whole file.
+	 */
+	error = 0;
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	error = VOP_FSYNC(vp, cf->cf_cred, FSYNC_WAIT, ca->offset, end);
+	end = ca->offset + ca->count;
+	if (ca->count == 0 || end > vp->v_size)
+		end = vp->v_size;
+	if (ca->offset == 0 && ca->count == 0)
+		end = 0;
+	if (ca->offset < (uint64_t)vp->v_size ||
+	    (ca->offset == 0 && ca->count == 0))
+		error = VOP_FSYNC(vp, cf->cf_cred, FSYNC_WAIT, ca->offset, end);
 	VOP_UNLOCK(vp);
 	if (error != 0)
 		return nfsv4_errno(error);

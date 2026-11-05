@@ -43,8 +43,8 @@ for ck in ((1 << 63) + 2, (1 << 63) + 3, (1 << 63) + 10, (1 << 64) - 1):
     r = c.compound(c.use_obj(d) + [op.readdir(ck, b'', 4096, 4096,
                                               nfs4lib.list2bitmap([FATTR4_TYPE]))])
     want('READDIR cookie %#x' % ck, r.status,
-         NFS4ERR_BAD_COOKIE if ck >= (1 << 63) + 3 else NFS4_OK)
+         NFS4ERR_BAD_COOKIE)
 r = c.compound(c.use_obj(d) + [op.readdir((1 << 62), b'', 4096, 4096, nfs4lib.list2bitmap([FATTR4_TYPE]))])
-print('READDIR cookie 2^62: %s' % r.status)
+want('READDIR cookie 2^62', r.status, NFS4_OK, NFS4ERR_BAD_COOKIE)
 print('failures: %d' % fails)
 sys.exit(1 if fails else 0)

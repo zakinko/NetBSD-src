@@ -356,12 +356,25 @@ readdir_real(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 		vn_lock(vp, LK_SHARED | LK_RETRY);
 		error = VOP_READDIR(vp, &uio, cred, &eof, &cookies, &ncookies);
 		VOP_UNLOCK(vp);
-		if (error == 0 && cookies == NULL)
+		/*
+		 * Past the end, ZFS gives nothing at all, and FFS and tmpfs
+		 * refuse an offset they cannot use: a cookie that was never
+		 * given out, s13.1.1.2.
+		 */
+		if (error == 0 && cookies == NULL) {
+			if (uio.uio_resid == NFSV4_DIRBUF) {
+				*eofp = true;
+				break;
+			}
 			error = EOPNOTSUPP;
+		}
+		if (cookie != 0 && (error == EINVAL || error == EFBIG))
+			st = NFS4ERR_BAD_COOKIE;
 		if (error != 0) {
 			if (cookies != NULL)
 				free(cookies, M_TEMP);
-			st = nfsv4_errno(error);
+			if (st == NFS4_OK)
+				st = nfsv4_errno(error);
 			break;
 		}
 		off = uio.uio_offset;
@@ -437,6 +450,13 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_INVAL;
 	/* RFC 7530 s16.24.4 */
 	if (ra->cookie == 1 || ra->cookie == 2)
+		return NFS4ERR_BAD_COOKIE;
+	/*
+	 * No cookie given out is this large, and readdir_real() would make
+	 * a negative offset of it for the file system; s13.1.1.2.
+	 */
+	if (ra->cookie != 0 &&
+	    ra->cookie - NFSV4_COOKIE_BASE >= (uint64_t)INT64_MAX)
 		return NFS4ERR_BAD_COOKIE;
 
 	/*

@@ -436,6 +436,7 @@ SUBDIR+=	dtrace
 .endif
 
 SUBDIR+=        sodium
+SUBDIR+=	nfsv4
 SUBDIR+=	oncrpc
 SUBDIR+=	xdr
 

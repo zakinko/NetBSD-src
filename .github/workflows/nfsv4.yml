@@ -1,0 +1,88 @@
+name: nfsv4
+on:
+  push:
+    branches: [nfsv4]
+    paths:
+      - 'sys/fs/nfsv4/**'
+      - 'sys/modules/nfsv4/**'
+      - 'sys/oncrpc/**'
+      - 'tests/fs/nfsv4/**'
+      - 'ci/nfsv4/**'
+      - '.github/workflows/nfsv4.yml'
+  workflow_dispatch:
+concurrency:
+  group: nfsv4-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 60
+      # The kernel holds nothing of sys/fs/nfsv4, only the module does,
+      # so it stays good across pushes until the base moves.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            nb/tools
+            nb/netbsd
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base') }}
+      - run: sh ci/nfsv4/build.sh "$PWD/nb" "$PWD/out"
+      - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
+      - run: |
+          sudo apt-get install -y -q libtirpc-dev >/dev/null
+          mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
+          ./t
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nfsv4
+            ci/oncrpc/swap.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+      - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - name: What the kernel said
+        if: always()
+        run: |
+          ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; ps -ax | grep -c nfsv4; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+      - name: Summarise
+        if: always()
+        run: python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pynfs
+          path: |
+            out/pynfs*
+            out/summary.txt
+            out/kernel.txt
+          retention-days: 30

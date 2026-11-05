@@ -1,0 +1,54 @@
+/*	$NetBSD$	*/
+
+/*-
+ * Copyright (c) 2026 Showta Ishizaki
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+#ifndef _FS_NFSV4_NFSV4_VAR_H_
+#define _FS_NFSV4_NFSV4_VAR_H_
+
+#include <oncrpc/oncrpc.h>
+
+#include <fs/nfsv4/nfsv4_xdr.h>
+
+/*
+ * What is being done for one COMPOUND.  Its operations run in order in
+ * one thread, so nothing here needs a lock.
+ */
+struct nfsv4_compound {
+	struct oncrpc_req *c_rq;
+	XDR		*c_ax;		/* arguments */
+	XDR		*c_rx;		/* results */
+};
+
+/*
+ * An operation.  It gets its decoded arguments and returns its status,
+ * having written to c_rx what follows the status in its result: that is
+ * nothing for an error, unless the error has an arm of its own in the
+ * result's union, because the COMPOUND cannot take bytes back.
+ */
+typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
+
+#endif /* !_FS_NFSV4_NFSV4_VAR_H_ */

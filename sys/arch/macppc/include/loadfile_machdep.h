@@ -29,7 +29,14 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * An LP64 kernel is ELF64, and boot.c looks for it under the same names
+ * as the 32-bit one, so the loader has to read both.  Without this the
+ * file opens and loadfile() falls through every arm of its dispatch and
+ * returns EFTYPE, which boot.c reports as nothing at all.
+ */
 #define BOOT_ELF32
+#define BOOT_ELF64
 
 #define LOAD_KERNEL	(LOAD_ALL & ~LOAD_TEXTA)
 #define COUNT_KERNEL	(COUNT_ALL & ~COUNT_TEXTA)

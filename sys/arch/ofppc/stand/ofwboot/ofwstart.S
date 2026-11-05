@@ -92,7 +92,24 @@ _entry:
 	# new mem def ?
 	.long 0
 	
+#ifdef _LP64
+	/*
+	 * Open Firmware branches to the entry point through an ELF V1
+	 * function descriptor, so the entry symbol has to be one.  Give it
+	 * the code address and the TOC base; the third word is unused.
+	 */
+	.pushsection ".opd","aw"
+	.align	3
 _start:
+	.quad	_start_code,.TOC.@tocbase,0
+	.popsection
+_start_code:
+	/* The firmware is not required to hand us r2, so set it here. */
+	lis	%r2,.TOC.@ha
+	addi	%r2,%r2,.TOC.@l
+#else
+_start:
+#endif
 	sync
 	isync
 	lis	%r1,stack+0x20000@ha
@@ -103,6 +120,13 @@ _start:
 	mtmsr	%r0
 	isync
 
+#ifndef _LP64
+	/*
+	 * The 970 and everything after it have no BATs -- the registers
+	 * are not implemented, so writing them traps.  An LP64 kernel only
+	 * runs on those, and the firmware has already mapped us, so there
+	 * is nothing to set up here.
+	 */
 	mtibatu	0,%r0
 	mtibatu	1,%r0
 	mtibatu	2,%r0
@@ -119,6 +143,7 @@ _start:
 	mtibatu	0,%r9
 	mtdbatu	0,%r9
 	isync
+#endif
 
 	mtmsr	%r8
 	isync
@@ -140,3 +165,4 @@ _start:
 	b	5b
 
 6:	b	startup
+

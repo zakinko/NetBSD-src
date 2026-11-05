@@ -37,8 +37,49 @@
 
 #include <machine/cpu.h>
 
+/*
+ * Open Firmware's client interface passes its arguments and results as
+ * an array of cells, and SLOF fetches them a 32-bit word at a time --
+ * client.fs reads nargs with l@ at the second word and walks the array
+ * with la1+.  The cells stay 32 bits wide on a 64-bit firmware, so an
+ * LP64 client cannot lay this array out with C pointers: the low half
+ * of the first pointer is read as nargs, and the firmware then walks
+ * off the end of the array.
+ *
+ * Everything in these structures is therefore one cell, and a pointer
+ * goes in as OFW_CELL().  The client is loaded below 4GB, so an
+ * address fits.
+ */
+typedef uint32_t	cell_t;
+
+#define	OFW_CELL(p)	((cell_t)(uintptr_t)(p))
+#define	OFW_PTR(c)	((void *)(uintptr_t)(c))
+
 static int (*openfirmware_entry)(void *);
 static int openfirmware(void *);
+#ifdef _LP64
+/*
+ * What Open Firmware hands us is a code address, but an ELF V1 call
+ * through a function pointer reads the pointed-to words as an entry
+ * point and a TOC.  Give it a descriptor of our own that says so.  The
+ * TOC word is ours, so that the call leaves r2 as the firmware found
+ * it -- a zero there is not "no TOC", it is a null r2 handed to the
+ * firmware.
+ */
+static unsigned long openfirmware_desc[3];
+/*
+ * What gets handed on to the kernel is the firmware's own code address,
+ * not the descriptor above: the kernel branches to it with mtctr/bctrl
+ * and would otherwise execute the descriptor's words.
+ */
+#endif
+
+/*
+ * The firmware's own code address, kept apart from the pointer this
+ * loader calls through: the kernel branches to what OF_chain() hands it
+ * with mtctr/bctrl, so it must be the code and not a descriptor.
+ */
+static int (*openfirmware_code)(void *);
 
 void startup(void *, int, int (*)(void *), char *, int)
 	__attribute__((__used__));
@@ -66,7 +107,18 @@ void
 startup(void *vpd, int res, int (*openfirm)(void *), char *arg, int argl)
 {
 
+	openfirmware_code = openfirm;
+#ifdef _LP64
+    {
+	register unsigned long toc __asm("r2");
+
+	openfirmware_desc[0] = (unsigned long)openfirm;
+	openfirmware_desc[1] = toc;
+	openfirmware_entry = (int (*)(void *))openfirmware_desc;
+    }
+#else
 	openfirmware_entry = openfirm;
+#endif
 	setup();
 	main();
 	OF_exit();
@@ -76,14 +128,16 @@ __dead void
 OF_exit(void)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
 	} args = {
-		"exit",
+		0,
 		0,
 		0
 	};
+
+	args.name = OFW_CELL("exit");
 
 	openfirmware(&args);
 	for (;;);			/* just in case */
@@ -93,17 +147,19 @@ __dead void
 OF_boot(char *bootspec)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		char *bootspec;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	bootspec;
 	} args = {
-		"boot",
+		0,
 		1,
 		0,
 	};
 
-	args.bootspec = bootspec;
+	args.name = OFW_CELL("boot");
+
+	args.bootspec = OFW_CELL(bootspec);
 	openfirmware(&args);
 	for (;;);			/* just in case */
 }
@@ -112,18 +168,20 @@ int
 OF_finddevice(char *name)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		char *device;
-		int phandle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	device;
+		cell_t	phandle;
 	} args = {
-		"finddevice",
+		0,
 		1,
 		1,
 	};
 
-	args.device = name;
+	args.name = OFW_CELL("finddevice");
+
+	args.device = OFW_CELL(name);
 	if (openfirmware(&args) == -1)
 		return -1;
 	return args.phandle;
@@ -133,16 +191,18 @@ int
 OF_instance_to_package(int ihandle)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		int phandle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	phandle;
 	} args = {
-		"instance-to-package",
+		0,
 		1,
 		1,
 	};
+
+	args.name = OFW_CELL("instance-to-package");
 
 	args.ihandle = ihandle;
 	if (openfirmware(&args) == -1)
@@ -154,23 +214,25 @@ int
 OF_getprop(int handle, char *prop, void *buf, int buflen)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		char *prop;
-		void *buf;
-		int buflen;
-		int size;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	size;
 	} args = {
-		"getprop",
+		0,
 		4,
 		1,
 	};
 
+	args.name = OFW_CELL("getprop");
+
 	args.phandle = handle;
-	args.prop = prop;
-	args.buf = buf;
+	args.prop = OFW_CELL(prop);
+	args.buf = OFW_CELL(buf);
 	args.buflen = buflen;
 	if (openfirmware(&args) == -1)
 		return -1;
@@ -182,23 +244,25 @@ int
 OF_setprop(int handle, char *prop, void *buf, int len)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		char *prop;
-		void *buf;
-		int len;
-		int size;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	len;
+		cell_t	size;
 	} args = {
-		"setprop",
+		0,
 		4,
 		1,
 	};
 
+	args.name = OFW_CELL("setprop");
+
 	args.phandle = handle;
-	args.prop = prop;
-	args.buf = buf;
+	args.prop = OFW_CELL(prop);
+	args.buf = OFW_CELL(buf);
 	args.len = len;
 	if (openfirmware(&args) == -1)
 		return -1;
@@ -210,21 +274,23 @@ int
 OF_open(char *dname)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		char *dname;
-		int handle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	dname;
+		cell_t	handle;
 	} args = {
-		"open",
+		0,
 		1,
 		1,
 	};
 
+	args.name = OFW_CELL("open");
+
 #ifdef OFW_DEBUG
 	printf("OF_open(%s) -> ", dname);
 #endif
-	args.dname = dname;
+	args.dname = OFW_CELL(dname);
 	if (openfirmware(&args) == -1 ||
 	    args.handle == 0) {
 #ifdef OFW_DEBUG
@@ -242,15 +308,17 @@ void
 OF_close(int handle)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int handle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	handle;
 	} args = {
-		"close",
+		0,
 		1,
 		0,
 	};
+
+	args.name = OFW_CELL("close");
 
 #ifdef OFW_DEBUG
 	printf("OF_close(%d)\n", handle);
@@ -263,25 +331,27 @@ int
 OF_write(int handle, void *addr, int len)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		void *addr;
-		int len;
-		int actual;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	addr;
+		cell_t	len;
+		cell_t	actual;
 	} args = {
-		"write",
+		0,
 		3,
 		1,
 	};
+
+	args.name = OFW_CELL("write");
 
 #ifdef OFW_DEBUG
 	if (len != 1)
 		printf("OF_write(%d, %p, %x) -> ", handle, addr, len);
 #endif
 	args.ihandle = handle;
-	args.addr = addr;
+	args.addr = OFW_CELL(addr);
 	args.len = len;
 	if (openfirmware(&args) == -1) {
 #ifdef OFW_DEBUG
@@ -300,25 +370,27 @@ int
 OF_read(int handle, void *addr, int len)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		void *addr;
-		int len;
-		int actual;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	addr;
+		cell_t	len;
+		cell_t	actual;
 	} args = {
-		"read",
+		0,
 		3,
 		1,
 	};
+
+	args.name = OFW_CELL("read");
 
 #ifdef OFW_DEBUG
 	if (len != 1)
 		printf("OF_read(%d, %p, %x) -> ", handle, addr, len);
 #endif
 	args.ihandle = handle;
-	args.addr = addr;
+	args.addr = OFW_CELL(addr);
 	args.len = len;
 	if (openfirmware(&args) == -1) {
 #ifdef OFW_DEBUG
@@ -337,18 +409,20 @@ int
 OF_seek(int handle, u_quad_t pos)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int handle;
-		int poshi;
-		int poslo;
-		int status;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	handle;
+		cell_t	poshi;
+		cell_t	poslo;
+		cell_t	status;
 	} args = {
-		"seek",
+		0,
 		3,
 		1,
 	};
+
+	args.name = OFW_CELL("seek");
 
 #ifdef OFW_DEBUG
 	printf("OF_seek(%d, %x, %x) -> ", handle, (int)(pos >> 32), (int)pos);
@@ -372,16 +446,18 @@ void *
 OF_alloc_mem(u_int size)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		u_int size;
-		void *baseaddr;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	size;
+		cell_t	baseaddr;
 	} args = {
-		"alloc-mem",
+		0,
 		1,
 		1,
 	};
+
+	args.name = OFW_CELL("alloc-mem");
 #ifdef OFW_DEBUG
 	printf("alloc-mem %x -> ", size);
 #endif
@@ -392,32 +468,34 @@ OF_alloc_mem(u_int size)
 		return (void *)-1;
 	}
 #ifdef OFW_DEBUG
-	printf("%p\n", args.baseaddr);
+	printf("%p\n", OFW_PTR(args.baseaddr));
 #endif
-	return args.baseaddr;
+	return OFW_PTR(args.baseaddr);
 }
 
 void *
 OF_claim(void *virt, u_int size, u_int align)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		void *virt;
-		u_int size;
-		u_int align;
-		void *baseaddr;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	virt;
+		cell_t	size;
+		cell_t	align;
+		cell_t	baseaddr;
 	} args = {
-		"claim",
+		0,
 		3,
 		1,
 	};
 
+	args.name = OFW_CELL("claim");
+
 #ifdef OFW_DEBUG
 	printf("OF_claim(%p, %x, %x) -> ", virt, size, align);
 #endif
-	args.virt = virt;
+	args.virt = OFW_CELL(virt);
 	args.size = size;
 	args.align = align;
 	if (openfirmware(&args) == -1) {
@@ -427,30 +505,32 @@ OF_claim(void *virt, u_int size, u_int align)
 		return (void *)-1;
 	}
 #ifdef OFW_DEBUG
-	printf("%p\n", args.baseaddr);
+	printf("%p\n", OFW_PTR(args.baseaddr));
 #endif
-	return args.baseaddr;
+	return OFW_PTR(args.baseaddr);
 }
 
 void
 OF_release(void *virt, u_int size)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		void *virt;
-		u_int size;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	virt;
+		cell_t	size;
 	} args = {
-		"release",
+		0,
 		2,
 		0,
 	};
 
+	args.name = OFW_CELL("release");
+
 #ifdef OFW_DEBUG
 	printf("OF_release(%p, %x)\n", virt, size);
 #endif
-	args.virt = virt;
+	args.virt = OFW_CELL(virt);
 	args.size = size;
 	openfirmware(&args);
 }
@@ -459,18 +539,74 @@ int
 OF_milliseconds(void)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		int ms;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ms;
 	} args = {
-		"milliseconds",
+		0,
 		0,
 		1,
 	};
 
+	args.name = OFW_CELL("milliseconds");
+
 	openfirmware(&args);
 	return args.ms;
+}
+
+/*
+ * The same interface, and the same cell order, as macppc's loader: the
+ * nargs arguments are read from cells[] and the results written after
+ * them, from cells[nargs] on, so cells[] needs room for both.
+ * IEEE 1275-1994, 6.3.2.2 "call-method": the arguments follow the
+ * method and the ihandle with stack-arg1 the one left on top, the
+ * catch-result comes back ahead of the results, and nothing more is
+ * returned when it is nonzero.  Six of each is the least a firmware
+ * has to allow, hence the limit.
+ */
+int
+OF_call_method(const char *method, int ihandle, int nargs, int nreturns,
+    int *cells)
+{
+	static struct {
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	method;
+		cell_t	ihandle;
+		cell_t	args_n_results[12];
+	} args = {
+		0,
+		2,
+		1,
+	};
+	cell_t *ip;
+	int n;
+
+	args.name = OFW_CELL("call-method");
+
+	if (nargs > 6)
+		return -1;
+
+	args.nargs = nargs + 2;
+	args.nreturns = nreturns + 1;
+	args.method = OFW_CELL(method);
+	args.ihandle = ihandle;
+
+	for (ip = args.args_n_results + (n = nargs); --n >= 0;)
+		*--ip = *cells++;
+
+	if (openfirmware(&args) == -1)
+		return -1;
+
+	if (args.args_n_results[nargs])
+		return args.args_n_results[nargs];
+
+	for (ip = args.args_n_results + nargs + (n = args.nreturns); --n > 0;)
+		*cells++ = *--ip;
+
+	return 0;
 }
 
 #ifdef	__notyet__
@@ -478,24 +614,26 @@ void
 OF_chain(void *virt, u_int size, void (*entry)(), void *arg, u_int len)
 {
 	static struct {
-		char *name;
-		int nargs;
-		int nreturns;
-		void *virt;
-		u_int size;
-		void (*entry)();
-		void *arg;
-		u_int len;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	virt;
+		cell_t	size;
+		cell_t	entry;
+		cell_t	arg;
+		cell_t	len;
 	} args = {
-		"chain",
+		0,
 		5,
 		0,
 	};
 
-	args.virt = virt;
+	args.name = OFW_CELL("chain");
+
+	args.virt = OFW_CELL(virt);
 	args.size = size;
-	args.entry = entry;
-	args.arg = arg;
+	args.entry = OFW_CELL(entry);
+	args.arg = OFW_CELL(arg);
 	args.len = len;
 	openfirmware(&args);
 }
@@ -509,7 +647,26 @@ OF_chain(void *virt, u_int size, boot_entry_t entry, void *arg, u_int len)
 #if 0
 	OF_release(virt, size);
 #endif
-	entry(0, 0, openfirmware_entry, arg, len);
+#ifdef _LP64
+    {
+	/*
+	 * loadfile() hands back the kernel's e_entry, which is a code
+	 * address.  An ELF V1 call through a function pointer would read
+	 * the words there as an entry point and a TOC, so wrap it the same
+	 * way the firmware's own entry is wrapped.  A 32-bit loader
+	 * branches straight to e_entry, so this keeps the two widths
+	 * asking the same thing of the kernel.
+	 */
+	static unsigned long kdesc[3];
+	register unsigned long toc __asm("r2");
+
+	kdesc[0] = (unsigned long)entry;
+	kdesc[1] = toc;
+	((boot_entry_t)(void *)kdesc)(0, 0, openfirmware_code, arg, len);
+    }
+#else
+	entry(0, 0, openfirmware_code, arg, len);
+#endif
 }
 #endif
 
@@ -566,16 +723,18 @@ static int
 OF_peer(int phandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		int sibling;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	sibling;
 	} args = {
-		"peer",
+		0,
 			1,
 			1,
 	};
+
+	args.name = OFW_CELL("peer");
 	
 	args.phandle = phandle;
 	if (openfirmware(&args) == -1)
@@ -587,16 +746,18 @@ static int
 OF_child(int phandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		int child;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	child;
 	} args = {
-		"child",
+		0,
 			1,
 			1,
 	};
+
+	args.name = OFW_CELL("child");
 
 	args.phandle = phandle;
 	if (openfirmware(&args) == -1)
@@ -608,22 +769,24 @@ int
 OF_nextprop(int handle, const char *prop, void *nextprop)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		const char *prop;
-		char *buf;
-		int flag;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	flag;
 	} args = {
-		"nextprop",
+		0,
 			3,
 			1,
 	};
 
+	args.name = OFW_CELL("nextprop");
+
 	args.phandle = handle;
-	args.prop = prop;
-	args.buf = nextprop;
+	args.prop = OFW_CELL(prop);
+	args.buf = OFW_CELL(nextprop);
 	if (openfirmware(&args) == -1)
 		return -1;
 	return args.flag;
@@ -633,23 +796,25 @@ static int
 OF_package_to_path(int phandle, char *buf, int buflen)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		char *buf;
-		int buflen;
-		int length;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	length;
 	} args = {
-		"package-to-path",
+		0,
 			3,
 			1,
 	};
 
+	args.name = OFW_CELL("package-to-path");
+
 	if (buflen > 4096)
 		return -1;
 	args.phandle = phandle;
-	args.buf = buf;
+	args.buf = OFW_CELL(buf);
 	args.buflen = buflen;
 	if (openfirmware(&args) < 0)
 		return -1;

@@ -56,4 +56,5 @@ void *OF_alloc_mem(u_int);
 void *OF_claim(void *, u_int, u_int);
 void OF_release(void *, u_int);
 int OF_milliseconds(void);
+int OF_call_method(const char *, int, int, int, int *);
 void OF_chain(void *, u_int, boot_entry_t, void *, u_int);

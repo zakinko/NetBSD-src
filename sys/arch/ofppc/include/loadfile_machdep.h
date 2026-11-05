@@ -29,7 +29,15 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * boot.c carries a list of 64-bit kernel names and picks it when the
+ * firmware says the processor is 64-bit, so the loader has to be able to
+ * read an ELF64 kernel whatever its own width is.  Without this the file
+ * opens and loadfile() then falls through every arm of its dispatch and
+ * returns EFTYPE, which boot.c reports as nothing at all.
+ */
 #define BOOT_ELF32
+#define BOOT_ELF64
 
 #define LOAD_KERNEL	(LOAD_ALL & ~LOAD_TEXTA)
 #define COUNT_KERNEL	(COUNT_ALL & ~COUNT_TEXTA)

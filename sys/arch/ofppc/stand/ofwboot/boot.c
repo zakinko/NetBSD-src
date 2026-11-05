@@ -178,6 +178,100 @@ chain(boot_entry_t entry, char *args, void *ssym, void *esym)
 	panic("chain");
 }
 
+/*
+ * PAPR 10.60, B.6.2.3: a client program tells the platform what it
+ * supports through the root node's "ibm,client-architecture-support"
+ * method, and on a platform built on ISA 3.0 or later it has to choose
+ * the page table model there (Table 515, notes 9 and 10).  The Boot
+ * Loader Note in the same section puts the call in the boot loader.
+ *
+ * The kernel keeps a hashed page table through the hcall()s of 14.5.4.1,
+ * and says so; the vectors it has no use for carry the Ignore bit, which
+ * leaves them at the platform's configuration (note 1).
+ */
+static uint8_t ofw_cas_vec[] __aligned(8) = {
+	/*
+	 * PVR list, mask then value.  An entry whose value has bits
+	 * outside its mask ends the list.
+	 */
+	0xff, 0xff, 0x00, 0x00,  0x00, 0x3c, 0x00, 0x00,	/* 970FX */
+	0xff, 0xff, 0x00, 0x00,  0x00, 0x44, 0x00, 0x00,	/* 970MP */
+	0xff, 0xff, 0x00, 0x00,  0x00, 0x4d, 0x00, 0x00,	/* POWER8 */
+	0xff, 0xff, 0x00, 0x00,  0x00, 0x4e, 0x00, 0x00,	/* POWER9 */
+	0xff, 0xff, 0x00, 0x00,  0x00, 0x80, 0xff, 0xff,	/* Power10 */
+
+	4,			/* option vectors 1 to 5 */
+
+	/*
+	 * 1: architecture levels.  The PTE layouts of these were checked:
+	 * 2.01 to 2.07 in byte 2, 3.00 and 3.10 in byte 3.  LoPAR 2.9
+	 * names byte 3 bit 0 "2.08" and reserves bit 1; PAPR 10.60, which
+	 * covers the ISA 3.1 processors that bit is for, defines it.
+	 */
+	2, 0x00, 0x7f, 0xc0,
+
+	/* 2 to 4: Ignore */
+	0, 0x80,
+	0, 0x80,
+	0, 0x80,
+
+	/* 5: 24 bytes */
+	23,
+	0x00,			/*  1 */
+	0x90,			/*  2 logical partitioning, large pages */
+	0, 0, 0, 0, 0, 0,	/*  3-8 */
+	0, 0, 0, 64,		/*  9-12 processors: 64, as when absent */
+	0, 0,			/* 13-14 */
+	0, 0,			/* 15-16 */
+	0, 0, 0, 0,		/* 17-20 */
+	0,			/* 21 */
+	0,			/* 22 */
+	0x00,			/* 23 interrupts, set below */
+	0x00,			/* 24 hashed page table only */
+};
+
+static void
+ofw_cas(int chosen)
+{
+	uint8_t sup[64];
+	int root, len, i, cells[2];	/* the argument, then err? */
+
+	/*
+	 * Asking for a value the platform does not offer in bytes 23 or
+	 * 24 ends the boot (note 8).  "ibm,arch-vec-5-platform-support"
+	 * is a list of byte number, value pairs (B.6.3.1); 0b01 in bits
+	 * 0-1 means only the other model.
+	 */
+	len = OF_getprop(chosen, "ibm,arch-vec-5-platform-support", sup,
+	    sizeof(sup));
+	if (len > (int)sizeof(sup))
+		len = sizeof(sup);
+	for (i = 0; i + 1 < len; i += 2) {
+		if (sup[i] == 24 && (sup[i + 1] & 0xc0) == 0x40) {
+			printf("platform offers only radix; not negotiating\n");
+			return;
+		}
+		/*
+		 * Byte 23 bits 0-1: 0b01 XIVE exploitation only, 0b10
+		 * either.  Where XIVE is offered, ask for it; the kernel
+		 * drives both, and finds which from the interrupt
+		 * controller node the platform then presents.
+		 */
+		if (sup[i] == 23 && ((sup[i + 1] & 0xc0) == 0x40 ||
+		    (sup[i + 1] & 0xc0) == 0x80))
+			ofw_cas_vec[sizeof(ofw_cas_vec) - 2] = 0x40;
+	}
+
+	if ((root = OF_open("/")) == -1)
+		return;
+	cells[0] = (int)(uintptr_t)ofw_cas_vec;
+	/* Firmware without the method is not PAPR; nothing to say. */
+	if (OF_call_method("ibm,client-architecture-support", root, 1, 1,
+	    cells) == 0 && cells[1] != 0)
+		printf("ibm,client-architecture-support: error\n");
+	OF_close(root);
+}
+
 __dead void
 _rtt(void)
 {
@@ -212,6 +306,8 @@ main(void)
 		printf("Invalid Openfirmware environment\n");
 		OF_exit();
 	}
+
+	ofw_cas(chosen);
 
 	/* lets see if we can guess the 64bittedness */
 	if (OF_getprop(chosen, "cpu", &cpu, sizeof cpu) ==  sizeof(cpu)) {

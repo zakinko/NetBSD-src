@@ -42,6 +42,14 @@ RELOC=		20000
 
 ENTRY=		_start
 
+# The stock ldscript names elf32-powerpc, so on an LP64 build the linker
+# discards every input object as an incompatible architecture and the
+# link fails with the whole of libsa undefined.
+LDSCRIPT=	${.CURDIR}/ldscript
+.if ${MACHINE_ARCH} == "powerpc64"
+LDSCRIPT=	${.CURDIR}/ldscript64
+.endif
+
 CPPFLAGS+=	-I. -I${S} -I${S}/../common/include
 CPPFLAGS+=	-DRELOC=0x${RELOC}
 CPPFLAGS+=	-DFIRMWORKSBUGS
@@ -65,7 +73,7 @@ LIBSA=		${SALIB}
 
 ${PROG}: ${OBJS} ${LIBSA} ${LIBZ} ${LIBKERN}
 	${_MKTARGET_LINK}
-	${LD} -s -N -T ${.CURDIR}/ldscript -Ttext ${RELOC} -Bstatic \
+	${LD} -s -N -T ${LDSCRIPT} -Ttext ${RELOC} -Bstatic \
 	    -e ${ENTRY} -o ${PROG}.X ${OBJS} ${LIBSA} ${LIBZ} ${LIBKERN}
 	mv -f ${PROG}.X ${PROG}
 

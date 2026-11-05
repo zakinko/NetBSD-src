@@ -281,7 +281,8 @@ extern int dot_symbols;
 #define CPP_OS_DEFAULT_SPEC "%(cpp_os_netbsd)"
 
 #undef  LINK_SHLIB_SPEC
-#define LINK_SHLIB_SPEC "%{shared:-shared} %{!shared: %{static:-static}}"
+#define LINK_SHLIB_SPEC "%{shared:-shared} %{symbolic:-Bsymbolic} \
+  %{!shared: %{static:-static}}"
 
 #undef  LIB_DEFAULT_SPEC
 #define LIB_DEFAULT_SPEC "%(lib_netbsd)"

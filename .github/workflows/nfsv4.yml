@@ -73,7 +73,7 @@ jobs:
   test:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
         with:

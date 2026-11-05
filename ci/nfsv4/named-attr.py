@@ -8,6 +8,7 @@ status 1 means the machinery itself did not work.
 import os, sys, subprocess
 sys.path.insert(0, os.getcwd())
 import use_local
+sys.path.insert(0, os.path.join(os.getcwd(), 'lib'))
 import nfs4lib, nfs_ops
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import *

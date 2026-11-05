@@ -22,6 +22,9 @@ if [ -f "$D/t_oncrpc.c" ]; then
 	cc -g -Wall -o t_oncrpc t_oncrpc.c -latf-c
 	mkdir -p k_oncrpc
 	cp modules/k_oncrpc.kmod k_oncrpc/
+	printf '%s\n\n%s\n\n%s\n' \
+	    'Content-Type: application/X-atf-atffile; version="1"' \
+	    'prop: test-suite = "oncrpc"' 'tp: t_oncrpc' >Atffile
 	rc=0
 	atf-run t_oncrpc >t.tps || rc=$?
 	atf-report <t.tps

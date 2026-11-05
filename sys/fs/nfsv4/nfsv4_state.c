@@ -209,6 +209,26 @@ nfsv4_seq_check(const struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op)
 	return NFSV4_SEQ_BAD;
 }
 
+/* RELEASE_LOCKOWNER's end of an owner, which must be busy and alone. */
+void
+nfsv4_owner_free(struct nfsv4_owner_s *sw, struct nfsv4_reap *reap)
+{
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+	KASSERT(sw->sw_busy);
+
+	while (sw->sw_waiters != 0)
+		cv_wait(&nfsv4_state_cv, &nfsv4_state_lock);
+	while ((st = LIST_FIRST(&sw->sw_states)) != NULL)
+		nfsv4_state_unlink(st, reap, false);
+	LIST_REMOVE(sw, sw_list);
+	cv_broadcast(&nfsv4_state_cv);
+	if (sw->sw_rbuf != NULL)
+		kmem_free(sw->sw_rbuf, sw->sw_rlen);
+	kmem_free(sw, sizeof(*sw));
+}
+
 /*
  * Keep the reply to a request that used up its seqid.  The client does
  * not advance past the errors listed in s9.1.7, so they keep the old

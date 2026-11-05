@@ -123,6 +123,13 @@ nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm)
 	return (attr_mask(bm) & attr_setonly) == 0;
 }
 
+bool
+nfsv4_attr_supported(const struct nfsv4_bitmap *bm)
+{
+
+	return (attr_mask(bm) & ~attr_supported) == 0;
+}
+
 static uint32_t
 attr_ftype(enum vtype t)
 {

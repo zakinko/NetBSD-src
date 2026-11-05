@@ -93,11 +93,17 @@ uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    struct nfsv4_bitmap *, u_int *);
 uint64_t nfsv4_attr_change(const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
+bool	nfsv4_attr_supported(const struct nfsv4_bitmap *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
 
 uint32_t nfsv4_attr_parse(struct nfsv4_compound *,
 	    const struct nfsv4_fattr *, struct vattr *, uint64_t *);
 bool	nfsv4_attr_put_mask(XDR *, uint64_t);
+
+uint32_t nfsv4_file_check(const struct nfsv4_cfh *);
+int	nfsv4_dir_change(struct vnode *, kauth_cred_t, uint64_t *);
+uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
+	    bool);
 
 uint32_t nfsv4_errno(int);
 uint32_t nfsv4_name_check(const struct nfsv4_name *);
@@ -128,6 +134,18 @@ uint32_t nfsv4_op_open_confirm(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open_downgrade(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_read(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_write(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_create(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_link(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_lock(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_lockt(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_locku(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_nverify(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_release_lockowner(struct nfsv4_compound *,
+	    union nfsv4_args *);
+uint32_t nfsv4_op_remove(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_rename(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_setattr(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_verify(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_renew(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_setclientid(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_setclientid_confirm(struct nfsv4_compound *,

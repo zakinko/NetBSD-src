@@ -153,6 +153,7 @@ struct nfsv4_state *
 	nfsv4_state_add(struct nfsv4_state **, struct nfsv4_owner_s *,
 	    struct nfsv4_file **, struct vnode *, u_int);
 void	nfsv4_state_unlink(struct nfsv4_state *, struct nfsv4_reap *, bool);
+void	nfsv4_owner_free(struct nfsv4_owner_s *, struct nfsv4_reap *);
 uint32_t nfsv4_stateid_lookup(const struct nfsv4_stateid *,
 	    struct nfsv4_state **);
 uint32_t nfsv4_stateid_check(const struct nfsv4_stateid *,
@@ -163,6 +164,13 @@ struct nfsv4_file *
 	nfsv4_file_find(struct vnode *);
 
 /* These do not. */
+uint32_t nfsv4_seq_stateid(const struct nfsv4_stateid *, uint32_t, uint32_t,
+	    struct nfsv4_state **, enum nfsv4_seq *);
+uint32_t nfsv4_seq_reply(struct nfsv4_compound *, struct nfsv4_owner_s *,
+	    uint32_t, uint32_t, uint32_t, u_int);
+uint32_t nfsv4_seq_replay(struct nfsv4_compound *, struct nfsv4_owner_s *,
+	    bool);
+void	nfsv4_seq_cancel(struct nfsv4_owner_s *);
 void	nfsv4_reap_finish(struct nfsv4_reap *);
 void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 	    uint32_t, const char *, u_int);

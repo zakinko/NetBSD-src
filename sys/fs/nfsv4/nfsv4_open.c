@@ -59,8 +59,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	OPEN4_DENY_OK(d)	((d) <= OPEN4_SHARE_DENY_BOTH)
 
 /* s16.23.4 and s16.36: what READ, WRITE and COMMIT say of other types. */
-static uint32_t
-file_check(const struct nfsv4_cfh *cf)
+uint32_t
+nfsv4_file_check(const struct nfsv4_cfh *cf)
 {
 
 	if (cf->cf_vp == NULL || cf->cf_vp->v_type == VDIR)
@@ -69,8 +69,8 @@ file_check(const struct nfsv4_cfh *cf)
 }
 
 /* The change attribute of a locked directory, for change_info4. */
-static int
-dir_change(struct vnode *dvp, kauth_cred_t cred, uint64_t *chp)
+int
+nfsv4_dir_change(struct vnode *dvp, kauth_cred_t cred, uint64_t *chp)
 {
 	struct vattr va;
 	int error;
@@ -136,7 +136,7 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 	if (oa->opentype == OPEN4_NOCREATE) {
 		vn_lock(dvp, LK_SHARED | LK_RETRY);
-		error = dir_change(dvp, cf->cf_cred, &ci->ci_before);
+		error = nfsv4_dir_change(dvp, cf->cf_cred, &ci->ci_before);
 		VOP_UNLOCK(dvp);
 		if (error == 0)
 			error = nfsv4_lookup_vp(dvp, oa->file.nm_str,
@@ -155,7 +155,7 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    LOCKPARENT | LOCKLEAF, cf->cf_cred);
 	if (error != 0)
 		return nfsv4_errno(error);
-	error = dir_change(nd.ni_dvp, cf->cf_cred, &ci->ci_before);
+	error = nfsv4_dir_change(nd.ni_dvp, cf->cf_cred, &ci->ci_before);
 
 	if (nd.ni_vp != NULL) {
 		vp = nd.ni_vp;
@@ -200,7 +200,7 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	sva.va_mode = VNOVAL;
 	error = VOP_CREATE(nd.ni_dvp, &vp, &nd.ni_cnd, &va);
 	if (error == 0)
-		error = dir_change(nd.ni_dvp, cf->cf_cred, &ci->ci_after);
+		error = nfsv4_dir_change(nd.ni_dvp, cf->cf_cred, &ci->ci_after);
 	vput(nd.ni_dvp);
 	pathbuf_destroy(nd.ni_pathbuf);
 	if (error != 0)
@@ -400,8 +400,8 @@ bad:
  * Write out the reply to a request under a seqid, which is the one to
  * keep: nfsv4_owner_replay_save() ends the request.
  */
-static uint32_t
-seq_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, uint32_t seqid,
+uint32_t
+nfsv4_seq_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, uint32_t seqid,
     uint32_t op, uint32_t st, u_int rlen)
 {
 
@@ -412,8 +412,8 @@ seq_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, uint32_t seqid,
 }
 
 /* The same, for a request that turned out to be a replay of the last. */
-static uint32_t
-seq_replay(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, bool fh)
+uint32_t
+nfsv4_seq_replay(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, bool fh)
 {
 	struct nfsv4_fh rfh;
 	uint32_t st = sw->sw_laststat;
@@ -482,7 +482,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	switch (seq) {
 	case NFSV4_SEQ_REPLAY:
-		status = seq_replay(c, sw, true);
+		status = nfsv4_seq_replay(c, sw, true);
 		break;
 	case NFSV4_SEQ_BAD:
 		mutex_enter(&nfsv4_state_lock);
@@ -492,7 +492,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 		break;
 	case NFSV4_SEQ_GO:
 		status = open_do(c, oa, sw, &sst, &sf, &rlen);
-		status = seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN, status,
+		status = nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN, status,
 		    status == NFS4_OK ? rlen : 0);
 		break;
 	}
@@ -511,8 +511,8 @@ out:
  * first half of everything that has both.  *replay is the case of
  * NFS4_OK with nothing more to do but send the old reply.
  */
-static uint32_t
-seq_stateid(const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
+uint32_t
+nfsv4_seq_stateid(const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
     struct nfsv4_state **stp, enum nfsv4_seq *seqp)
 {
 	struct nfsv4_state *st;
@@ -529,8 +529,8 @@ seq_stateid(const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
 	return status;
 }
 
-static void
-seq_cancel(struct nfsv4_owner_s *sw)
+void
+nfsv4_seq_cancel(struct nfsv4_owner_s *sw)
 {
 
 	mutex_enter(&nfsv4_state_lock);
@@ -551,13 +551,13 @@ nfsv4_op_open_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status;
 	XDR rb;
 
-	status = seq_stateid(&oa->stateid, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
+	status = nfsv4_seq_stateid(&oa->stateid, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
 	    &st, &seq);
 	if (status != NFS4_OK)
 		return status;
 	sw = st->st_owner;
 	if (seq == NFSV4_SEQ_REPLAY)
-		return seq_replay(c, sw, false);
+		return nfsv4_seq_replay(c, sw, false);
 
 	SLIST_INIT(&reap);
 	mutex_enter(&nfsv4_state_lock);
@@ -583,11 +583,11 @@ nfsv4_op_open_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	nfsv4_reap_finish(&reap);
 
 	if (status != NFS4_OK)
-		return seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
+		return nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
 		    status, 0);
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	(void)nfsv4_xdr_stateid(&rb, &si);
-	return seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_CONFIRM, NFS4_OK,
+	return nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_CONFIRM, NFS4_OK,
 	    xdr_getpos(&rb));
 }
 
@@ -606,15 +606,15 @@ nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status, access = oa->share_access, deny = oa->share_deny;
 	XDR rb;
 
-	status = seq_stateid(&oa->stateid, oa->seqid,
+	status = nfsv4_seq_stateid(&oa->stateid, oa->seqid,
 	    NFSV4_OP_OPEN_DOWNGRADE, &st, &seq);
 	if (status != NFS4_OK)
 		return status;
 	sw = st->st_owner;
 	if (seq == NFSV4_SEQ_REPLAY)
-		return seq_replay(c, sw, false);
+		return nfsv4_seq_replay(c, sw, false);
 	if (seq == NFSV4_SEQ_BAD) {
-		seq_cancel(sw);
+		nfsv4_seq_cancel(sw);
 		return NFS4ERR_BAD_SEQID;
 	}
 
@@ -634,11 +634,11 @@ nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_exit(&nfsv4_state_lock);
 
 	if (status != NFS4_OK)
-		return seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_DOWNGRADE,
+		return nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_DOWNGRADE,
 		    status, 0);
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	(void)nfsv4_xdr_stateid(&rb, &si);
-	return seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_DOWNGRADE, NFS4_OK,
+	return nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN_DOWNGRADE, NFS4_OK,
 	    xdr_getpos(&rb));
 }
 
@@ -658,15 +658,15 @@ nfsv4_op_close(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status;
 	XDR rb;
 
-	status = seq_stateid(&ca->stateid, ca->seqid, NFSV4_OP_CLOSE, &st,
+	status = nfsv4_seq_stateid(&ca->stateid, ca->seqid, NFSV4_OP_CLOSE, &st,
 	    &seq);
 	if (status != NFS4_OK)
 		return status;
 	sw = st->st_owner;
 	if (seq == NFSV4_SEQ_REPLAY)
-		return seq_replay(c, sw, false);
+		return nfsv4_seq_replay(c, sw, false);
 	if (seq == NFSV4_SEQ_BAD) {
-		seq_cancel(sw);
+		nfsv4_seq_cancel(sw);
 		return NFS4ERR_BAD_SEQID;
 	}
 
@@ -675,10 +675,16 @@ nfsv4_op_close(struct nfsv4_compound *c, union nfsv4_args *a)
 	status = nfsv4_stateid_check(&ca->stateid, st, c->c_cur.cf_vp,
 	    NFSV4_ST_OPEN);
 	if (status == NFS4_OK) {
-		/* Nobody may be working with a lock state we free. */
+		/*
+		 * Nobody may be working with a lock state that goes with
+		 * this.  The list can change during a wait.
+		 */
+again:
 		LIST_FOREACH(ls, &st->st_locks, st_plist) {
-			nfsv4_owner_busy(ls->st_owner);
-			nfsv4_owner_idle(ls->st_owner);
+			if (ls->st_owner->sw_busy) {
+				cv_wait(&nfsv4_state_cv, &nfsv4_state_lock);
+				goto again;
+			}
 		}
 		st->st_seqid++;
 		nfsv4_stateid_out(st, &si);
@@ -688,10 +694,10 @@ nfsv4_op_close(struct nfsv4_compound *c, union nfsv4_args *a)
 	nfsv4_reap_finish(&reap);
 
 	if (status != NFS4_OK)
-		return seq_reply(c, sw, ca->seqid, NFSV4_OP_CLOSE, status, 0);
+		return nfsv4_seq_reply(c, sw, ca->seqid, NFSV4_OP_CLOSE, status, 0);
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	(void)nfsv4_xdr_stateid(&rb, &si);
-	return seq_reply(c, sw, ca->seqid, NFSV4_OP_CLOSE, NFS4_OK,
+	return nfsv4_seq_reply(c, sw, ca->seqid, NFSV4_OP_CLOSE, NFS4_OK,
 	    xdr_getpos(&rb));
 }
 
@@ -702,8 +708,8 @@ nfsv4_op_close(struct nfsv4_compound *c, union nfsv4_args *a)
  * alone, which s9.1.6 leaves to the server, so a real stateid needs the
  * deny bits of other opens looked at as well.
  */
-static uint32_t
-io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
+uint32_t
+nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
     bool write)
 {
 	struct vnode *vp = c->c_cur.cf_vp;
@@ -765,10 +771,10 @@ nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st, count, n, eof;
 	int error;
 
-	st = file_check(cf);
+	st = nfsv4_file_check(cf);
 	if (st != NFS4_OK)
 		return st;
-	st = io_check(c, &ra->stateid, false);
+	st = nfsv4_io_check(c, &ra->stateid, false);
 	if (st != NFS4_OK)
 		return st;
 	error = nfsv4_access_vp(cf, VREAD);
@@ -836,12 +842,12 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int end;
 	int error, ioflags;
 
-	st = file_check(cf);
+	st = nfsv4_file_check(cf);
 	if (st != NFS4_OK)
 		return st;
 	if (wa->stable > FILE_SYNC4)
 		return NFS4ERR_INVAL;
-	st = io_check(c, &wa->stateid, true);
+	st = nfsv4_io_check(c, &wa->stateid, true);
 	if (st != NFS4_OK)
 		return st;
 	error = nfsv4_access_vp(cf, VWRITE);
@@ -912,7 +918,7 @@ nfsv4_op_commit(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st;
 	int error;
 
-	st = file_check(cf);
+	st = nfsv4_file_check(cf);
 	if (st != NFS4_OK)
 		return st;
 	/* s16.3.4: a count of 0 is to the end of the file. */

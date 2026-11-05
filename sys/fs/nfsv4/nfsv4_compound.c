@@ -87,10 +87,16 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
 	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
+	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
+	[NFSV4_OP_LINK]		= { nfsv4_op_link,	NFSV4_OPF_FH },
+	[NFSV4_OP_LOCK]		= { nfsv4_op_lock,	NFSV4_OPF_FH },
+	[NFSV4_OP_LOCKT]	= { nfsv4_op_lockt,	NFSV4_OPF_FH },
+	[NFSV4_OP_LOCKU]	= { nfsv4_op_locku,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUP]	= { nfsv4_op_lookup,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUPP]	= { nfsv4_op_lookupp,	NFSV4_OPF_FH },
+	[NFSV4_OP_NVERIFY]	= { nfsv4_op_nverify,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN]		= { nfsv4_op_open,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN_CONFIRM]	= { nfsv4_op_open_confirm, NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN_DOWNGRADE] =
@@ -101,13 +107,19 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_READ]		= { nfsv4_op_read,	NFSV4_OPF_FH },
 	[NFSV4_OP_READDIR]	= { nfsv4_op_readdir,	NFSV4_OPF_FH },
 	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
+	[NFSV4_OP_RELEASE_LOCKOWNER] =
+				  { nfsv4_op_release_lockowner, 0 },
+	[NFSV4_OP_REMOVE]	= { nfsv4_op_remove,	NFSV4_OPF_FH },
+	[NFSV4_OP_RENAME]	= { nfsv4_op_rename,	NFSV4_OPF_FH },
 	[NFSV4_OP_RENEW]	= { nfsv4_op_renew,	0 },
 	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
 	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO]	= { nfsv4_op_secinfo,	NFSV4_OPF_FH },
+	[NFSV4_OP_SETATTR]	= { nfsv4_op_setattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid, 0 },
 	[NFSV4_OP_SETCLIENTID_CONFIRM] =
 				  { nfsv4_op_setclientid_confirm, 0 },
+	[NFSV4_OP_VERIFY]	= { nfsv4_op_verify,	NFSV4_OPF_FH },
 	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH },
 };
 

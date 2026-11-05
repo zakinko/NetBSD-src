@@ -24,8 +24,8 @@ chmod 1777 /export/tmpfs
 # FFS with NFSv4 ACLs: they live in extended attributes, so 2ea.
 mkdir -p /export/acl
 dd if=/dev/zero of=/var/tmp/acl.img bs=1m count=256
+newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
 vnconfig vnd1 /var/tmp/acl.img
-newfs -O 2ea /dev/rvnd1d | tail -1
 mount -o nfs4acls /dev/vnd1d /export/acl
 chmod 1777 /export/acl
 mount | grep /export/

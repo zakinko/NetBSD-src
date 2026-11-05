@@ -119,6 +119,7 @@ struct oncrpc_svc {
 #define	XP_RECEIVING	0x04	/* a worker is in xprt_getmsg() */
 #define	XP_SENDING	0x08	/* a worker is in xprt_send() */
 #define	XP_DEAD		0x10	/* shut down, off svc_xprts */
+#define	XP_EOF		0x20	/* peer done sending, replies still due */
 
 struct oncrpc_xprt {
 	struct oncrpc_svc	*xp_svc;
@@ -156,7 +157,7 @@ xprt_queue(struct oncrpc_xprt *xp)
 
 	KASSERT(mutex_owned(&svc->svc_lock));
 
-	if ((xp->xp_flags & (XP_QUEUED | XP_RECEIVING | XP_DEAD)) != 0 ||
+	if ((xp->xp_flags & (XP_QUEUED | XP_RECEIVING | XP_DEAD | XP_EOF)) != 0 ||
 	    xp->xp_nreqs >= ONCRPC_XPRT_MAXREQS)
 		return;
 	xp->xp_flags |= XP_QUEUED;
@@ -265,7 +266,22 @@ xprt_getmsg_stream(struct oncrpc_xprt *xp)
 		if (m == NULL) {
 			if (error == EWOULDBLOCK)
 				return NULL;
-			goto bad;	/* an error, or the end of the stream */
+			if (error != 0)
+				goto bad;
+			/*
+			 * The end of the stream.  A peer that has finished
+			 * sending may still be reading, and is owed the
+			 * replies to what is in progress; req_free() zaps
+			 * after the last.
+			 */
+			mutex_enter(&xp->xp_svc->svc_lock);
+			if (xp->xp_nreqs > 0) {
+				xp->xp_flags |= XP_EOF;
+				mutex_exit(&xp->xp_svc->svc_lock);
+				return NULL;
+			}
+			mutex_exit(&xp->xp_svc->svc_lock);
+			goto bad;
 		}
 		cc = ONCRPC_RCVALL - auio.uio_resid;
 		oncrpc_rm_input(&xp->xp_rm, m, cc);
@@ -316,6 +332,7 @@ req_free(struct oncrpc_ireq *ir)
 	struct oncrpc_xprt *xp = ir->ir_xprt;
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct oncrpc_req *rq = &ir->ir_req;
+	bool zap;
 
 	if (rq->rq_cred != NULL)
 		kauth_cred_free(rq->rq_cred);
@@ -327,7 +344,10 @@ req_free(struct oncrpc_ireq *ir)
 	KASSERT(xp->xp_nreqs > 0);
 	xp->xp_nreqs--;
 	xprt_queue(xp);		/* in case it was at the limit */
+	zap = xp->xp_nreqs == 0 && (xp->xp_flags & XP_EOF) != 0;
 	mutex_exit(&svc->svc_lock);
+	if (zap)
+		xprt_zap(xp);
 	xprt_rele(xp);
 }
 

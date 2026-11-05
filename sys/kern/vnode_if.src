@@ -644,3 +644,16 @@ vop_setextattr {
 	INOUT struct uio *uio;
 	IN kauth_cred_t cred;
 };
+
+#
+#% clonerange	invp = = =
+#% clonerange	outvp = = =
+#
+vop_clonerange {
+	IN LOCKED=NO struct vnode *invp;
+	IN off_t inoff;
+	IN LOCKED=NO struct vnode *outvp;
+	IN off_t outoff;
+	IN off_t len;
+	IN kauth_cred_t cred;
+};

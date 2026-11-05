@@ -114,7 +114,7 @@ void	nfsv4_drc_end(struct nfsv4_drc *, struct oncrpc_req *);
 uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    const struct nfsv4_bitmap *, uint32_t, char *, size_t,
 	    struct nfsv4_bitmap *, u_int *);
-uint64_t nfsv4_attr_change(const struct vattr *);
+uint64_t nfsv4_attr_change(const struct vnode *, const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
 bool	nfsv4_attr_supported(const struct nfsv4_bitmap *, struct vnode *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);

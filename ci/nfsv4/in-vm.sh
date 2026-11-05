@@ -28,12 +28,20 @@ newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
 vnconfig vnd1 /var/tmp/acl.img
 mount -o nfs4acls /dev/vnd1d /export/acl
 chmod 1777 /export/acl
+# ZFS: the pool on a file, an ACL set by the port's own tools at the top.
+modload zfs
+dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
+zpool create -f tank /var/tmp/tank.img
+zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
+chmod 1777 /tank/x
+zfs list
 mount | grep /export/
 # pynfs comes from a high port through the tunnel.
 cat >/etc/exports <<EOF
 /export/pynfs -maproot=root -noresvport
 /export/tmpfs -maproot=root -noresvport
 /export/acl -maproot=root -noresvport
+/tank/x -maproot=root -noresvport
 EOF
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf
 /etc/rc.d/rpcbind onestart || :

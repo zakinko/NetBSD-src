@@ -164,14 +164,19 @@ attr_ftype(enum vtype t)
  * resolution.  ffs_itimes() and tmpfs_update_locked() see to that by
  * moving ctime on by at least a nanosecond each time, whatever the clock
  * does, so a file system whose ctime is not kept that way must not be
- * trusted here.  ZFS will have to give its own value.
+ * trusted here.  ZFS keeps no such ctime, but has a sequence number in
+ * va_filerev; adding it means that either moving moves the attribute.
  */
 uint64_t
-nfsv4_attr_change(const struct vattr *va)
+nfsv4_attr_change(const struct vnode *vp, const struct vattr *va)
 {
+	uint64_t ch;
 
-	return (uint64_t)va->va_ctime.tv_sec * 1000000000ULL +
+	ch = (uint64_t)va->va_ctime.tv_sec * 1000000000ULL +
 	    va->va_ctime.tv_nsec;
+	if (strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_ZFS) == 0)
+		ch += va->va_filerev;
+	return ch;
 }
 
 static bool
@@ -352,7 +357,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		case FATTR4_CHANGE:
 			/* A pseudo node only changes at a reboot, as far
 			   as a client can tell; see nfsv4_fh.c. */
-			ok = attr_u64(&x, vp ? nfsv4_attr_change(&va) :
+			ok = attr_u64(&x, vp ? nfsv4_attr_change(vp, &va) :
 			    (uint64_t)boot.tv_sec);
 			break;
 		case FATTR4_SIZE:

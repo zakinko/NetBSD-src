@@ -89,10 +89,11 @@ sys.exit(os.waitpid(p,0)[1]!=0)"
 }
 # The acl attribute, from the client's tools and read back on the server.
 acl() {
-	m=/mnt/nfsv4acl
+	x=$1
+	m=/mnt/nfsv4$(basename "$x")
 	sudo mkdir -p "$m"
 	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,noresvport,nolock \
-	    "127.0.0.1:/export/acl" "$m"
+	    "127.0.0.1:$x" "$m"
 	grep "$m" /proc/mounts || return
 	t sudo sh -c "echo hello >$m/f; chmod 640 $m/f"
 	t sudo mkdir "$m/d"
@@ -108,14 +109,14 @@ acl() {
 	t grep -q 'A:g:5678:' "$OUT/acl-client.txt"
 	t grep -q 'D::4321:' "$OUT/acl-client.txt"
 	echo '$ getfacl on the server'
-	ssh netbsd 'getfacl /export/acl/f /export/acl/d' | tee "$OUT/acl-server.txt"
+	ssh netbsd "getfacl $x/f $x/d" | tee "$OUT/acl-server.txt"
 	t grep -q 'user:1234:' "$OUT/acl-server.txt"
 	t grep -q 'group:5678:' "$OUT/acl-server.txt"
 	# Enforced: the named user reads, an unnamed one does not.
 	t sudo chmod 600 "$m/f"
 	echo '$ after chmod 600'
 	sudo nfs4_getfacl "$m/f"
-	t ssh netbsd 'getfacl /export/acl/f'
+	t ssh netbsd "getfacl $x/f"
 	t sudo sh -c "echo inherited >$m/d/n"
 	echo '$ inherited'
 	sudo nfs4_getfacl "$m/d/n"
@@ -126,7 +127,9 @@ acl() {
 	uname -a
 	one /export/pynfs
 	one /export/tmpfs
-	acl
+	one /tank/x
+	acl /export/acl
+	acl /tank/x
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 	if sudo dmesg | grep -q 'bad sequence-id'; then

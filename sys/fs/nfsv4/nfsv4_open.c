@@ -77,7 +77,7 @@ nfsv4_dir_change(struct vnode *dvp, kauth_cred_t cred, uint64_t *chp)
 
 	error = VOP_GETATTR(dvp, &va, cred);
 	if (error == 0)
-		*chp = nfsv4_attr_change(&va);
+		*chp = nfsv4_attr_change(dvp, &va);
 	return error;
 }
 

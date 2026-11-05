@@ -50,6 +50,7 @@ jobs:
           path: nb/netbsd
           key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
+      - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
@@ -89,6 +90,10 @@ jobs:
           ssh netbsd 'mkdir -p /var/tmp/nfsv4'
           scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
+      - name: The ZFS userland, on the stock kernel
+        run: |
+          scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
+          ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - name: ctime on the kernel under test
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
@@ -105,6 +110,8 @@ jobs:
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
+      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
+      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
       - name: What the kernel said
         if: always()
         run: |
@@ -114,6 +121,8 @@ jobs:
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-acl.json out/pynfs-acl.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

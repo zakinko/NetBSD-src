@@ -30,15 +30,17 @@
  * Attributes, RFC 7530 s5.
  *
  * Those that can be had from the file system or are fixed are given;
- * of the RECOMMENDED ones, acl and aclsupport, archive, fs_locations,
- * hidden, mimetype, quota_*, system and time_backup are not, and so are
- * left out of supported_attrs as s16.7.4 allows.
+ * of the RECOMMENDED ones, archive, fs_locations, hidden, mimetype,
+ * quota_*, system and time_backup are not, and so are left out of
+ * supported_attrs as s16.7.4 allows.  acl and aclsupport are in it only
+ * where the file system has ACLs.
  */
 
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/acl.h>
 #include <sys/kauth.h>
 #include <sys/kmem.h>
 #include <sys/mount.h>
@@ -61,8 +63,8 @@ static const uint64_t attr_supported =
     BIT(FATTR4_FH_EXPIRE_TYPE) | BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) |
     BIT(FATTR4_LINK_SUPPORT) | BIT(FATTR4_SYMLINK_SUPPORT) |
     BIT(FATTR4_NAMED_ATTR) | BIT(FATTR4_FSID) | BIT(FATTR4_UNIQUE_HANDLES) |
-    BIT(FATTR4_LEASE_TIME) | BIT(FATTR4_RDATTR_ERROR) |
-    BIT(FATTR4_FILEHANDLE) | BIT(FATTR4_CANSETTIME) |
+    BIT(FATTR4_LEASE_TIME) | BIT(FATTR4_RDATTR_ERROR) | BIT(FATTR4_ACL) |
+    BIT(FATTR4_ACLSUPPORT) | BIT(FATTR4_FILEHANDLE) | BIT(FATTR4_CANSETTIME) |
     BIT(FATTR4_CASE_INSENSITIVE) | BIT(FATTR4_CASE_PRESERVING) |
     BIT(FATTR4_CHOWN_RESTRICTED) | BIT(FATTR4_FILEID) |
     BIT(FATTR4_FILES_AVAIL) | BIT(FATTR4_FILES_FREE) |
@@ -262,15 +264,20 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 {
 	struct vnode *vp = cf->cf_vp;
 	struct statvfs *sb = NULL;
+	struct acl *acl = NULL;
 	struct vattr va;
 	struct timespec boot;
-	uint64_t m, out, id, maxsize;
+	uint64_t m, out, id, maxsize, sup;
+	uint32_t st;
 	u_int n;
 	bool ok;
 	XDR x;
 	int error;
 
-	m = attr_mask(want) & attr_supported & ~attr_setonly;
+	sup = attr_supported;
+	if (!nfsv4_acl_supported(vp))
+		sup &= ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
+	m = attr_mask(want) & sup & ~attr_setonly;
 	if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);
 
@@ -299,6 +306,15 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		}
 	}
 
+	if ((m & BIT(FATTR4_ACL)) != 0) {
+		st = nfsv4_acl_get(vp, cf->cf_cred, &acl);
+		if (st != NFS4_OK) {
+			if (sb != NULL)
+				kmem_free(sb, sizeof(*sb));
+			return st;
+		}
+	}
+
 	xdrmem_create(&x, buf, max, XDR_ENCODE);
 	ok = true;
 	out = 0;
@@ -308,8 +324,16 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		out |= BIT(n);
 		switch (n) {
 		case FATTR4_SUPPORTED_ATTRS:
-			ok = attr_u32(&x, 2) && attr_u32(&x, W0(attr_supported)) &&
-			    attr_u32(&x, W1(attr_supported));
+			ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
+			    attr_u32(&x, W1(sup));
+			break;
+		case FATTR4_ACL:
+			ok = nfsv4_acl_put(&x, acl);
+			break;
+		case FATTR4_ACLSUPPORT:
+			/* s6.2.1.2 */
+			ok = attr_u32(&x, ACL4_SUPPORT_ALLOW_ACL |
+			    ACL4_SUPPORT_DENY_ACL);
 			break;
 		case FATTR4_TYPE:
 			ok = attr_u32(&x, vp ? attr_ftype(va.va_type) : NF4DIR);
@@ -448,6 +472,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 
 	if (sb != NULL)
 		kmem_free(sb, sizeof(*sb));
+	if (acl != NULL)
+		acl_free(acl);
 	if (!ok)
 		return NFS4ERR_TOOSMALL;
 	got->bm_n = 2;
@@ -489,8 +515,6 @@ attr_parse_id(XDR *x, uint32_t *idp)
 {
 	char buf[12];
 	uint32_t len;
-	uint64_t v;
-	u_int i;
 
 	if (!xdr_u_int32_t(x, &len))
 		return NFS4ERR_BADXDR;
@@ -502,6 +526,15 @@ attr_parse_id(XDR *x, uint32_t *idp)
 	}
 	if (!xdr_opaque(x, buf, len))
 		return NFS4ERR_BADXDR;
+	return nfsv4_attr_strid(buf, len, idp);
+}
+
+uint32_t
+nfsv4_attr_strid(const char *buf, u_int len, uint32_t *idp)
+{
+	uint64_t v;
+	u_int i;
+
 	if (buf[0] == '0' && len > 1)		/* "no leading zeros" */
 		return NFS4ERR_BADOWNER;
 	v = 0;
@@ -553,9 +586,10 @@ attr_parse_settime(XDR *x, struct timespec *ts, u_int *flags)
 
 /* RFC 7530 s5.7, those of access W or R W that are supported */
 static const uint64_t attr_settable =
-    BIT(FATTR4_SIZE) | BIT(FATTR4_MODE) | BIT(FATTR4_OWNER) |
-    BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_TIME_ACCESS_SET) |
-    BIT(FATTR4_TIME_CREATE) | BIT(FATTR4_TIME_MODIFY_SET);
+    BIT(FATTR4_SIZE) | BIT(FATTR4_ACL) | BIT(FATTR4_MODE) |
+    BIT(FATTR4_OWNER) | BIT(FATTR4_OWNER_GROUP) |
+    BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_CREATE) |
+    BIT(FATTR4_TIME_MODIFY_SET);
 
 /*
  * Read the fattr4 in the arguments into va, and the mask of what was
@@ -575,6 +609,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 
 	vattr_null(va);
 	*setp = 0;
+	if (c->c_setacl != NULL) {
+		acl_free(c->c_setacl);
+		c->c_setacl = NULL;
+	}
 	if (fa->fa_mask.bm_more || (m & ~attr_supported) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	if ((m & ~attr_settable) != 0)
@@ -598,6 +636,9 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				st = NFS4ERR_BADXDR;
 			else if (va->va_size > (uint64_t)INT64_MAX)
 				st = NFS4ERR_FBIG;
+			break;
+		case FATTR4_ACL:
+			st = nfsv4_acl_parse(x, &c->c_setacl);
 			break;
 		case FATTR4_MODE:
 			if (!xdr_u_int32_t(x, &v))

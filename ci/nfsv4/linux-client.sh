@@ -5,7 +5,7 @@
 OUT=$1
 LOG=$OUT/linux-client.txt
 BIN=$OUT/lc.bin
-sudo apt-get install -y -q nfs-common >/dev/null 2>&1
+sudo apt-get install -y -q nfs-common nfs4-acl-tools >/dev/null 2>&1
 sudo modprobe nfs || {
 	sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" >/dev/null 2>&1
 	sudo modprobe nfs
@@ -87,10 +87,46 @@ sys.exit(os.waitpid(p,0)[1]!=0)"
 	t sudo rm -rf "$m/lc"
 	t sudo umount "$m"
 }
+# The acl attribute, from the client's tools and read back on the server.
+acl() {
+	m=/mnt/nfsv4acl
+	sudo mkdir -p "$m"
+	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,noresvport,nolock \
+	    "127.0.0.1:/export/acl" "$m"
+	grep "$m" /proc/mounts || return
+	t sudo sh -c "echo hello >$m/f; chmod 640 $m/f"
+	t sudo mkdir "$m/d"
+	echo '$ nfs4_getfacl f'
+	sudo nfs4_getfacl "$m/f"
+	t sudo nfs4_setfacl -a 'A::1234:rtncy' "$m/f"
+	t sudo nfs4_setfacl -a 'A:g:5678:rwatTnNcy' "$m/f"
+	t sudo nfs4_setfacl -a 'D::4321:w' "$m/f"
+	t sudo nfs4_setfacl -a 'A:fd:1234:rxtncy' "$m/d"
+	echo '$ nfs4_getfacl f, after'
+	sudo nfs4_getfacl "$m/f" | tee "$OUT/acl-client.txt"
+	t grep -q 'A::1234:' "$OUT/acl-client.txt"
+	t grep -q 'A:g:5678:' "$OUT/acl-client.txt"
+	t grep -q 'D::4321:' "$OUT/acl-client.txt"
+	echo '$ getfacl on the server'
+	ssh netbsd 'getfacl /export/acl/f /export/acl/d' | tee "$OUT/acl-server.txt"
+	t grep -q 'user:1234:' "$OUT/acl-server.txt"
+	t grep -q 'group:5678:' "$OUT/acl-server.txt"
+	# Enforced: the named user reads, an unnamed one does not.
+	t sudo chmod 600 "$m/f"
+	echo '$ after chmod 600'
+	sudo nfs4_getfacl "$m/f"
+	t ssh netbsd 'getfacl /export/acl/f'
+	t sudo sh -c "echo inherited >$m/d/n"
+	echo '$ inherited'
+	sudo nfs4_getfacl "$m/d/n"
+	t sudo rm -rf "$m/f" "$m/d"
+	t sudo umount "$m"
+}
 {
 	uname -a
 	one /export/pynfs
 	one /export/tmpfs
+	acl
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 	if sudo dmesg | grep -q 'bad sequence-id'; then

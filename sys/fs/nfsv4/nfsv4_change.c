@@ -195,6 +195,11 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 			return nfsv4_errno(error);
 		}
 	}
+	st = nfsv4_acl_set(c, vp, cf->cf_cred);
+	if (st != NFS4_OK) {
+		vrele(vp);
+		return st;
+	}
 
 	st = nfsv4_cfh_setvp(c, cf, vp);
 	if (st != NFS4_OK) {
@@ -462,8 +467,9 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
- * RFC 7530 s16.32.  attrsset follows the status whatever it is.  All
- * the attributes go to one VOP_SETATTR, so they are all set or none is.
+ * RFC 7530 s16.32.  attrsset follows the status whatever it is.  The
+ * attributes go to one VOP_SETATTR, so they are all set or none is, but
+ * for the ACL, which comes after it and may fail alone.
  */
 uint32_t
 nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -490,12 +496,20 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = nfsv4_io_check(c, &sa->stateid, true);
 	}
 	if (st == NFS4_OK) {
-		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-		error = VOP_SETATTR(vp, &va, cf->cf_cred);
-		VOP_UNLOCK(vp);
-		st = nfsv4_errno(error);
-	}
-	if (st != NFS4_OK)
+		if ((set & ~(1ULL << FATTR4_ACL)) != 0) {
+			vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+			error = VOP_SETATTR(vp, &va, cf->cf_cred);
+			VOP_UNLOCK(vp);
+			st = nfsv4_errno(error);
+		}
+		if (st != NFS4_OK)
+			set = 0;
+		else {
+			st = nfsv4_acl_set(c, vp, cf->cf_cred);
+			if (st != NFS4_OK)
+				set &= ~(1ULL << FATTR4_ACL);
+		}
+	} else
 		set = 0;
 	if (!nfsv4_attr_put_mask(c->c_rx, set))
 		return NFS4ERR_RESOURCE;

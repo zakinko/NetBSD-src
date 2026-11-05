@@ -43,6 +43,7 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/acl.h>
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
@@ -288,6 +289,8 @@ out:
 	nfsv4_cfh_clear(&c.c_saved);
 	nfsv4_cfh_clear(&c.c_scratch);
 	netexport_rdunlock();
+	if (c.c_setacl != NULL)
+		acl_free(c.c_setacl);
 	kmem_free(c.c_rbuf, NFSV4_REPLAY_MAX);
 	kmem_free(a, sizeof(*a));
 	return disp;

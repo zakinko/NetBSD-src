@@ -226,6 +226,13 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 			return nfsv4_errno(error);
 		}
 	}
+	if (*createdp) {
+		st = nfsv4_acl_set(c, vp, cf->cf_cred);
+		if (st != NFS4_OK) {
+			vrele(vp);
+			return st;
+		}
+	}
 	*setp = set;
 	*vpp = vp;
 	return NFS4_OK;

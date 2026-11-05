@@ -65,6 +65,7 @@ struct nfsv4_compound {
 	struct nfsv4_cfh c_scratch;	/* for a lookup that is thrown away */
 	char		*c_rbuf;	/* NFSV4_REPLAY_MAX, for seqid replies */
 	bool		c_drc;		/* an operation that the DRC keeps ran */
+	struct acl	*c_setacl;	/* parsed, not set yet; nfsv4_acl_set */
 };
 
 /* A COMPOUND in the duplicate request cache's hands; see nfsv4_drc.c. */
@@ -98,8 +99,11 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
 /* The largest result of an operation with a seqid: LOCK4denied. */
 #define	NFSV4_REPLAY_MAX	(64 + NFS4_OPAQUE_LIMIT)
 
-/* Room for one object's attributes, not counting the bitmap. */
-#define	NFSV4_ATTRBUF		2048
+/*
+ * Room for one object's attributes, not counting the bitmap.  An ACL
+ * has the most of them: ACL_MAX_ENTRIES of 28 bytes at the longest.
+ */
+#define	NFSV4_ATTRBUF		8192
 
 void	nfsv4_drc_init(void);
 void	nfsv4_drc_fini(void);
@@ -125,6 +129,13 @@ uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
 
 uint32_t nfsv4_errno(int);
+
+bool	nfsv4_acl_supported(struct vnode *);
+uint32_t nfsv4_acl_get(struct vnode *, kauth_cred_t, struct acl **);
+bool	nfsv4_acl_put(XDR *, const struct acl *);
+uint32_t nfsv4_acl_parse(XDR *, struct acl **);
+uint32_t nfsv4_acl_set(struct nfsv4_compound *, struct vnode *, kauth_cred_t);
+uint32_t nfsv4_attr_strid(const char *, u_int, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_name *);
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);

@@ -495,7 +495,9 @@ attr_parse_id(XDR *x, uint32_t *idp)
 
 	if (!xdr_u_int32_t(x, &len))
 		return NFS4ERR_BADXDR;
-	if (len == 0 || len >= sizeof(buf)) {
+	if (len == 0)
+		return NFS4ERR_INVAL;
+	if (len >= sizeof(buf)) {
 		return nfsv4_xdr_skip(x, len) ? NFS4ERR_BADOWNER :
 		    NFS4ERR_BADXDR;
 	}
@@ -589,8 +591,14 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 			continue;
 		switch (n) {
 		case FATTR4_SIZE:
+			/*
+			 * More than off_t can say would also come out as
+			 * VNOVAL, or "leave the size alone".
+			 */
 			if (!xdr_u_int64_t(x, &va->va_size))
 				st = NFS4ERR_BADXDR;
+			else if (va->va_size > (uint64_t)INT64_MAX)
+				st = NFS4ERR_FBIG;
 			break;
 		case FATTR4_MODE:
 			if (!xdr_u_int32_t(x, &v))

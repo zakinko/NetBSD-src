@@ -412,6 +412,13 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 		}
 	}
 
+	if (cf->cf_vp != NULL) {
+		int error = nfsv4_access_vp(cf, VREAD);
+
+		if (error != 0)
+			return nfsv4_errno(error);
+	}
+
 	memset(&rd, 0, sizeof(rd));
 	rd.rd_c = c;
 	rd.rd_dir = cf;

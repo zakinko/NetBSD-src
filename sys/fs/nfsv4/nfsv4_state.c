@@ -238,6 +238,7 @@ void
 nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
     uint32_t status, const char *body, u_int len)
 {
+	struct nfsv4_reap reap;
 	char *buf = NULL, *old = NULL;
 	u_int oldlen = 0;
 	bool keep;
@@ -262,8 +263,14 @@ nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
 		memcpy(buf, body, len);
 	}
 
+	SLIST_INIT(&reap);
 	mutex_enter(&nfsv4_state_lock);
 	if (keep) {
+		/* s9.10.1: past a CLOSE, it can no longer be resent. */
+		if (op != NFSV4_OP_CLOSE && sw->sw_closed != NULL) {
+			nfsv4_state_unlink(sw->sw_closed, &reap, false);
+			sw->sw_closed = NULL;
+		}
 		old = sw->sw_rbuf;
 		oldlen = sw->sw_rlen;
 		sw->sw_seqid = seqid;
@@ -274,6 +281,7 @@ nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
 	}
 	nfsv4_owner_idle(sw);
 	mutex_exit(&nfsv4_state_lock);
+	nfsv4_reap_finish(&reap);
 	if (old != NULL)
 		kmem_free(old, oldlen);
 }
@@ -446,14 +454,15 @@ nfsv4_stateid_lookup(const struct nfsv4_stateid *si, struct nfsv4_state **stp)
 	/* s9.1.4.4: of those reserved, none can name state here. */
 	if (nfsv4_stateid_special(si))
 		return NFS4ERR_BAD_STATEID;
+	other = be64dec(si->si_other + 4);
 	if (be32dec(si->si_other) != nfsv4_boot) {
-		other = be64dec(si->si_other + 4);
 		/* All zeros or ones with the wrong seqid, s9.1.4.3. */
-		if (other == 0 || other == UINT64_MAX)
+		if ((be32dec(si->si_other) == 0 && other == 0) ||
+		    (be32dec(si->si_other) == UINT32_MAX &&
+		    other == UINT64_MAX))
 			return NFS4ERR_BAD_STATEID;
 		return NFS4ERR_STALE_STATEID;
 	}
-	other = be64dec(si->si_other + 4);
 	LIST_FOREACH(st, &nfsv4_state_hash[state_hash(other)], st_hash) {
 		if (st->st_other == other) {
 			*stp = st;
@@ -478,6 +487,8 @@ nfsv4_stateid_check(const struct nfsv4_stateid *si,
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
+	if (st->st_closed)
+		return NFS4ERR_BAD_STATEID;
 	if (cl->cl_expired || st->st_file == NULL)
 		return NFS4ERR_EXPIRED;
 	if (st->st_file->f_vp != vp)
@@ -794,10 +805,25 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 		/* { *, x, c, k, s }, and any { *, x, d, *, t } goes. */
 		old = client_find(unconf->cl_idstr, unconf->cl_idlen, true);
 		if (old != NULL) {
+			struct nfsv4_reap reap;
+
+			/*
+			 * Its stateids answer NFS4ERR_EXPIRED until the
+			 * lease scan ends the record, which no name now
+			 * finds.
+			 */
 			client_wait_idle(old);
 			if (client_find(unconf->cl_idstr, unconf->cl_idlen,
-			    true) == old)
-				client_free(old);
+			    true) == old) {
+				old->cl_idlen = UINT32_MAX;
+				old->cl_expired = true;
+				old->cl_expire = time_uptime;
+				SLIST_INIT(&reap);
+				client_release(old, &reap);
+				mutex_exit(&nfsv4_state_lock);
+				nfsv4_reap_finish(&reap);
+				mutex_enter(&nfsv4_state_lock);
+			}
 		}
 		unconf->cl_confirmed = true;
 		unconf->cl_expire = lease_end();

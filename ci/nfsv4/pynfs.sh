@@ -18,7 +18,8 @@ ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
 sleep 2
 cd "$HOME/pynfs/nfs4.0"
 rc=0
-timeout "$LIMIT" python3 ./testserver.py 127.0.0.1:"$EXPORT" --maketree \
+# As root, as the base line was: MKNOD and chown need it.
+timeout "$LIMIT" sudo -E python3 ./testserver.py 127.0.0.1:"$EXPORT" --maketree \
     --rundeps --json="$OUT/pynfs.json" ${PYNFS_ARGS:-all} \
     >"$OUT/pynfs.log" 2>&1 || rc=$?
 echo "testserver.py exit status $rc"

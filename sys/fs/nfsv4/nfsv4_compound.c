@@ -177,15 +177,21 @@ static uint32_t
 nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 {
 	const struct nfsv4_opdesc *od;
+	uint32_t st;
 
 	if (!nfsv4_xdr_args(c->c_ax, op, a))
-		return NFS4ERR_BADXDR;
-	od = &nfsv4_ops[op];
-	if (od->od_func == NULL)
-		return NFS4ERR_NOTSUPP;
-	if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
-		return NFS4ERR_NOFILEHANDLE;
-	return (*od->od_func)(c, a);
+		st = NFS4ERR_BADXDR;
+	else if ((od = &nfsv4_ops[op])->od_func == NULL)
+		st = NFS4ERR_NOTSUPP;
+	else if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
+		st = NFS4ERR_NOFILEHANDLE;
+	else
+		return (*od->od_func)(c, a);
+
+	/* SETATTR4res has its bitmap whatever the status, s16.32.3. */
+	if (op == NFSV4_OP_SETATTR && !nfsv4_attr_put_mask(c->c_rx, 0))
+		return NFS4ERR_RESOURCE;
+	return st;
 }
 
 static enum oncrpc_dispatch

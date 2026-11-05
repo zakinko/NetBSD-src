@@ -475,6 +475,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 			seq = NFSV4_SEQ_GO;
 			while ((st = LIST_FIRST(&sw->sw_states)) != NULL)
 				nfsv4_state_unlink(st, &reap, false);
+			sw->sw_closed = NULL;
 		}
 	}
 	mutex_exit(&nfsv4_state_lock);
@@ -566,8 +567,11 @@ nfsv4_op_open_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = seq == NFSV4_SEQ_BAD ? NFS4ERR_BAD_SEQID :
 		    NFS4ERR_BAD_STATEID;
 	else if (seq == NFSV4_SEQ_BAD) {
-		/* s16.18.4: then the client is taken not to want it. */
-		nfsv4_state_unlink(st, &reap, false);
+		/*
+		 * s16.18.4: then the client is taken not to want it.  The
+		 * stateid stays, so that a resend gets the same answer.
+		 */
+		nfsv4_state_unlink(st, &reap, true);
 		status = NFS4ERR_BAD_SEQID;
 	} else if (oa->stateid.si_seqid != st->st_seqid &&
 	    oa->stateid.si_seqid != 0)
@@ -592,9 +596,24 @@ nfsv4_op_open_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
- * RFC 7530 s16.19.  The bits must be the union of some of the opens
- * that were done; here, that each is one that some open used.
+ * bits has bit n set if some OPEN used the value n.  Is want the union
+ * of some of them?  Those within it are the ones that can be in it.
  */
+static bool
+share_union(uint32_t bits, uint32_t want)
+{
+	uint32_t n, u = 0;
+
+	if (want == 0)
+		return (bits & 1) != 0;
+	for (n = 1; n <= 3; n++) {
+		if ((bits & (1U << n)) != 0 && (n & ~want) == 0)
+			u |= n;
+	}
+	return u == want;
+}
+
+/* RFC 7530 s16.19. */
 uint32_t
 nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 {
@@ -622,8 +641,8 @@ nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 	status = nfsv4_stateid_check(&oa->stateid, st, c->c_cur.cf_vp,
 	    NFSV4_ST_OPEN);
 	if (status == NFS4_OK && (!OPEN4_ACCESS_OK(access) ||
-	    !OPEN4_DENY_OK(deny) || (access & ~st->st_access) != 0 ||
-	    (deny & ~st->st_deny) != 0))
+	    !OPEN4_DENY_OK(deny) || !share_union(st->st_accbits, access) ||
+	    !share_union(st->st_denybits, deny)))
 		status = NFS4ERR_INVAL;
 	if (status == NFS4_OK) {
 		st->st_access = access;
@@ -686,9 +705,15 @@ again:
 				goto again;
 			}
 		}
+		while ((ls = LIST_FIRST(&st->st_locks)) != NULL)
+			nfsv4_state_unlink(ls, &reap, false);
+		if (sw->sw_closed != NULL)
+			nfsv4_state_unlink(sw->sw_closed, &reap, false);
 		st->st_seqid++;
 		nfsv4_stateid_out(st, &si);
-		nfsv4_state_unlink(st, &reap, false);
+		nfsv4_state_unlink(st, &reap, true);
+		st->st_closed = true;
+		sw->sw_closed = st;
 	}
 	mutex_exit(&nfsv4_state_lock);
 	nfsv4_reap_finish(&reap);
@@ -795,10 +820,17 @@ nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 	uio.uio_resid = count;
 	uio.uio_rw = UIO_READ;
 	UIO_SETUP_SYSSPACE(&uio);
+	/*
+	 * s16.23.4: at or past the end is no error, but FFS answers EFBIG
+	 * past the largest file it can hold.
+	 */
 	vn_lock(vp, LK_SHARED | LK_RETRY);
-	error = count == 0 ? 0 : VOP_READ(vp, &uio, IO_NODELOCKED, cf->cf_cred);
-	if (error == 0)
-		error = VOP_GETATTR(vp, &va, cf->cf_cred);
+	error = VOP_GETATTR(vp, &va, cf->cf_cred);
+	if (error == 0 && count != 0 && ra->offset < va.va_size) {
+		error = VOP_READ(vp, &uio, IO_NODELOCKED, cf->cf_cred);
+		if (error == 0)
+			error = VOP_GETATTR(vp, &va, cf->cf_cred);
+	}
 	VOP_UNLOCK(vp);
 	if (error != 0) {
 		st = nfsv4_errno(error);

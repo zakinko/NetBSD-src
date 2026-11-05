@@ -85,6 +85,7 @@ struct nfsv4_owner_s {
 	u_int		sw_rlen;
 	char		*sw_rbuf;
 	struct nfsv4_fh	sw_rfh;		/* the file, to replay an OPEN */
+	struct nfsv4_state *sw_closed;	/* last CLOSE, s9.10.1 */
 	uint32_t	sw_len;
 	uint8_t		sw_data[NFS4_OPAQUE_LIMIT];
 };
@@ -119,6 +120,7 @@ struct nfsv4_state {
 	bool		st_held;	/* lock, may hold locks */
 	struct vnode	*st_reapvp;	/* a reference, while reaping */
 	bool		st_free;	/* reaping ends it */
+	bool		st_closed;	/* kept for a resent CLOSE */
 };
 
 SLIST_HEAD(nfsv4_reap, nfsv4_state);

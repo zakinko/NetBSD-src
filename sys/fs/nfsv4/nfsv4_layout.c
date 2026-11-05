@@ -108,7 +108,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
-#define	NFS4_UINT64_MAX		UINT64_MAX	/* RFC 8881 s18.43.3 */
+/* NFS4_UINT64_MAX, all ones as RFC 8881 s18.43.3 has it, is nfsv4_proto.h's. */
 
 /* The stripe unit, a multiple of 64 (s13.3); layout_blksize too. */
 #define	NFSV4_STRIPE_UNIT	NFSV4_MAXIO

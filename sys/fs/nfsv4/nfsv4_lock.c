@@ -213,6 +213,19 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 					seq = NFSV4_SEQ_BAD;
 			} else {
 				nfsv4_owner_busy(lo);
+				/*
+				 * With no state it is as good as unknown,
+				 * s9.1.10, and s16.10.4 lets this set a new
+				 * sequence: a client whose first LOCK was
+				 * denied starts the owner again, and its
+				 * seqid must not then look like a replay
+				 * of the denial.
+				 */
+				if (LIST_EMPTY(&lo->sw_states)) {
+					if (seq == NFSV4_SEQ_REPLAY)
+						seq = NFSV4_SEQ_BAD;
+					goto have_owner;
+				}
 				seq = nfsv4_seq_check(lo, la->lock_seqid,
 				    NFSV4_OP_LOCK);
 				/*
@@ -231,6 +244,7 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 					seq = NFSV4_SEQ_BAD;
 			}
 		}
+have_owner:
 		mutex_exit(&nfsv4_state_lock);
 		if (status != NFS4_OK) {
 			status = nfsv4_seq_reply(c, oo, la->open_seqid,

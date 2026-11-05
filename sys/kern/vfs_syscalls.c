@@ -2607,6 +2607,28 @@ do_sys_mkfifoat(struct lwp *l, int fdat, const char *path, mode_t mode)
  * Make a hard file link.
  */
 /* ARGSUSED */
+/*
+ * What a name is about to lose or gain a file has its leases broken:
+ * see vn_lease_break().  In an extra lookup, as the leases cannot be
+ * waited for with the directory locked; a name that changes in between
+ * is only a lease that was not seen.
+ */
+static void
+lease_break_name(struct lwp *l, int fd, const char *path, enum uio_seg seg)
+{
+	struct pathbuf *pb;
+	struct nameidata nd;
+
+	if (!vn_lease_active() || pathbuf_maybe_copyin(path, seg, &pb) != 0)
+		return;
+	NDINIT(&nd, LOOKUP, NOFOLLOW | TRYEMULROOT, pb);
+	if (fd_nameiat(l, fd, &nd) == 0) {
+		vn_lease_break(nd.ni_vp, VN_LEASE_WRITE);
+		vrele(nd.ni_vp);
+	}
+	pathbuf_destroy(pb);
+}
+
 int
 do_sys_linkat(struct lwp *l, int fdpath, const char *path, int fdlink,
     const char *link, int follow, register_t *retval)
@@ -2625,6 +2647,7 @@ do_sys_linkat(struct lwp *l, int fdpath, const char *path, int fdlink,
 	error = fd_nameiat_simple_user(l, fdpath, path, ns_flags, &vp);
 	if (error != 0)
 		return (error);
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	error = pathbuf_copyin(link, &linkpb);
 	if (error) {
 		goto out1;
@@ -2892,6 +2915,7 @@ do_sys_unlinkat(struct lwp *l, int fdat, const char *arg, int flags,
 
 	KASSERT(l != NULL || fdat == AT_FDCWD);
 
+	lease_break_name(l, fdat, arg, seg);
 	error = pathbuf_maybe_copyin(arg, seg, &pb);
 	if (error) {
 		return error;
@@ -3556,6 +3580,7 @@ change_flags(struct vnode *vp, u_long flags, struct lwp *l)
 	struct vattr vattr;
 	int error;
 
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
 	vattr_null(&vattr);
@@ -3677,6 +3702,7 @@ change_mode(struct vnode *vp, int mode, struct lwp *l)
 	struct vattr vattr;
 	int error;
 
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	vattr_null(&vattr);
 	vattr.va_mode = mode & ALLPERMS;
@@ -3886,6 +3912,7 @@ change_owner(struct vnode *vp, uid_t uid, gid_t gid, struct lwp *l,
 	mode_t newmode;
 	int error;
 
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	if ((error = VOP_GETATTR(vp, &vattr, l->l_cred)) != 0)
 		goto out;
@@ -4105,6 +4132,7 @@ do_sys_utimensat(struct lwp *l, int fdat, struct vnode *vp,
 		dorele = 1;
 	}
 
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	setbirthtime = (VOP_GETATTR(vp, &vattr, l->l_cred) == 0 &&
 	    timespeccmp(&ts[1], &vattr.va_birthtime, <));
@@ -4198,6 +4226,7 @@ sys_truncate(struct lwp *l, const struct sys_truncate_args *uap,
 	    NSM_FOLLOW_TRYEMULROOT, &vp);
 	if (error != 0)
 		return (error);
+	vn_lease_break(vp, VN_LEASE_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	if (vp->v_type == VDIR)
 		error = SET_ERROR(EISDIR);
@@ -4232,8 +4261,11 @@ sys_ftruncate(struct lwp *l, const struct sys_ftruncate_args *uap,
 		return SET_ERROR(EBADF);
 	if (fp->f_ops->fo_truncate == NULL)
 		error = SET_ERROR(EOPNOTSUPP);
-	else
+	else {
+		if (fp->f_type == DTYPE_VNODE)
+			vn_lease_break(fp->f_vnode, VN_LEASE_WRITE);
 		error = (*fp->f_ops->fo_truncate)(fp, SCARG(uap, length));
+	}
 
 	fd_putfile(fd);
 	return error;
@@ -4443,6 +4475,8 @@ do_sys_renameat(struct lwp *l, int fromfd, const char *from, int tofd,
 	KASSERT(l != NULL || fromfd == AT_FDCWD);
 	KASSERT(l != NULL || tofd == AT_FDCWD);
 
+	lease_break_name(l, fromfd, from, seg);
+	lease_break_name(l, tofd, to, seg);
 	error = pathbuf_maybe_copyin(from, seg, &fpb);
 	if (error)
 		goto out0;

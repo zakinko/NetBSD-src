@@ -74,6 +74,8 @@ __KERNEL_RCSID(0, "$NetBSD: vfs_vnops.c,v 1.246 2025/07/09 07:39:39 bad Exp $");
 #include <sys/types.h>
 
 #include <sys/atomic.h>
+#include <sys/once.h>
+#include <sys/rwlock.h>
 #include <sys/buf.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
@@ -167,6 +169,60 @@ const struct fileops vnops = {
  * O_NOFOLLOW in fmode. Neither FOLLOW nor NOFOLLOW in nmode is
  * honored.
  */
+/*
+ * A lease on a vnode is a promise a file server has made to its clients,
+ * as an NFSv4 delegation, that nothing else touches the file without
+ * their being told.  The server's own work goes straight to the VOPs;
+ * what a local process does comes through the system calls, which call
+ * this with the vnode unlocked before they act.  The hook sleeps until
+ * the leases in the way are gone, which the server sees to in bounded
+ * time.  VN_LEASE_READ is for reading and locking, which only an
+ * exclusive lease minds.
+ */
+static void (*vn_lease_hook)(struct vnode *, u_int);
+static krwlock_t vn_lease_lock;
+static ONCE_DECL(vn_lease_once);
+
+static int
+vn_lease_init(void)
+{
+
+	rw_init(&vn_lease_lock);
+	return 0;
+}
+
+/* Set the hook, or with NULL wait for those in it and take it away. */
+void
+vn_lease_set(void (*hook)(struct vnode *, u_int))
+{
+
+	RUN_ONCE(&vn_lease_once, vn_lease_init);
+	rw_enter(&vn_lease_lock, RW_WRITER);
+	atomic_store_release(&vn_lease_hook, hook);
+	rw_exit(&vn_lease_lock);
+}
+
+bool
+vn_lease_active(void)
+{
+
+	return atomic_load_relaxed(&vn_lease_hook) != NULL;
+}
+
+void
+vn_lease_break(struct vnode *vp, u_int what)
+{
+	void (*hook)(struct vnode *, u_int);
+
+	if (atomic_load_relaxed(&vn_lease_hook) == NULL)
+		return;
+	rw_enter(&vn_lease_lock, RW_READER);
+	hook = atomic_load_consume(&vn_lease_hook);
+	if (hook != NULL)
+		(*hook)(vp, what);
+	rw_exit(&vn_lease_lock);
+}
+
 int
 vn_open(struct vnode *at_dvp, struct pathbuf *pb,
     int nmode, int fmode, int cmode,
@@ -319,6 +375,13 @@ vn_open(struct vnode *at_dvp, struct pathbuf *pb,
 		error = vn_openchk(vp, cred, fmode);
 		if (error != 0)
 			goto bad;
+	}
+
+	if (vn_lease_active()) {
+		VOP_UNLOCK(vp);
+		vn_lease_break(vp, (fmode & (FWRITE | O_TRUNC)) != 0 ?
+		    VN_LEASE_WRITE : VN_LEASE_READ);
+		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	}
 
 	if (fmode & O_TRUNC) {

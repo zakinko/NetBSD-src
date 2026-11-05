@@ -253,6 +253,9 @@ do_fcntl_lock(int fd, int cmd, struct flock *fl)
 		goto out;
 	}
 
+	if (fp->f_type == DTYPE_VNODE && cmd != F_GETLK)
+		vn_lease_break(fp->f_vnode, VN_LEASE_READ);
+
 	flg = F_POSIX;
 	p = curproc;
 
@@ -643,6 +646,9 @@ sys_flock(struct lwp *l, const struct sys_flock_args *uap, register_t *retval)
 		error = SET_ERROR(EOPNOTSUPP);
 		goto out;
 	}
+
+	if (fp->f_type == DTYPE_VNODE && (how & LOCK_UN) == 0)
+		vn_lease_break(fp->f_vnode, VN_LEASE_READ);
 
 	lf.l_whence = SEEK_SET;
 	lf.l_start = 0;

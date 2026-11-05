@@ -627,6 +627,11 @@ void	vcache_rekey_exit(struct mount *, struct vnode *,
 
 /* see vnsubr(9) */
 int	vn_bwrite(void *);
+#define	VN_LEASE_READ	1	/* see vn_lease_break() */
+#define	VN_LEASE_WRITE	2
+void	vn_lease_set(void (*)(struct vnode *, u_int));
+void	vn_lease_break(struct vnode *, u_int);
+bool	vn_lease_active(void);
 int 	vn_close(struct vnode *, int, kauth_cred_t);
 int	vn_isunder(struct vnode *, struct vnode *, struct lwp *);
 int	vn_lock(struct vnode *, int);

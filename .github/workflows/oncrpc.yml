@@ -31,7 +31,6 @@ jobs:
           path: nb/tools
           key: oncrpc-tools-36eddebcc36c-amd64
       - run: sh ci/oncrpc/build.sh "$PWD/nb" "$PWD/out"
-      - run: cp ci/oncrpc/each-commit.sh nb/ && sh nb/each-commit.sh "$PWD/nb"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

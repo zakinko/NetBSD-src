@@ -113,6 +113,15 @@ jobs:
               -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 \
               -R 40100:127.0.0.1:40100 netbsd
           sleep 2
+      - name: Edges of COMMIT and READDIR
+        run: |
+          PYNFS_ARGS=INIT LIMIT=120 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-init || true
+          cp ci/nfsv4/edge.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          for e in /export/pynfs /export/tmpfs /tank/x; do
+            echo "=== $e"
+            python3 ./edge.py "$e" || echo "edge $e: $?"
+          done 2>&1 | tee "$OLDPWD/out/edge.txt"
       - name: The Linux client
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
@@ -154,5 +163,6 @@ jobs:
             out/ctime-*.txt
             out/linux-client.txt
             out/named-attr.txt
+            out/edge.txt
             out/kernel.txt
           retention-days: 30

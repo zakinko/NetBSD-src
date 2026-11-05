@@ -734,7 +734,11 @@ oncrpc_svc_register(struct oncrpc_svc *svc, const struct oncrpc_program *op)
 {
 	struct oncrpc_prog *pg, *new;
 
-	if (op->op_vers_low == 0 || op->op_vers_low > op->op_vers_high ||
+	/* RFC 5531 s8.3 keeps these blocks. */
+	if (op->op_prog == 0 ||
+	    (op->op_prog >= 0x60000000 && op->op_prog <= 0x7effffff) ||
+	    op->op_prog >= 0x80000000 ||
+	    op->op_vers_low == 0 || op->op_vers_low > op->op_vers_high ||
 	    op->op_dispatch == NULL)
 		return EINVAL;
 

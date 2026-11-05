@@ -116,6 +116,23 @@ __weak_alias(xdr_wrapstring,_xdr_wrapstring)
  */
 static const char xdr_zero[BYTES_PER_XDR_UNIT] = { 0, 0, 0, 0 };
 
+#ifdef _KERNEL
+/*
+ * Whether a count off the wire is more than the stream holds.  RFC 4506
+ * s8: mem_alloc() sleeps, so without this four bytes from a peer pin as
+ * much memory as the caller's maximum.  The kernel has only record-less
+ * streams; xdr_rec in libc answers for one fragment and may not ask.
+ */
+static bool_t
+xdr_exceeds(XDR *xdrs, u_int need)
+{
+	xdr_bytesrec rec;
+
+	return (XDR_CONTROL(xdrs, XDR_GET_BYTES_AVAIL, &rec) &&
+	    need > rec.xc_num_avail);
+}
+#endif
+
 /*
  * Free a data structure using XDR
  * Not a filter, but a convenient utility nonetheless
@@ -640,6 +657,10 @@ xdr_bytes(XDR *xdrs, char **cpp, u_int *sizep, u_int maxsize)
 			return (TRUE);
 		}
 		if (sp == NULL) {
+#ifdef _KERNEL
+			if (xdr_exceeds(xdrs, nodesize))
+				return (FALSE);
+#endif
 			*cpp = sp = mem_alloc(nodesize);
 			allocated = TRUE;
 		}
@@ -804,6 +825,10 @@ xdr_string(XDR *xdrs, char **cpp, u_int maxsize)
 			return (FALSE);
 		}
 		if (sp == NULL) {
+#ifdef _KERNEL
+			if (xdr_exceeds(xdrs, nodesize))
+				return (FALSE);
+#endif
 			*cpp = sp = mem_alloc(nodesize);
 			allocated = TRUE;
 		}

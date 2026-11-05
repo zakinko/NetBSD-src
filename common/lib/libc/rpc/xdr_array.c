@@ -93,6 +93,9 @@ xdr_array(XDR *xdrs, char **addrp, u_int *sizep, u_int maxsize, u_int elsize,
 	u_int c;  /* the actual element count */
 	bool_t stat = TRUE;
 	u_int nodesize;
+#ifdef _KERNEL
+	xdr_bytesrec rec;
+#endif
 
 	/* like strings, arrays are really counted arrays */
 	if (!xdr_u_int(xdrs, sizep))
@@ -113,6 +116,15 @@ xdr_array(XDR *xdrs, char **addrp, u_int *sizep, u_int maxsize, u_int elsize,
 		case XDR_DECODE:
 			if (c == 0)
 				return (TRUE);
+#ifdef _KERNEL
+			/*
+			 * RFC 4506 s4.12: no element is under four bytes.
+			 * See xdr_exceeds() in xdr.c.
+			 */
+			if (XDR_CONTROL(xdrs, XDR_GET_BYTES_AVAIL, &rec) &&
+			    c > rec.xc_num_avail / BYTES_PER_XDR_UNIT)
+				return (FALSE);
+#endif
 			*addrp = target = mem_alloc(nodesize);
 			if (target == NULL) {
 				warn("%s: out of memory", __func__);

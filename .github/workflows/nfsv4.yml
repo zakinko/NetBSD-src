@@ -1,7 +1,7 @@
 name: nfsv4
 on:
   push:
-    branches: [nfsv4, nfsv4-acl, nfsv40, nfsv41]
+    branches: [nfsv4, nfsv4-acl, nfsv40, nfsv41, nfsv42]
     paths:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
@@ -10,6 +10,7 @@ on:
       - 'sys/kern/vfs_vnops.c'
       - 'sys/kern/vfs_syscalls.c'
       - 'sys/kern/sys_descrip.c'
+      - 'sys/kern/vnode_if.src'
       - 'sys/sys/lockf.h'
       - 'sys/ufs/ffs/ffs_inode.c'
       - 'sys/fs/tmpfs/tmpfs_subr.c'
@@ -45,7 +46,7 @@ jobs:
         id: kernel
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
       - uses: actions/cache/save@v4
         if: steps.tools.outputs.cache-hit != 'true'
@@ -56,7 +57,7 @@ jobs:
         if: steps.kernel.outputs.cache-hit != 'true'
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       # ZFS failing must not keep FFS and tmpfs from being measured.
       - continue-on-error: true
@@ -136,6 +137,14 @@ jobs:
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: The Linux client, version 4.1
         run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - name: The Linux client, version 4.2
+        run: VERS=4.2 sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - name: What version 4.2 adds, from the Linux client
+        run: sh ci/nfsv4/linux-42.sh "$PWD/out"
+      - run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 all' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs42
+      - run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
+      - continue-on-error: true
+        run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
       - name: The 4.1 suite, with the write delegations the client test turned off
         run: |
           ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'
@@ -206,6 +215,9 @@ jobs:
         if: always()
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs41-zfs.json out/pynfs41-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          for n in pynfs42 pynfs42-xattr pynfs42-zfs; do
+            python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          done
           python3 ci/nfsv4/pynfs-summary.py out/pynfs41.json out/pynfs41.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-deleg.json out/pynfs-deleg.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
@@ -234,5 +246,6 @@ jobs:
             out/edge.txt
             out/owner.txt
             out/more.txt
+            out/linux-42.txt
             out/kernel.txt
           retention-days: 30

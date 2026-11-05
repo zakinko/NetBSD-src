@@ -333,7 +333,7 @@ xprt_send(struct oncrpc_ireq *ir)
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct socket *so = xp->xp_so;
 	struct sockaddr *to;
-	struct mbuf *m;
+	struct mbuf *m, *n;
 	uint32_t *rm;
 	bool zap = false;
 	u_int len;
@@ -363,7 +363,24 @@ xprt_send(struct oncrpc_ireq *ir)
 		    (so->so_state & SS_ISCONNECTED) == 0)
 			to = mtod(ir->ir_nam, struct sockaddr *);
 
-		error = (*so->so_send)(so, to, NULL, m, NULL, 0, curlwp);
+		/*
+		 * sosend() takes a chain whole or refuses it with EMSGSIZE,
+		 * and a reply may be larger than the buffer.
+		 */
+		do {
+			n = NULL;
+			if (so->so_type == SOCK_STREAM &&
+			    m->m_pkthdr.len > ONCRPC_SOCKBUF &&
+			    (n = m_split(m, ONCRPC_SOCKBUF, M_WAIT)) == NULL) {
+				m_freem(m);
+				error = ENOBUFS;
+				break;
+			}
+			error = (*so->so_send)(so, to, NULL, m, NULL, 0,
+			    curlwp);
+			m = n;
+		} while (error == 0 && m != NULL);
+		m_freem(m);
 		if (error != 0 && so->so_type == SOCK_STREAM)
 			zap = true;
 		req_free(ir);

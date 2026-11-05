@@ -39,9 +39,35 @@
 
 #ifdef _KERNEL
 
+#include <sys/fcntl.h>
 #include <sys/vnode.h>
 
 struct lockf;
+
+/*
+ * Values of a_op for a VOP_ADVLOCK from inside the kernel, which fcntl(2)
+ * cannot make.  They are for a server whose lock owners are not
+ * processes, and a file system that hands its locks to lf_advlock() has
+ * them; any other gives what it gives for an op it does not know.
+ *
+ * F_GETLKID is F_GETLK that also says whose the lock is, for which a_fl
+ * must point to the lfq_fl of a struct lf_query, as struct flock is an
+ * ABI with no room for it.  The range returned runs on over the owner's
+ * locks of that type that touch the first one, which are one lock to an
+ * owner though they sit apart in the list.  lfq_id is what the owner gave
+ * as a_id, is only to be compared, and may belong to nothing the caller
+ * knows: a process or an open file.
+ *
+ * F_HASLK says whether a_id holds a lock in the range: l_type is left as
+ * the type of the first one found, or F_UNLCK.
+ */
+#define	F_GETLKID	100
+#define	F_HASLK		101
+
+struct lf_query {
+	struct flock	lfq_fl;
+	void		*lfq_id;
+};
 
 int lf_advlock(struct vop_advlock_args *, struct lockf **, off_t);
 void lf_init(void);

@@ -789,6 +789,70 @@ lf_getlock(struct lockf *lock, struct flock *fl)
 }
 
 /*
+ * Whose is the blocking lock, and how far does it run.  Two calls that
+ * overlap are kept as two entries, so the owner's view of its lock is
+ * the entries of one type that touch.  The list is not walked in order:
+ * a pass may extend the range to reach something it has gone past.
+ */
+static int
+lf_getlkid(struct lockf *lock, struct lf_query *q)
+{
+	struct lockf *block, *lf;
+	off_t start, end;
+	bool grew;
+
+	q->lfq_id = NULL;
+	if ((block = lf_getblock(lock)) == NULL) {
+		q->lfq_fl.l_type = F_UNLCK;
+		return 0;
+	}
+
+	start = block->lf_start;
+	end = block->lf_end;
+	do {
+		grew = false;
+		for (lf = *lock->lf_head; lf != NULL; lf = lf->lf_next) {
+			if (lf->lf_id != block->lf_id ||
+			    lf->lf_type != block->lf_type)
+				continue;
+			if (lf->lf_start < start &&
+			    (lf->lf_end == -1 || lf->lf_end >= start - 1)) {
+				start = lf->lf_start;
+				grew = true;
+			}
+			if (end != -1 && lf->lf_start - 1 <= end &&
+			    (lf->lf_end == -1 || lf->lf_end > end)) {
+				end = lf->lf_end;
+				grew = true;
+			}
+		}
+	} while (grew);
+
+	q->lfq_fl.l_type = block->lf_type;
+	q->lfq_fl.l_whence = SEEK_SET;
+	q->lfq_fl.l_start = start;
+	q->lfq_fl.l_len = end == -1 ? 0 : end - start + 1;
+	q->lfq_fl.l_pid = -1;
+	q->lfq_id = block->lf_id;
+	return 0;
+}
+
+/*
+ * Does lock's id hold anything in its range.
+ */
+static int
+lf_haslk(struct lockf *lock, struct flock *fl)
+{
+	struct lockf **prev = lock->lf_head, *overlap;
+
+	if (lf_findoverlap(*lock->lf_head, lock, SELF, &prev, &overlap) != 0)
+		fl->l_type = overlap->lf_type;
+	else
+		fl->l_type = F_UNLCK;
+	return 0;
+}
+
+/*
  * Do an advisory lock operation.
  */
 int
@@ -869,6 +933,8 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 		/* FALLTHROUGH */
 
 	case F_GETLK:
+	case F_GETLKID:
+	case F_HASLK:
 		sparelock = NULL;
 		break;
 
@@ -890,6 +956,8 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 		}
 		break;
 	case F_GETLK:
+	case F_GETLKID:
+	case F_HASLK:
 		lock = lf_alloc(0);
 		break;
 	}
@@ -904,6 +972,8 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 	 * Avoid the common case of unlocking when inode has no locks.
 	 */
 	if (*head == (struct lockf *)0) {
+		if (ap->a_op == F_GETLKID)
+			((struct lf_query *)fl)->lfq_id = NULL;
 		if (ap->a_op != F_SETLK) {
 			fl->l_type = F_UNLCK;
 			error = 0;
@@ -942,6 +1012,14 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 
 	case F_GETLK:
 		error = lf_getlock(lock, fl);
+		break;
+
+	case F_GETLKID:
+		error = lf_getlkid(lock, (struct lf_query *)fl);
+		break;
+
+	case F_HASLK:
+		error = lf_haslk(lock, fl);
 		break;
 
 	default:

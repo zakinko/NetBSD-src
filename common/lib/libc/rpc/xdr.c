@@ -795,8 +795,13 @@ xdr_string(XDR *xdrs, char **cpp, u_int maxsize)
 	switch (xdrs->x_op) {
 
 	case XDR_DECODE:
+		/*
+		 * size was 2^32-1, legal by RFC 4506 s4.11 but with no room
+		 * for the NUL.  This returned TRUE having read nothing, and
+		 * the caller went on to parse the string as what followed.
+		 */
 		if (nodesize == 0) {
-			return (TRUE);
+			return (FALSE);
 		}
 		if (sp == NULL) {
 			*cpp = sp = mem_alloc(nodesize);
@@ -817,6 +822,19 @@ xdr_string(XDR *xdrs, char **cpp, u_int maxsize)
 				*cpp = NULL;
 			}
 		}
+#ifdef _KERNEL
+		/*
+		 * XDR_FREE below sizes the string with strlen(), and
+		 * kmem_free() has to be told what was allocated: a NUL in
+		 * the string frees the wrong size, RFC 4506 s8.
+		 */
+		if (xdrs->x_op == XDR_DECODE && ret != FALSE &&
+		    allocated == TRUE && strlen(sp) != size) {
+			mem_free(sp, nodesize);
+			*cpp = NULL;
+			return (FALSE);
+		}
+#endif
 		return (ret);
 
 	case XDR_FREE:

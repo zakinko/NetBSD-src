@@ -33,8 +33,8 @@ RCSID("$NetBSD: crtn.S,v 1.2 2014/02/27 16:47:48 matt Exp $")
 
 	.section ".init", "ax", @progbits
 #ifdef _LP64
+	addi	%r1, %r1, (14*SZREG)
 	ldreg	%r0, (2*SZREG)(%r1)
-	addi	%r1, %r1, (6*SZREG)
 #else
 	addi	%r1, %r1, (4*SZREG)
 	lwz	%r0, (1*SZREG)(%r1)
@@ -44,8 +44,8 @@ RCSID("$NetBSD: crtn.S,v 1.2 2014/02/27 16:47:48 matt Exp $")
 
 	.section ".fini", "ax", @progbits
 #ifdef _LP64
+	addi	%r1, %r1, (14*SZREG)
 	ldreg	%r0, (2*SZREG)(%r1)
-	addi	%r1, %r1, (6*SZREG)
 #else
 	addi	%r1, %r1, (4*SZREG)
 	lwz	%r0, (1*SZREG)(%r1)

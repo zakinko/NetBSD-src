@@ -46,11 +46,27 @@ __RCSID("$NetBSD: _lwp.c,v 1.3 2012/11/24 15:20:58 christos Exp $");
 #include <lwp.h>
 #include <stdlib.h>
 
-/*ARGSUSED*/
+#include <machine/lwp_private.h>
+
+/*
+ * A function pointer is the address of a descriptor, not of code: its
+ * first doubleword is the entry point, the second the TOC the function
+ * expects in r2, the third an environment pointer for r11 (64-bit PowerPC
+ * ELF ABI Supplement 1.9, 3.2.5).  Putting the pointer itself in the PC
+ * and LR started the new LWP in data.
+ */
+struct funcdesc {
+	__greg_t	fd_entry;
+	__greg_t	fd_toc;
+	__greg_t	fd_env;
+};
+
 void
 _lwp_makecontext(ucontext_t *u, void (*start)(void *), void *arg,
-	void *private, caddr_t stack_base, size_t stack_size)
+	void *tcb, caddr_t stack_base, size_t stack_size)
 {
+	const struct funcdesc *fstart = (const void *)start;
+	const struct funcdesc *fexit = (const void *)_lwp_exit;
 	void	**sp;
 
 	getcontext(u);
@@ -63,6 +79,12 @@ _lwp_makecontext(ucontext_t *u, void (*start)(void *), void *arg,
 
 	u->uc_mcontext.__gregs[3] = (__greg_t) arg;		/* arg1 */
 	u->uc_mcontext.__gregs[1] = ((__greg_t) sp) - 112;	/* stack */
-	u->uc_mcontext.__gregs[33] = (__greg_t) _lwp_exit;	/* LR */
-	u->uc_mcontext.__gregs[34] = (__greg_t) start;	/* PC */
+	u->uc_mcontext.__gregs[33] = fexit->fd_entry;		/* LR */
+	u->uc_mcontext.__gregs[34] = fstart->fd_entry;		/* PC */
+	u->uc_mcontext.__gregs[_REG_R2] = fstart->fd_toc;
+	u->uc_mcontext.__gregs[_REG_R11] = fstart->fd_env;
+
+	u->uc_mcontext.__gregs[_REG_R13] =
+	    (__greg_t)tcb + TLS_TP_OFFSET + sizeof(struct tls_tcb);
+	u->uc_flags |= _UC_TLSBASE;
 }

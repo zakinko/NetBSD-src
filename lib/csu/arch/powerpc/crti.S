@@ -39,8 +39,15 @@ RCSID("$NetBSD: crti.S,v 1.4 2014/03/06 19:05:59 matt Exp $")
 _XENTRY(_init)
 	mflr	%r0
 #ifdef _LP64
-	stdu	%r1, -(6*SZREG)(%r1)
+	/*
+	 * The LR goes in the caller's frame, before ours is made, and a
+	 * frame is the 48-byte header plus at least eight doublewords of
+	 * parameter save area (64-bit PowerPC ELF ABI Supplement 1.9,
+	 * 3.2.2).  Saved at 16 of our own 48-byte frame, it was the first
+	 * thing the function called from .init overwrote.
+	 */
 	std	%r0, (2*SZREG)(%r1)
+	stdu	%r1, -(14*SZREG)(%r1)
 #else
 	stw	%r0, (1*SZREG)(%r1)
 	stwu	%r1, -(4*SZREG)(%r1)
@@ -50,8 +57,15 @@ _XENTRY(_init)
 _XENTRY(_fini)
 	mflr	%r0
 #ifdef _LP64
-	stdu	%r1, -(6*SZREG)(%r1)
+	/*
+	 * The LR goes in the caller's frame, before ours is made, and a
+	 * frame is the 48-byte header plus at least eight doublewords of
+	 * parameter save area (64-bit PowerPC ELF ABI Supplement 1.9,
+	 * 3.2.2).  Saved at 16 of our own 48-byte frame, it was the first
+	 * thing the function called from .init overwrote.
+	 */
 	std	%r0, (2*SZREG)(%r1)
+	stdu	%r1, -(14*SZREG)(%r1)
 #else
 	stw	%r0, (1*SZREG)(%r1)
 	stwu	%r1, -(4*SZREG)(%r1)

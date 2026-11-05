@@ -48,15 +48,28 @@ ENTRY_NOPROFILE(_rtld_start)
 
 	bcl	20,31,1f
 1:	mflr	%r30
-	ld	%r3,0(%r2)		// TOC[0] = &TOC
+	/*
+	 * The TOC base is 0x8000 past the start of the TOC (64-bit
+	 * PowerPC ELF ABI Supplement 1.9, 3.5.2 and 4.3), and the link
+	 * editor puts the link-time TOC base in the first doubleword of
+	 * .got, which starts it.  0(%r2) is 32KB beyond that.
+	 */
+	ld	%r3,-0x8000(%r2)	// .got[0] = link-time TOC base
 	sub	%r29,%r2,%r3		// compute relocbase
 
-	addis	%r3,%r3,_DYNAMIC-1b@ha	// get _DYNAMIC actual address
+	addis	%r3,%r30,_DYNAMIC-1b@ha	// get _DYNAMIC actual address
 	addi	%r3,%r3,_DYNAMIC-1b@l
 	mr	%r4,%r29		// r4 = relocbase
 	CALL(_rtld_relocate_nonplt_self)
 
-	addi	%r3,%r1,48		// sp = <local variable space>
+	/*
+	 * _rtld() takes the address of argc less two words, writes the
+	 * cleanup and obj results into those two, and finds argv, envp
+	 * and the aux vector from argc on, as the 32-bit start does.
+	 * Handing it local variable space instead left it reading the
+	 * stack frame for argv, so it never found AT_BASE.
+	 */
+	addi	%r3,%r24,-24		// sp = &argv[-3]
 	mr	%r4,%r29		// r4 = relocbase
 	CALL(_rtld)			// _start = _rtld(sp, relocbase)
 
@@ -68,8 +81,8 @@ ENTRY_NOPROFILE(_rtld_start)
 	mr	%r3,%r23		// argc
 	mr	%r4,%r24		// argv
 	mr	%r5,%r25		// envp
-	ld	%r6,56(%r1)		// obj = <localvar>[1]
-	ld	%r7,48(%r1)		// cleanup = <localvar>[0]
+	ld	%r6,-16(%r24)		// obj = sp[1] (== argv[-2])
+	ld	%r7,-24(%r24)		// cleanup = sp[0] (== argv[-3])
 	mr	%r8,%r28		// ps_strings
 
 	bctrl		// _start(argc, argv, envp, obj, cleanup, ps_strings)

@@ -377,10 +377,18 @@ _rtld_relocate_plt_lazy(Obj_Entry *obj)
 {
 #ifdef _LP64
 	/*
-	 * For PowerPC64, the plt stubs handle an empty function descriptor
-	 * so there's nothing to do.
+	 * Resolve every slot now.  Lazy resolution is an optional
+	 * optimisation (64-bit PowerPC ELF ABI Supplement 1.9, 5.2.4), and
+	 * needs each slot pointed at its glink entry first, which
+	 * nothing here does.  STT_GNU_IFUNC slots are still left alone,
+	 * as _rtld_relocate_plt_object() does without a tp.
 	 */
-	/* XXX ifunc support */
+	const Elf_Rela *rela;
+
+	for (rela = obj->pltrela; rela < obj->pltrelalim; rela++)
+		if (_rtld_relocate_plt_object(obj, rela,
+		    rela - obj->pltrela, NULL) < 0)
+			return -1;
 #else
 	Elf_Addr * const pltresolve = obj->pltgot + 8;
 	const Elf_Rela *rela;
@@ -463,14 +471,31 @@ _rtld_relocate_plt_object(const Obj_Entry *obj, const Elf_Rela *rela, int reloff
 #ifdef _LP64
 	/*
 	 * For PowerPC64 we simply replace the function descriptor in the
-	 * PLTGOT with the one from source object.
+	 * PLTGOT with the one from source object.  The slots are three
+	 * doublewords each, N of them after the one the dynamic linker
+	 * keeps for itself (5.2.4).  Taken as 32-bit words, the copy
+	 * wrote 12 of the 24 bytes and the bound check counted words.
 	 */
-	assert(where >= (Elf_Word *)obj->pltgot);
-	assert(where < (Elf_Word *)obj->pltgot + (obj->pltrelalim - obj->pltrela));
+	Elf_Addr * const slot = (Elf_Addr *)(obj->relocbase + rela->r_offset);
+	assert(slot >= obj->pltgot + 3);
+	assert(slot + 3 <= obj->pltgot +
+	    3 * (obj->pltrelalim - obj->pltrela + 1));
+	/*
+	 * The descriptor holds addresses inside defobj (3.2.5), put there
+	 * by defobj's own relocations.  Objects are relocated in list order,
+	 * so a defobj still waiting in this pass has its link-time values in
+	 * it yet: add its relocbase here instead.  One already done, this
+	 * object itself (its non-PLT relocations come first) and ld.elf_so
+	 * (relocated by itself, never marked) need nothing.
+	 */
 	const Elf_Addr * const fdesc = (Elf_Addr *) value;
-	where[0] = fdesc[0];
-	where[1] = fdesc[1];
-	where[2] = fdesc[2];
+	const Elf_Addr adj = (defobj != obj &&
+	    defobj->relocstate == OBJRELOC_READY) ?
+	    (Elf_Addr)defobj->relocbase : 0;
+	slot[0] = fdesc[0] + adj;
+	slot[1] = fdesc[1] + adj;
+	slot[2] = fdesc[2] != 0 ? fdesc[2] + adj : 0;
+	(void)where;
 #else
 	ptrdiff_t distance = value - (Elf_Addr)where;
 	if (obj->gotptr != NULL) {

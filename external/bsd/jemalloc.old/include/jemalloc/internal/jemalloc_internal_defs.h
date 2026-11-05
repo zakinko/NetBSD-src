@@ -59,6 +59,14 @@
  * See rtree_leaf_elm_bits_extent_get() in rtree.h for more details.
  */
 #  define LG_VADDR 43
+# elif defined(__powerpc64__)
+/*
+ * User space runs up to VM_MAXUSER_ADDRESS, 1 << 48, so bit 47 can be set
+ * in an ordinary user address; with 48 it was taken for a sign bit and
+ * rtree_leaf_elm_bits_extent_get() turned such a pointer into a negative
+ * one.  64 is what jemalloc's configure picks for powerpc64.
+ */
+#  define LG_VADDR 64
 # else
 #  define LG_VADDR 48
 # endif

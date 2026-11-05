@@ -70,6 +70,9 @@ jobs:
           mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
           cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -ltirpc
           ./t2
+          sudo apt-get install -y -q libssl-dev >/dev/null
+          cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
+          ./t3
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -70,6 +70,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
+#include <oncrpc/gss_krb5.h>
 #include <oncrpc/oncrpc_var.h>
 
 /*
@@ -981,7 +982,7 @@ oncrpc_svc_nxprt(struct oncrpc_svc *svc)
 	return atomic_load_relaxed(&svc->svc_nxprt);
 }
 
-MODULE(MODULE_CLASS_MISC, oncrpc, "xdr");
+MODULE(MODULE_CLASS_MISC, oncrpc, "xdr,aes,des");
 
 static int
 oncrpc_modcmd(modcmd_t cmd, void *arg)
@@ -989,7 +990,7 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
-		return 0;
+		return gss_krb5_selftest() == 0 ? 0 : EIO;
 	case MODULE_CMD_FINI:
 		return atomic_load_relaxed(&oncrpc_nsvc) != 0 ? EBUSY : 0;
 	default:

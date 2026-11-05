@@ -30,6 +30,8 @@ mount -o nfs4acls /dev/vnd1d /export/acl
 chmod 1777 /export/acl
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
 modload zfs
+# The port installs its libraries in /lib, outside the default search.
+export LD_LIBRARY_PATH=/lib
 dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
 zpool create -f tank /var/tmp/tank.img
 zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x

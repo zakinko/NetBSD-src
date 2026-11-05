@@ -45,7 +45,7 @@
 #define	NFSV4_NPROCS		2
 
 #define	NFSV4_MINORVERSION	0	/* RFC 7530 s15.2.4 */
-#define	NFSV4_MINORMAX		1	/* RFC 8881 s16.2.3 */
+#define	NFSV4_MINORMAX		2	/* RFC 7862 s2 */
 
 #define	NFSV4_PORT		2049	/* RFC 7530 s3.1 */
 

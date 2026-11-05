@@ -212,6 +212,9 @@ uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
 uint32_t nfsv4_setattr_stateid(struct nfsv4_compound *,
 	    const struct nfsv4_stateid *);
+uint32_t nfsv4_io_check_vp(struct nfsv4_compound *,
+	    const struct nfsv4_stateid *, struct vnode *, bool);
+void	nfsv4_write_verf(struct nfsv4_verifier *);
 
 uint32_t nfsv4_errno(int);
 void	nfsv4_write_verf(struct nfsv4_verifier *);
@@ -335,5 +338,14 @@ uint32_t nfsv4_op_putpubfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_restorefh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_savefh(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_allocate(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_clone(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_copy(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_deallocate(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_io_advise(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_offload(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_read_plus(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_seek(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_write_same(struct nfsv4_compound *, union nfsv4_args *);
 
 #endif /* !_FS_NFSV4_NFSV4_VAR_H_ */

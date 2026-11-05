@@ -34,6 +34,10 @@
  * keeps them, and quota_* to the file system's quota; a file system with
  * neither has them left out of supported_attrs as s16.7.4 allows.  acl and aclsupport are in it only
  * where the file system has ACLs.
+ *
+ * Of those of version 4.2, sec_label is not given either: labels need a
+ * MAC model and the kernel has none to enforce one, and RFC 7862 s13
+ * has Labeled NFS OPTIONAL.
  */
 
 #include <sys/cdefs.h>
@@ -210,16 +214,41 @@ const uint64_t nfsv4_attr_exclcreat =
 #define	W2_CHARSET	(1U << (FATTR4_FS_CHARSET_CAP - 64))
 #define	W2_ALL		(W2_EXCLCREAT | W2_CHARSET)
 
+#define	W2(n)		(1U << ((n) - 64))
+
+/*
+ * What the third word has for this object in this minor version, RFC
+ * 7862 s12.1.  CLONE goes with clone_blksize, s4.1.2.
+ * space_freed is left out on ZFS, as what deleting a file would free
+ * depends on the blocks and snapshots that share it, which nothing here
+ * can find out.
+ */
+static uint32_t
+attr_w2_by(struct vnode *vp, uint32_t minor)
+{
+	uint32_t w2 = 0;
+	bool zfs;
+
+	if (minor != 0)
+		w2 |= W2_ALL;
+	if (minor >= 2) {
+		w2 |= W2(FATTR4_CHANGE_ATTR_TYPE);
+		zfs = vp != NULL && strcmp(vp->v_mount->mnt_stat.f_fstypename,
+		    MOUNT_ZFS) == 0;
+		w2 |= zfs ? W2(FATTR4_CLONE_BLKSIZE) :
+		    vp != NULL ? W2(FATTR4_SPACE_FREED) : 0;
+	}
+	return w2;
+}
+
 /* Words past two that this minor version has nothing to say of. */
 static inline bool
-attr_more(const struct nfsv4_bitmap *bm, uint32_t minor)
+attr_more(const struct nfsv4_bitmap *bm, struct vnode *vp, uint32_t minor)
 {
 	uint32_t w2;
 
 	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
-	if (minor != 0)
-		w2 &= ~W2_ALL;
-	return bm->bm_more || w2 != 0;
+	return bm->bm_more || (w2 & ~attr_w2_by(vp, minor)) != 0;
 }
 
 static inline uint64_t
@@ -259,7 +288,7 @@ nfsv4_attr_supported(const struct nfsv4_compound *c,
 
 	if (c->c_minor == 0)
 		m &= ~attr_v41;
-	return !attr_more(bm, c->c_minor) && (attr_mask(bm) & ~m) == 0;
+	return !attr_more(bm, vp, c->c_minor) && (attr_mask(bm) & ~m) == 0;
 }
 
 static uint32_t
@@ -297,6 +326,24 @@ nfsv4_attr_change(const struct vnode *vp, const struct vattr *va)
 	if (strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_ZFS) == 0)
 		ch += va->va_filerev;
 	return ch;
+}
+
+/*
+ * RFC 7862 s12.2.3, a per file system attribute.  FFS and tmpfs do what
+ * nfsv4_attr_change() relies on, and the value is time_metadata folded,
+ * so NFS4_CHANGE_TYPE_IS_TIME_METADATA.  ZFS adds a sequence number to a
+ * ctime that can go backwards, and the others are not known to move
+ * ctime for each change.
+ */
+static uint32_t
+attr_change_type(const struct vnode *vp)
+{
+
+	if (vp != NULL &&
+	    (strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_FFS) == 0 ||
+	    strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_TMPFS) == 0))
+		return NFS4_CHANGE_TYPE_IS_TIME_METADATA;
+	return NFS4_CHANGE_TYPE_IS_UNDEFINED;
 }
 
 static bool
@@ -522,7 +569,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	struct vattr va;
 	struct timespec boot;
 	uint64_t m, out, id, maxsize, sup;
-	uint32_t st, w2;
+	uint32_t st, w2, w2low, w2out, w2sup;
 	u_int n;
 	bool ok;
 	XDR x;
@@ -541,9 +588,14 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		m &= attr_absent;
 	else if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);
+	w2sup = attr_w2_by(vp, c->c_minor);
+	w2 = (want->bm_n > 2 ? want->bm_w[2] : 0) & w2sup & ~W2_ALL;
+	if (rderr != NFS4_OK)
+		w2 = 0;
 
 	id = 0;
-	if (vp != NULL && (m & attr_vattr) != 0) {
+	if (vp != NULL && ((m & attr_vattr) != 0 ||
+	    (w2 & (W2(FATTR4_CLONE_BLKSIZE) | W2(FATTR4_SPACE_FREED))) != 0)) {
 		vn_lock(vp, LK_SHARED | LK_RETRY);
 		error = VOP_GETATTR(vp, &va, cf->cf_cred);
 		VOP_UNLOCK(vp);
@@ -605,7 +657,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_u32(&x, c->c_minor != 0 ? 3 : 2) &&
 			    attr_u32(&x, W0(sup)) && attr_u32(&x, W1(sup));
 			if (ok && c->c_minor != 0)
-				ok = attr_u32(&x, W2_ALL);
+				ok = attr_u32(&x, w2sup);
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
@@ -808,20 +860,41 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	}
 
 	/* The third word comes after all the others, s5.8.1.14. */
-	w2 = 0;
+	w2low = 0;
 	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2 &&
 	    cf->cf_ref == NULL)
-		w2 = want->bm_w[2] & W2_ALL;
-	if ((w2 & W2_EXCLCREAT) != 0) {
+		w2low = want->bm_w[2] & W2_ALL;
+	if ((w2low & W2_EXCLCREAT) != 0) {
 		sup = nfsv4_attr_exclcreat & attr_supported_by(vp);
 		ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
 		    attr_u32(&x, W1(sup));
 	}
 	/* s14.4; what local programs left in a directory is not looked at. */
-	if (ok && (w2 & W2_CHARSET) != 0)
+	if (ok && (w2low & W2_CHARSET) != 0)
 		ok = attr_u32(&x, nfsv4_utf8_only ?
 		    FSCHARSET_CAP4_ALLOWS_ONLY_UTF8 :
 		    FSCHARSET_CAP4_CONTAINS_NON_UTF8);
+
+	/* RFC 7530 s16.7.4, lowest number first. */
+	w2out = 0;
+	if (ok && rderr == NFS4_OK && (w2 & W2(FATTR4_CLONE_BLKSIZE)) != 0) {
+		/*
+		 * In bytes, and per file on ZFS: RFC 7862 s12.2.1 says
+		 * neither, draft-cel-nfsv4-copy-implementation-experience-03
+		 * s10.1 asks for both.
+		 */
+		ok = attr_u32(&x, (uint32_t)va.va_blocksize);
+		w2out |= W2(FATTR4_CLONE_BLKSIZE);
+	}
+	if (ok && (w2 & W2(FATTR4_SPACE_FREED)) != 0) {
+		/* s12.2.2; another link keeps the blocks. */
+		ok = attr_u64(&x, va.va_nlink > 1 ? 0 : va.va_bytes);
+		w2out |= W2(FATTR4_SPACE_FREED);
+	}
+	if (ok && (w2 & W2(FATTR4_CHANGE_ATTR_TYPE)) != 0) {
+		ok = attr_u32(&x, attr_change_type(vp));
+		w2out |= W2(FATTR4_CHANGE_ATTR_TYPE);
+	}
 
 	if (sb != NULL)
 		kmem_free(sb, sizeof(*sb));
@@ -829,10 +902,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		acl_free(acl);
 	if (!ok)
 		return NFS4ERR_TOOSMALL;
-	got->bm_n = w2 != 0 ? 3 : 2;
+	got->bm_n = (w2low | w2out) != 0 ? 3 : 2;
 	got->bm_w[0] = W0(out);
 	got->bm_w[1] = W1(out);
-	got->bm_w[2] = w2;
+	got->bm_w[2] = w2low | w2out;
 	got->bm_more = false;
 	*lenp = xdr_getpos(&x);
 	return NFS4_OK;
@@ -982,11 +1055,16 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		c->c_setacl = NULL;
 	}
 	c->c_xs.xs_set = 0;
+	/* Everything of version 4.2 that is given here is read-only. */
+	if (c->c_minor >= 2 && fa->fa_mask.bm_n > 2 &&
+	    (fa->fa_mask.bm_w[2] & attr_w2_by(c->c_cur.cf_vp, c->c_minor) &
+	    ~W2_ALL) != 0)
+		return NFS4ERR_INVAL;
 	/* RFC 8881 s5.5: it is known, and get-only. */
-	if (c->c_minor != 0 && !attr_more(&fa->fa_mask, 1) &&
+	if (c->c_minor != 0 && !attr_more(&fa->fa_mask, NULL, 1) &&
 	    fa->fa_mask.bm_n > 2 && fa->fa_mask.bm_w[2] != 0)
 		return NFS4ERR_INVAL;
-	if (attr_more(&fa->fa_mask, 0) ||
+	if (attr_more(&fa->fa_mask, NULL, 0) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	/* Whether these can be set depends on the file system. */

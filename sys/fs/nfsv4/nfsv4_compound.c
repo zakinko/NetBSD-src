@@ -107,7 +107,7 @@ struct nfsv4_opdesc {
 	u_int		od_flags;
 };
 
-static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
+static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
@@ -172,6 +172,21 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	[NFSV4_OP_DESTROY_CLIENTID] =
 				  { nfsv4_op_destroy_clientid, NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },
+	/*
+	 * COPY_NOTIFY is inter-server copy, LAYOUTERROR and LAYOUTSTATS are
+	 * pNFS, and neither feature is here: RFC 7862 s13 has them
+	 * NFS4ERR_NOTSUPP, as is GETDEVICELIST, s14.2.4.
+	 */
+	[NFSV4_OP_ALLOCATE]	= { nfsv4_op_allocate,	NFSV4_OPF_FH },
+	[NFSV4_OP_COPY]		= { nfsv4_op_copy,	NFSV4_OPF_FH },
+	[NFSV4_OP_DEALLOCATE]	= { nfsv4_op_deallocate, NFSV4_OPF_FH },
+	[NFSV4_OP_IO_ADVISE]	= { nfsv4_op_io_advise,	NFSV4_OPF_FH },
+	[NFSV4_OP_OFFLOAD_CANCEL] = { nfsv4_op_offload,	NFSV4_OPF_FH },
+	[NFSV4_OP_OFFLOAD_STATUS] = { nfsv4_op_offload,	NFSV4_OPF_FH },
+	[NFSV4_OP_READ_PLUS]	= { nfsv4_op_read_plus,	NFSV4_OPF_FH },
+	[NFSV4_OP_SEEK]		= { nfsv4_op_seek,	NFSV4_OPF_FH },
+	[NFSV4_OP_WRITE_SAME]	= { nfsv4_op_write_same, NFSV4_OPF_FH },
+	[NFSV4_OP_CLONE]	= { nfsv4_op_clone,	NFSV4_OPF_FH },
 };
 
 static struct oncrpc_svc *nfsv4_svc;
@@ -240,6 +255,7 @@ stateid_current(struct nfsv4_compound *c, struct nfsv4_stateid *si, bool seqid)
 static uint32_t
 stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 {
+	uint32_t st;
 
 	switch (op) {
 	case NFSV4_OP_CLOSE:
@@ -259,7 +275,25 @@ stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		return stateid_current(c, &a->setattr.stateid, false);
 	case NFSV4_OP_DELEGRETURN:
 	case NFSV4_OP_FREE_STATEID:
+	case NFSV4_OP_OFFLOAD_CANCEL:
+	case NFSV4_OP_OFFLOAD_STATUS:
 		return stateid_current(c, &a->stateid.stateid, false);
+	case NFSV4_OP_READ_PLUS:
+		return stateid_current(c, &a->read.stateid, false);
+	case NFSV4_OP_SEEK:
+		return stateid_current(c, &a->seek.stateid, false);
+	case NFSV4_OP_ALLOCATE:
+	case NFSV4_OP_DEALLOCATE:
+		return stateid_current(c, &a->range.stateid, false);
+	case NFSV4_OP_IO_ADVISE:
+		return stateid_current(c, &a->io_advise.stateid, false);
+	case NFSV4_OP_WRITE_SAME:
+		return stateid_current(c, &a->write_same.stateid, false);
+	case NFSV4_OP_COPY:
+	case NFSV4_OP_CLONE:
+		st = stateid_current(c, &a->copy.src_stateid, false);
+		return st != NFS4_OK ? st :
+		    stateid_current(c, &a->copy.dst_stateid, false);
 	default:
 		return NFS4_OK;
 	}
@@ -586,8 +620,9 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 		return nfsv4_patch32(rx, 0, NFS4ERR_MINOR_VERS_MISMATCH) ?
 		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
 	}
+	/* RFC 8178 s4.2: what a later minor version adds is illegal before. */
 	maxop = minor == 0 ? NFSV4_OP_RELEASE_LOCKOWNER :
-	    NFSV4_OP_RECLAIM_COMPLETE;
+	    minor == 1 ? NFSV4_OP_RECLAIM_COMPLETE : NFSV4_OP_REMOVEXATTR;
 	c.c_rbuf = kmem_alloc(NFSV4_REPLAY_MAX, KM_SLEEP);
 
 	/* As versions 2 and 3: the exports hold still for the whole call. */

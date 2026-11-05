@@ -1108,7 +1108,15 @@ uint32_t
 nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
     bool write)
 {
-	struct vnode *vp = c->c_cur.cf_vp;
+
+	return nfsv4_io_check_vp(c, si, c->c_cur.cf_vp, write);
+}
+
+/* The same for a file that is not the current one: COPY's source. */
+uint32_t
+nfsv4_io_check_vp(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
+    struct vnode *vp, bool write)
+{
 	struct nfsv4_state *st = NULL, *o;
 	struct nfsv4_state *open;
 	struct nfsv4_file *f;

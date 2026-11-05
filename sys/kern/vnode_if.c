@@ -2320,6 +2320,49 @@ VOP_SETEXTATTR(struct vnode *vp,
 	return error;
 }
 
+const int vop_clonerange_vp_offsets[] = {
+	VOPARG_OFFSETOF(struct vop_clonerange_args,a_invp),
+	VOPARG_OFFSETOF(struct vop_clonerange_args,a_outvp),
+	VDESC_NO_OFFSET
+};
+const struct vnodeop_desc vop_clonerange_desc = {
+	VOP_CLONERANGE_DESCOFFSET,
+	"vop_clonerange",
+	0,
+	vop_clonerange_vp_offsets,
+	VDESC_NO_OFFSET,
+	VOPARG_OFFSETOF(struct vop_clonerange_args, a_cred),
+	VDESC_NO_OFFSET,
+};
+int
+VOP_CLONERANGE(struct vnode *invp,
+    off_t inoff,
+    struct vnode *outvp,
+    off_t outoff,
+    off_t len,
+    kauth_cred_t cred)
+{
+	int error;
+	bool mpsafe;
+	struct vop_clonerange_args a;
+	struct mount *mp;
+	a.a_desc = VDESC(vop_clonerange);
+	a.a_invp = invp;
+	a.a_inoff = inoff;
+	a.a_outvp = outvp;
+	a.a_outoff = outoff;
+	a.a_len = len;
+	a.a_cred = cred;
+	assert_vop_unlocked(invp, "vop_clonerange: invp");
+	assert_vop_unlocked(outvp, "vop_clonerange: outvp");
+	error = vop_pre(invp, &mp, &mpsafe, FST_YES);
+	if (error)
+		return error;
+	error = (VCALL(invp, VOFFSET(vop_clonerange), &a));
+	vop_post(invp, mp, mpsafe, FST_YES);
+	return error;
+}
+
 const struct vnodeop_desc * const vfs_op_descs[] = {
 	&vop_default_desc,	/* MUST BE FIRST */
 
@@ -2377,5 +2420,6 @@ const struct vnodeop_desc * const vfs_op_descs[] = {
 	&vop_openextattr_desc,
 	&vop_deleteextattr_desc,
 	&vop_setextattr_desc,
+	&vop_clonerange_desc,
 	NULL
 };

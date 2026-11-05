@@ -831,3 +831,20 @@ RUMP_VOP_SETEXTATTR(struct vnode *vp,
 
 	return error;
 }
+
+int
+RUMP_VOP_CLONERANGE(struct vnode *invp,
+    off_t inoff,
+    struct vnode *outvp,
+    off_t outoff,
+    off_t len,
+    struct kauth_cred *cred)
+{
+	int error;
+
+	rump_schedule();
+	error = VOP_CLONERANGE(invp, inoff, outvp, outoff, len, cred);
+	rump_unschedule();
+
+	return error;
+}

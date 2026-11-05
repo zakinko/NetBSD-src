@@ -122,5 +122,7 @@ int RUMP_VOP_DELETEEXTATTR(struct vnode *, int, const char *,
     struct kauth_cred *);
 int RUMP_VOP_SETEXTATTR(struct vnode *, int, const char *, struct uio *, 
     struct kauth_cred *);
+int RUMP_VOP_CLONERANGE(struct vnode *, off_t, struct vnode *, off_t, off_t, 
+    struct kauth_cred *);
 
 #endif /* !_RUMP_RUMPVNODE_IF_H_ */

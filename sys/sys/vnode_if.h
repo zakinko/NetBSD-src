@@ -626,6 +626,20 @@ extern const struct vnodeop_desc vop_setextattr_desc;
 int VOP_SETEXTATTR(struct vnode *, int, const char *, struct uio *, 
     kauth_cred_t);
 
-#define VNODE_OPS_COUNT	55
+#define VOP_CLONERANGE_DESCOFFSET 55
+struct vop_clonerange_args {
+	const struct vnodeop_desc *a_desc;
+	struct vnode *a_invp;
+	off_t a_inoff;
+	struct vnode *a_outvp;
+	off_t a_outoff;
+	off_t a_len;
+	kauth_cred_t a_cred;
+};
+extern const struct vnodeop_desc vop_clonerange_desc;
+int VOP_CLONERANGE(struct vnode *, off_t, struct vnode *, off_t, off_t, 
+    kauth_cred_t);
+
+#define VNODE_OPS_COUNT	56
 
 #endif /* !_SYS_VNODE_IF_H_ */

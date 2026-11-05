@@ -49,9 +49,15 @@ struct nfsv4_owner_s;
 struct nfsv4_state;
 struct vnode;
 
+/* What is known of a client's callback path, s10.2. */
+#define	NFSV4_CB_UNKNOWN	0
+#define	NFSV4_CB_UP		1
+#define	NFSV4_CB_DOWN		2
+
 /* RFC 7530 s16.33.5, a record { v, x, c, k, s } */
 struct nfsv4_client {
 	LIST_ENTRY(nfsv4_client) cl_list;
+	TAILQ_ENTRY(nfsv4_client) cl_cbq;	/* to be probed */
 	LIST_HEAD(, nfsv4_owner_s) cl_owners;
 	uint64_t	cl_id;		/* c */
 	struct nfsv4_verifier cl_verf;	/* v */
@@ -60,6 +66,13 @@ struct nfsv4_client {
 	uint32_t	cl_cbprog;
 	uint32_t	cl_cbident;
 	uid_t		cl_uid;		/* the principal */
+	gid_t		cl_gid;		/* and for callbacks, s3.3.3 */
+	uint32_t	cl_flavor;
+	uint64_t	cl_connid;	/* last connection known to be its */
+	u_int		cl_cbstate;
+	uint32_t	cl_cbgen;	/* of cl_cb, for a call that returns */
+	bool		cl_cbqueued;	/* on cl_cbq */
+	time_t		cl_cbnext;	/* time to probe a dead path again */
 	bool		cl_confirmed;
 	bool		cl_expired;	/* state gone; stateids still known */
 	time_t		cl_expire;	/* lease, in time_uptime */
@@ -69,6 +82,7 @@ struct nfsv4_client {
 
 #define	NFSV4_OWNER_OPEN	1
 #define	NFSV4_OWNER_LOCK	2
+#define	NFSV4_OWNER_DELEG	3	/* the client's delegations */
 
 /* An open-owner or lock-owner, RFC 7530 s9.1.1. */
 struct nfsv4_owner_s {
@@ -95,10 +109,12 @@ struct nfsv4_file {
 	LIST_ENTRY(nfsv4_file) f_list;
 	LIST_HEAD(, nfsv4_state) f_states;
 	struct vnode	*f_vp;		/* a reference */
+	struct nfsv4_fh	f_fh;		/* if delegated, for CB_RECALL */
 };
 
 #define	NFSV4_ST_OPEN		1
 #define	NFSV4_ST_LOCK		2
+#define	NFSV4_ST_DELEG		3
 
 struct nfsv4_state {
 	LIST_ENTRY(nfsv4_state) st_hash;
@@ -121,9 +137,29 @@ struct nfsv4_state {
 	struct vnode	*st_reapvp;	/* a reference, while reaping */
 	bool		st_free;	/* reaping ends it */
 	bool		st_closed;	/* kept for a resent CLOSE */
+	/* delegation */
+	TAILQ_ENTRY(nfsv4_state) st_cbq;	/* to be called back */
+	LIST_ENTRY(nfsv4_state) st_rlist;	/* recalled */
+	uint32_t	st_dtype;	/* OPEN_DELEGATE_* */
+	bool		st_cbqueued;	/* on st_cbq */
+	bool		st_recalled;	/* on st_rlist */
+	bool		st_prev;	/* of a client now restarted, s10.2.1 */
+	time_t		st_recall_end;	/* when it is revoked */
+	time_t		st_cbnext;	/* when to call again, if not 0 */
 };
 
 SLIST_HEAD(nfsv4_reap, nfsv4_state);
+
+/* Allocated beforehand for a delegation that may come of an OPEN. */
+struct nfsv4_deleg_spare {
+	struct nfsv4_state *ds_st;
+	struct nfsv4_owner_s *ds_sw;
+	struct nfsv4_file *ds_f;
+};
+
+/* nfsv4_deleg_conflict() */
+#define	NFSV4_DC_READ		1
+#define	NFSV4_DC_WRITE		2
 
 extern kmutex_t nfsv4_state_lock;
 extern kcondvar_t nfsv4_state_cv;
@@ -138,6 +174,9 @@ enum nfsv4_seq {
 
 void	nfsv4_state_init(void);
 void	nfsv4_state_fini(void);
+void	nfsv4_cb_init(void);
+void	nfsv4_cb_fini(void);
+void	nfsv4_deleg_init(void);
 
 /* These want nfsv4_state_lock held. */
 uint32_t nfsv4_client_get(uint64_t, struct nfsv4_client **);
@@ -166,6 +205,27 @@ bool	nfsv4_stateid_special(const struct nfsv4_stateid *);
 void	nfsv4_stateid_out(const struct nfsv4_state *, struct nfsv4_stateid *);
 struct nfsv4_file *
 	nfsv4_file_find(struct vnode *);
+struct nfsv4_client *
+	nfsv4_client_byid(uint64_t);
+void	nfsv4_client_renew(struct nfsv4_client *);
+struct nfsv4_state *
+	nfsv4_state_byother(uint64_t);
+void	nfsv4_cb_probe(struct nfsv4_client *);
+void	nfsv4_cb_reset(struct nfsv4_client *);
+void	nfsv4_cb_recall(struct nfsv4_state *);
+void	nfsv4_cb_forget_client(struct nfsv4_client *);
+void	nfsv4_cb_forget_state(struct nfsv4_state *);
+uint32_t nfsv4_deleg_conflict(struct vnode *, const struct nfsv4_client *,
+	    uint64_t, u_int);
+void	nfsv4_deleg_offer(struct nfsv4_owner_s *, struct vnode *,
+	    const struct nfsv4_fh *, uint32_t, struct nfsv4_deleg_spare *,
+	    struct nfsv4_open_deleg *);
+void	nfsv4_deleg_add(struct nfsv4_client *, struct vnode *,
+	    const struct nfsv4_fh *, uint32_t, struct nfsv4_deleg_spare *,
+	    struct nfsv4_open_deleg *);
+void	nfsv4_deleg_gone(struct nfsv4_state *);
+void	nfsv4_deleg_scan(struct nfsv4_reap *);
+bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 
 /* These do not. */
 uint32_t nfsv4_seq_stateid(const struct nfsv4_stateid *, uint32_t, uint32_t,
@@ -178,5 +238,8 @@ void	nfsv4_seq_cancel(struct nfsv4_owner_s *);
 void	nfsv4_reap_finish(struct nfsv4_reap *);
 void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 	    uint32_t, const char *, u_int);
+uint32_t nfsv4_deleg_break(struct vnode *, const struct nfsv4_client *,
+	    uint64_t, u_int);
+uint32_t nfsv4_deleg_break_name(const struct nfsv4_cfh *, const char *);
 
 #endif /* !_FS_NFSV4_NFSV4_STATE_H_ */

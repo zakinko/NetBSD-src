@@ -45,6 +45,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/vnode.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
+#include <fs/nfsv4/nfsv4_state.h>
 
 /* The server's choice: the RFC gives no default for createattrs. */
 #define	NFSV4_MKDIR_MODE	0755
@@ -226,6 +227,8 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		return st;
 	st = nfsv4_name_check(nm);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
 	if (st != NFS4_OK)
 		return st;
 
@@ -307,6 +310,12 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		return st;
 	if (sf->cf_vp->v_mount != tf->cf_vp->v_mount)
 		return NFS4ERR_XDEV;
+	/* s10.4.4, as source and as target. */
+	st = nfsv4_deleg_break_name(sf, ra->oldname.nm_str);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_name(tf, ra->newname.nm_str);
+	if (st != NFS4_OK)
+		return st;
 
 	memset(&sci, 0, sizeof(sci));
 	memset(&tci, 0, sizeof(tci));
@@ -431,6 +440,10 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 	vp = sf->cf_vp;
 	if (vp->v_mount != cf->cf_vp->v_mount)
 		return NFS4ERR_XDEV;
+	/* numlinks would change under the client; s10.4.4 lets it be asked. */
+	st = nfsv4_deleg_break(vp, NULL, 0, NFSV4_DC_WRITE);
+	if (st != NFS4_OK)
+		return st;
 
 	memset(&ci, 0, sizeof(ci));
 	error = nfsv4_namei(&nd, cf->cf_vp, nm->nm_str, CREATE, LOCKPARENT,
@@ -495,6 +508,10 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		else
 			st = nfsv4_io_check(c, &sa->stateid, true);
 	}
+	/* s10.4.4 */
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid,
+		    NFSV4_DC_WRITE);
 	if (st == NFS4_OK) {
 		if ((set & ~(1ULL << FATTR4_ACL)) != 0) {
 			vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);

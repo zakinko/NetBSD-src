@@ -228,6 +228,36 @@ nfsv4_xdr_lock_denied(XDR *x, struct nfsv4_lock_denied *ld)
 	    xdr_opaque(x, __UNCONST(ld->ld_owner), ld->ld_ownerlen) != 0;
 }
 
+/*
+ * open_delegation4.  The nfsace4 denies everything, as s10.4 allows, so
+ * that a client asks with ACCESS rather than be told from the file's
+ * ACL here.  nfs_space_limit4 gives no room: s10.4.1 has the server
+ * ensure that what it names can be flushed, and nothing here reserves
+ * space, so all modified data is to be flushed on close.
+ */
+bool
+nfsv4_xdr_open_deleg(XDR *x, struct nfsv4_open_deleg *od)
+{
+	static const char who[] = "EVERYONE@";
+	uint32_t ty = ACE4_ACCESS_DENIED_ACE_TYPE, flag = 0;
+	uint32_t mask = ACE4_GENERIC_READ | ACE4_GENERIC_WRITE |
+	    ACE4_GENERIC_EXECUTE;
+	uint32_t limitby = NFS_LIMIT_SIZE, wholen = sizeof(who) - 1;
+	uint64_t size = 0;
+
+	if (!U32(x, &od->od_type))
+		return false;
+	if (od->od_type == OPEN_DELEGATE_NONE)
+		return true;
+	if (!nfsv4_xdr_stateid(x, &od->od_stateid) || !U32(x, &od->od_recall))
+		return false;
+	if (od->od_type == OPEN_DELEGATE_WRITE &&
+	    (!U32(x, &limitby) || !U64(x, &size)))
+		return false;
+	return U32(x, &ty) && U32(x, &flag) && U32(x, &mask) &&
+	    U32(x, &wholen) && xdr_opaque(x, __UNCONST(who), wholen) != 0;
+}
+
 static bool
 xdr_args_close(XDR *x, struct nfsv4_args_close *a)
 {

@@ -176,6 +176,10 @@
 #define	NFSV4_OP_RELEASE_LOCKOWNER	39
 #define	NFSV4_OP_ILLEGAL	10044
 
+/* RFC 7531 s2, enum nfs_cb_opnum4; RFC 7530 s18 */
+#define	NFSV4_OP_CB_GETATTR	3
+#define	NFSV4_OP_CB_RECALL	4
+
 /* RFC 7531 s2, attribute numbers; RFC 7530 s5.6, s5.7 */
 #define	FATTR4_SUPPORTED_ATTRS	0
 #define	FATTR4_TYPE		1

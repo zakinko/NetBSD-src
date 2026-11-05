@@ -304,6 +304,44 @@ nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
 		kmem_free(old, oldlen);
 }
 
+/* The client with this ID, confirmed, if it still exists. */
+struct nfsv4_client *
+nfsv4_client_byid(uint64_t id)
+{
+	struct nfsv4_client *cl;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
+		if (cl->cl_id == id && cl->cl_confirmed)
+			return cl;
+	}
+	return NULL;
+}
+
+void
+nfsv4_client_renew(struct nfsv4_client *cl)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	cl->cl_expire = lease_end();
+}
+
+struct nfsv4_state *
+nfsv4_state_byother(uint64_t other)
+{
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(st, &nfsv4_state_hash[state_hash(other)], st_hash) {
+		if (st->st_other == other)
+			return st;
+	}
+	return NULL;
+}
+
 struct nfsv4_file *
 nfsv4_file_find(struct vnode *vp)
 {
@@ -368,6 +406,8 @@ nfsv4_state_unlink(struct nfsv4_state *st, struct nfsv4_reap *reap, bool keep)
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
+	if (st->st_type == NFSV4_ST_DELEG && f != NULL)
+		nfsv4_deleg_gone(st);
 	while (!keep && (ls = LIST_FIRST(&st->st_locks)) != NULL) {
 		LIST_REMOVE(ls, st_plist);
 		ls->st_open = NULL;
@@ -481,11 +521,9 @@ nfsv4_stateid_lookup(const struct nfsv4_stateid *si, struct nfsv4_state **stp)
 			return NFS4ERR_BAD_STATEID;
 		return NFS4ERR_STALE_STATEID;
 	}
-	LIST_FOREACH(st, &nfsv4_state_hash[state_hash(other)], st_hash) {
-		if (st->st_other == other) {
-			*stp = st;
-			return NFS4_OK;
-		}
+	if ((st = nfsv4_state_byother(other)) != NULL) {
+		*stp = st;
+		return NFS4_OK;
 	}
 	return NFS4ERR_BAD_STATEID;
 }
@@ -580,6 +618,7 @@ client_free(struct nfsv4_client *cl)
 			kmem_free(sw->sw_rbuf, sw->sw_rlen);
 		kmem_free(sw, sizeof(*sw));
 	}
+	nfsv4_cb_forget_client(cl);
 	LIST_REMOVE(cl, cl_list);
 	kmem_free(cl, sizeof(*cl));
 
@@ -612,9 +651,19 @@ lease_thread(void *arg)
 	while (!nfsv4_dying) {
 		(void)cv_timedwait(&nfsv4_state_cv, &nfsv4_state_lock,
 		    NFSV4_LEASE_SCAN * hz);
+		SLIST_INIT(&reap);
+		nfsv4_deleg_scan(&reap);
+		mutex_exit(&nfsv4_state_lock);
+		nfsv4_reap_finish(&reap);
+		mutex_enter(&nfsv4_state_lock);
 		do {
 			again = false;
 			LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
+				/* s10.4.6: a path can come back. */
+				if (cl->cl_confirmed &&
+				    cl->cl_cbstate == NFSV4_CB_DOWN &&
+				    time_uptime >= cl->cl_cbnext)
+					nfsv4_cb_probe(cl);
 				if (time_uptime <= cl->cl_expire)
 					continue;
 				if (!client_owners_idle(cl))
@@ -657,6 +706,7 @@ nfsv4_state_init(void)
 		LIST_INIT(&nfsv4_file_hash[i]);
 	nfsv4_counter = 0;
 	nfsv4_dying = false;
+	nfsv4_deleg_init();
 	/*
 	 * Each load is a new instance of the server: stale stateids and
 	 * client IDs must be seen as such, s9.1.1.  A second would do, as
@@ -771,6 +821,10 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	n->cl_cbprog = sa->cb_program;
 	n->cl_cbident = sa->cb_ident;
 	n->cl_uid = uid;
+	n->cl_gid = c->c_rq->rq_cred != NULL ?
+	    kauth_cred_getegid(c->c_rq->rq_cred) : (gid_t)-1;
+	n->cl_flavor = c->c_rq->rq_flavor;
+	n->cl_connid = c->c_rq->rq_connid;
 	n->cl_idlen = sa->idlen;
 	memcpy(n->cl_idstr, sa->id, sa->idlen);
 	n->cl_expire = lease_end();
@@ -823,6 +877,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 			conf->cl_cbident = unconf->cl_cbident;
 			conf->cl_confirm = unconf->cl_confirm;
 			client_free(unconf);
+			nfsv4_cb_reset(conf);
 			goto out;
 		}
 		/* { *, x, c, k, s }, and any { *, x, d, *, t } goes. */
@@ -850,6 +905,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 		}
 		unconf->cl_confirmed = true;
 		unconf->cl_expire = lease_end();
+		nfsv4_cb_reset(unconf);
 		goto out;
 	}
 	if (conf != NULL && memcmp(&conf->cl_confirm, &sa->verifier,
@@ -875,6 +931,11 @@ nfsv4_op_renew(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s16.28.5: only the principal; open files are not looked for. */
 	if (st == NFS4_OK && cl->cl_uid != client_principal(c))
 		st = NFS4ERR_ACCESS;
+	if (st == NFS4_OK) {
+		cl->cl_connid = c->c_rq->rq_connid;
+		if (nfsv4_deleg_path_down(cl))
+			st = NFS4ERR_CB_PATH_DOWN;
+	}
 	mutex_exit(&nfsv4_state_lock);
 	return st;
 }

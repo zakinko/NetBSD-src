@@ -90,6 +90,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
 	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
 	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_DELEGRETURN]	= { nfsv4_op_delegreturn, NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
 	[NFSV4_OP_LINK]		= { nfsv4_op_link,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
@@ -388,8 +389,10 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 	case MODULE_CMD_INIT:
 		nfsv4_state_init();
 		nfsv4_drc_init();
+		nfsv4_cb_init();
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
+			nfsv4_cb_fini();
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
 			return error;
@@ -397,6 +400,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
 			oncrpc_svc_destroy(nfsv4_svc);
+			nfsv4_cb_fini();
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
 			return error;
@@ -407,6 +411,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
 		oncrpc_svc_destroy(nfsv4_svc);
+		nfsv4_cb_fini();
 		nfsv4_drc_fini();
 		nfsv4_state_fini();
 		return 0;

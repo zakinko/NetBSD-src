@@ -31,7 +31,8 @@
 
 /*
  * The types of RFC 7531 that have a use here, and their XDR filters.
- * The callback program is left out until there are callbacks.
+ * The callback program has its encoding where the calls are made, in
+ * nfsv4_cb.c.
  *
  * An operation's arguments decode into a structure of fixed size with
  * no allocation: every variable field has a bound, either the RFC's or
@@ -147,6 +148,13 @@ struct nfsv4_lock_denied {
 	uint64_t	ld_clientid;
 	uint32_t	ld_ownerlen;
 	const uint8_t	*ld_owner;	/* encode only */
+};
+
+/* open_delegation4, s16.16.3; encode only */
+struct nfsv4_open_deleg {
+	uint32_t	od_type;
+	uint32_t	od_recall;
+	struct nfsv4_stateid od_stateid;
 };
 
 struct nfsv4_args_access {
@@ -347,6 +355,7 @@ bool	nfsv4_xdr_owner(XDR *, struct nfsv4_owner *);
 bool	nfsv4_xdr_change_info(XDR *, struct nfsv4_change_info *);
 bool	nfsv4_xdr_clientaddr(XDR *, struct nfsv4_clientaddr *);
 bool	nfsv4_xdr_lock_denied(XDR *, struct nfsv4_lock_denied *);
+bool	nfsv4_xdr_open_deleg(XDR *, struct nfsv4_open_deleg *);
 bool	nfsv4_xdr_skip(XDR *, u_int);
 bool	nfsv4_xdr_pad(XDR *, u_int);
 

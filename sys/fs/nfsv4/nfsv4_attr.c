@@ -52,6 +52,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/vnode.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
+#include <fs/nfsv4/nfsv4_state.h>
 
 #define	BIT(n)		(1ULL << (n))
 #define	W0(a)		((uint32_t)(a))
@@ -83,6 +84,10 @@ static const uint64_t attr_supported =
 /* RFC 7530 s5.7, those with access W */
 static const uint64_t attr_setonly =
     BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_MODIFY_SET);
+
+/* Those that a write delegation may change at the client, s10.4. */
+static const uint64_t attr_delegated =
+    BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) | BIT(FATTR4_TIME_MODIFY);
 
 /* Those needing VOP_GETATTR, and those needing VFS_STATVFS. */
 static const uint64_t attr_vattr =
@@ -507,6 +512,18 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (!nfsv4_attr_getonly_ok(&a->getattr.mask))
 		return NFS4ERR_INVAL;
+	/*
+	 * s10.4.3: a client with a write delegation may have what these
+	 * say in its cache.  s10.4.3 lets the server recall rather than
+	 * use CB_GETATTR.
+	 */
+	if (c->c_cur.cf_vp != NULL &&
+	    (attr_mask(&a->getattr.mask) & attr_delegated) != 0) {
+		st = nfsv4_deleg_break(c->c_cur.cf_vp, NULL,
+		    c->c_rq->rq_connid, NFSV4_DC_READ);
+		if (st != NFS4_OK)
+			return st;
+	}
 
 	buf = kmem_alloc(NFSV4_ATTRBUF, KM_SLEEP);
 	st = nfsv4_attr_fill(c, &c->c_cur, &a->getattr.mask, NFS4_OK, buf,

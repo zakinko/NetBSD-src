@@ -272,12 +272,28 @@ open_access(const struct nfsv4_cfh *cf, struct vnode *vp, uint32_t access)
 static uint32_t
 open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
     uint32_t deny, struct nfsv4_state **spare, struct nfsv4_file **sparef,
-    struct nfsv4_stateid *si)
+    struct nfsv4_stateid *si, const struct nfsv4_cfh *cf,
+    struct nfsv4_deleg_spare *ds, struct nfsv4_open_deleg *od)
 {
 	struct nfsv4_file *f;
 	struct nfsv4_state *st, *mine = NULL;
+	uint32_t status;
 
 	mutex_enter(&nfsv4_state_lock);
+	/*
+	 * s10.4: recalled before anything is decided, as only the holder
+	 * knows what is open under a delegation.  A read delegation
+	 * minds an open that may write, or that denies reading, which
+	 * the holder would not send here; s10.4 again.
+	 */
+	status = nfsv4_deleg_conflict(vp, sw->sw_client, 0,
+	    (access & OPEN4_SHARE_ACCESS_WRITE) != 0 ||
+	    (deny & OPEN4_SHARE_DENY_READ) != 0 ?
+	    NFSV4_DC_WRITE : NFSV4_DC_READ);
+	if (status != NFS4_OK) {
+		mutex_exit(&nfsv4_state_lock);
+		return status;
+	}
 	f = nfsv4_file_find(vp);
 	if (f != NULL) {
 		LIST_FOREACH(st, &f->f_states, st_flist) {
@@ -303,6 +319,7 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 	mine->st_accbits |= 1U << access;
 	mine->st_denybits |= 1U << deny;
 	nfsv4_stateid_out(mine, si);
+	nfsv4_deleg_offer(sw, vp, &cf->cf_fh, access, ds, od);
 	mutex_exit(&nfsv4_state_lock);
 	return NFS4_OK;
 }
@@ -310,7 +327,7 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 static uint32_t
 open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
     struct nfsv4_owner_s *sw, struct nfsv4_state **spare,
-    struct nfsv4_file **sparef, u_int *rlen)
+    struct nfsv4_file **sparef, struct nfsv4_deleg_spare *ds, u_int *rlen)
 {
 	struct nfsv4_cfh *cf = &c->c_cur;
 	struct nfsv4_change_info ci;
@@ -318,17 +335,16 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	struct vnode *vp = NULL;
 	struct vattr va;
 	uint64_t set = 0;
-	uint32_t st, rflags, deleg = OPEN_DELEGATE_NONE;
+	struct nfsv4_open_deleg od;
+	uint32_t st, rflags;
 	bool created = false, trunc;
 	XDR rb;
 	int error;
 
 	memset(&ci, 0, sizeof(ci));
+	memset(&od, 0, sizeof(od));
 
-	/*
-	 * No delegation is ever given and nothing is remembered from
-	 * before a restart.
-	 */
+	/* Nothing is remembered from before a restart. */
 	switch (oa->claim) {
 	case CLAIM_NULL:
 		break;
@@ -362,7 +378,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 			goto bad;
 	}
 	st = open_share(sw, vp, oa->share_access, oa->share_deny, spare,
-	    sparef, &si);
+	    sparef, &si, cf, ds, &od);
 	if (st != NFS4_OK)
 		goto bad;
 
@@ -393,7 +409,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    !nfsv4_xdr_change_info(&rb, &ci) ||
 	    !xdr_u_int32_t(&rb, &rflags) ||
 	    !nfsv4_attr_put_mask(&rb, set) ||
-	    !xdr_u_int32_t(&rb, &deleg))
+	    !nfsv4_xdr_open_deleg(&rb, &od))
 		return NFS4ERR_SERVERFAULT;
 	*rlen = xdr_getpos(&rb);
 	return NFS4_OK;
@@ -448,13 +464,16 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_state *sst, *st;
 	struct nfsv4_file *sf;
 	struct nfsv4_reap reap;
+	struct nfsv4_deleg_spare ds;
 	enum nfsv4_seq seq;
 	uint32_t status;
 	u_int rlen = 0;
+	bool want_deleg;
 
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
 	sst = kmem_zalloc(sizeof(*sst), KM_SLEEP);
 	sf = kmem_zalloc(sizeof(*sf), KM_SLEEP);
+	memset(&ds, 0, sizeof(ds));
 	SLIST_INIT(&reap);
 
 	mutex_enter(&nfsv4_state_lock);
@@ -463,6 +482,8 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 		mutex_exit(&nfsv4_state_lock);
 		goto out;
 	}
+	cl->cl_connid = c->c_rq->rq_connid;
+	want_deleg = cl->cl_cbstate == NFSV4_CB_UP;
 	sw = nfsv4_owner_find(cl, NFSV4_OWNER_OPEN, oa->owner.ow_data,
 	    oa->owner.ow_len);
 	if (sw == NULL) {
@@ -499,7 +520,12 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = NFS4ERR_BAD_SEQID;
 		break;
 	case NFSV4_SEQ_GO:
-		status = open_do(c, oa, sw, &sst, &sf, &rlen);
+		if (want_deleg) {
+			ds.ds_st = kmem_zalloc(sizeof(*ds.ds_st), KM_SLEEP);
+			ds.ds_sw = kmem_zalloc(sizeof(*ds.ds_sw), KM_SLEEP);
+			ds.ds_f = kmem_zalloc(sizeof(*ds.ds_f), KM_SLEEP);
+		}
+		status = open_do(c, oa, sw, &sst, &sf, &ds, &rlen);
 		status = nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN, status,
 		    status == NFS4_OK ? rlen : 0);
 		break;
@@ -511,6 +537,12 @@ out:
 		kmem_free(sst, sizeof(*sst));
 	if (sf != NULL)
 		kmem_free(sf, sizeof(*sf));
+	if (ds.ds_st != NULL)
+		kmem_free(ds.ds_st, sizeof(*ds.ds_st));
+	if (ds.ds_sw != NULL)
+		kmem_free(ds.ds_sw, sizeof(*ds.ds_sw));
+	if (ds.ds_f != NULL)
+		kmem_free(ds.ds_f, sizeof(*ds.ds_f));
 	return status;
 }
 
@@ -528,6 +560,9 @@ nfsv4_seq_stateid(const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
 
 	mutex_enter(&nfsv4_state_lock);
 	status = nfsv4_stateid_lookup(si, &st);
+	/* It has no seqid to take up, and is not good for any of these. */
+	if (status == NFS4_OK && st->st_type == NFSV4_ST_DELEG)
+		status = NFS4ERR_BAD_STATEID;
 	if (status == NFS4_OK) {
 		nfsv4_owner_busy(st->st_owner);
 		*seqp = nfsv4_seq_check(st->st_owner, seqid, op);
@@ -748,6 +783,7 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 	struct nfsv4_state *st = NULL, *o;
 	struct nfsv4_state *open;
 	struct nfsv4_file *f;
+	struct nfsv4_client *self = NULL;
 	uint32_t status = NFS4_OK, bit;
 
 	bit = write ? OPEN4_SHARE_DENY_WRITE : OPEN4_SHARE_DENY_READ;
@@ -773,7 +809,13 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 			status = NFS4ERR_OPENMODE;
 			goto out;
 		}
+		self = st->st_owner->sw_client;
 	}
+	/* s10.4.1: without an open, these are the equivalent of one. */
+	status = nfsv4_deleg_conflict(vp, self, 0,
+	    write ? NFSV4_DC_WRITE : NFSV4_DC_READ);
+	if (status != NFS4_OK)
+		goto out;
 	f = nfsv4_file_find(vp);
 	if (f != NULL) {
 		LIST_FOREACH(o, &f->f_states, st_flist) {

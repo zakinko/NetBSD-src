@@ -289,7 +289,15 @@ xprt_getmsg_dgram(struct oncrpc_xprt *xp, struct mbuf **namp)
 		flags = MSG_DONTWAIT;
 		(void)(*so->so_receive)(so, &nam, &auio, &m, NULL, &flags);
 		if (m == NULL) {
-			m_freem(nam);
+			/*
+			 * A datagram of no bytes has a sender and no data.
+			 * Stopping here left those behind it unread until
+			 * something else arrived to wake a worker.
+			 */
+			if (nam != NULL) {
+				m_freem(nam);
+				continue;
+			}
 			return NULL;
 		}
 		if (nam != NULL) {

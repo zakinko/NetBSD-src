@@ -10,7 +10,7 @@ for c in $(git rev-list --reverse "$base..$tip"); do
 	git log -1 --format='=== %h %s'
 	[ -d sys/modules/nfsv4 ] || continue
 	(cd sys/modules/nfsv4 && "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no \
-	    obj dependall) >"$1/c.log" 2>&1 || { tail -40 "$1/c.log"; exit 1; }
+	    dependall) >"$1/c.log" 2>&1 || { tail -40 "$1/c.log"; exit 1; }
 	echo "ok $c"
 done
 git checkout -q "$tip"

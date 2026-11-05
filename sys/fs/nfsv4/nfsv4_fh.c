@@ -207,8 +207,9 @@ cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
  * Make cf the handle of vp, an unlocked reference which it takes over
  * on success.
  */
-static uint32_t
-cfh_setreal(struct nfsv4_compound *c, struct nfsv4_cfh *cf, struct vnode *vp)
+uint32_t
+nfsv4_cfh_setvp(struct nfsv4_compound *c, struct nfsv4_cfh *cf,
+    struct vnode *vp)
 {
 	struct nfsv4_cfh n;
 	size_t size;
@@ -341,7 +342,7 @@ cfh_setpath(struct nfsv4_compound *c, struct nfsv4_cfh *cf, const char *path,
 		if (error != 0)
 			return nfsv4_errno(error);
 		VOP_UNLOCK(vp);
-		st = cfh_setreal(c, cf, vp);
+		st = nfsv4_cfh_setvp(c, cf, vp);
 		if (st != NFS4_OK)
 			vrele(vp);
 		return st;
@@ -367,10 +368,10 @@ nfsv4_op_putpubfh(struct nfsv4_compound *c, union nfsv4_args *a)
 	return cfh_setpath(c, &c->c_cur, "/", 1);
 }
 
+/* Make the handle fh from a client the current one. */
 uint32_t
-nfsv4_op_putfh(struct nfsv4_compound *c, union nfsv4_args *a)
+nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 {
-	const struct nfsv4_fh *fh = &a->putfh.fh;
 	const fhandle_t *fhp;
 	struct mount *mp;
 	struct vnode *vp;
@@ -422,10 +423,17 @@ nfsv4_op_putfh(struct nfsv4_compound *c, union nfsv4_args *a)
 		return error == ESTALE || error == ENOENT ? NFS4ERR_STALE :
 		    nfsv4_errno(error);
 	VOP_UNLOCK(vp);
-	st = cfh_setreal(c, &c->c_cur, vp);
+	st = nfsv4_cfh_setvp(c, &c->c_cur, vp);
 	if (st != NFS4_OK)
 		vrele(vp);
 	return st;
+}
+
+uint32_t
+nfsv4_op_putfh(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+
+	return nfsv4_cfh_put(c, &a->putfh.fh);
 }
 
 uint32_t
@@ -479,6 +487,33 @@ nfsv4_lookup_vp(struct vnode *dvp, const char *name, kauth_cred_t cred,
 	pathbuf_destroy(nd.ni_pathbuf);
 	if (error == 0)
 		*vpp = nd.ni_vp;
+	return error;
+}
+
+/*
+ * For an operation that changes the directory dvp: nd is set up as
+ * nfs_namei() does, and the caller gets what lookup_for_nfsd() leaves,
+ * with ni_dvp locked if LOCKPARENT was asked for.  The pathbuf is the
+ * caller's to destroy.
+ */
+int
+nfsv4_namei(struct nameidata *nd, struct vnode *dvp, const char *name,
+    uint32_t op, uint32_t flags, kauth_cred_t cred)
+{
+	int error;
+
+	memset(nd, 0, sizeof(*nd));
+	nd->ni_pathbuf = pathbuf_create(name);
+	if (nd->ni_pathbuf == NULL)
+		return ENOMEM;
+	nd->ni_cnd.cn_nameiop = op;
+	nd->ni_cnd.cn_flags = flags | NOCROSSMOUNT;
+	nd->ni_cnd.cn_cred = cred;
+	error = lookup_for_nfsd(nd, dvp, 1);
+	if (error != 0) {
+		pathbuf_destroy(nd->ni_pathbuf);
+		nd->ni_pathbuf = NULL;
+	}
 	return error;
 }
 
@@ -545,7 +580,7 @@ nfsv4_cfh_lookup(struct nfsv4_compound *c, struct nfsv4_cfh *dir,
 		vrele(vp);
 		return nfsv4_errno(error);
 	}
-	st = cfh_setreal(c, to, vp);
+	st = nfsv4_cfh_setvp(c, to, vp);
 	if (st != NFS4_OK)
 		vrele(vp);
 	return st;
@@ -592,7 +627,7 @@ lookupp_fsroot(struct nfsv4_compound *c, struct vnode *fsvp)
 		error = nfsv4_lookup_vp(cvp, "..", cf->cf_cred, &vp);
 		if (error != 0)
 			return nfsv4_errno(error);
-		st = cfh_setreal(c, cf, vp);
+		st = nfsv4_cfh_setvp(c, cf, vp);
 		if (st != NFS4_OK)
 			vrele(vp);
 		return st;
@@ -631,7 +666,7 @@ nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_lookup_vp(cf->cf_vp, "..", cf->cf_cred, &vp);
 	if (error != 0)
 		return nfsv4_errno(error);
-	st = cfh_setreal(c, cf, vp);
+	st = nfsv4_cfh_setvp(c, cf, vp);
 	if (st != NFS4_OK)
 		vrele(vp);
 	return st;

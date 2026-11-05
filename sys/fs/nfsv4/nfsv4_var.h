@@ -34,6 +34,7 @@
 #include <fs/nfsv4/nfsv4_xdr.h>
 
 struct mount;
+struct nameidata;
 struct vattr;
 struct vnode;
 
@@ -61,6 +62,8 @@ struct nfsv4_compound {
 	XDR		*c_rx;		/* results */
 	struct nfsv4_cfh c_cur;		/* RFC 7530 s15.2.4.1 */
 	struct nfsv4_cfh c_saved;
+	struct nfsv4_cfh c_scratch;	/* for a lookup that is thrown away */
+	char		*c_rbuf;	/* NFSV4_REPLAY_MAX, for seqid replies */
 };
 
 /*
@@ -79,6 +82,9 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
 #define	NFSV4_MAXIO		(128 * 1024)
 #define	NFSV4_LEASE		90
 
+/* The largest result of an operation with a seqid: LOCK4denied. */
+#define	NFSV4_REPLAY_MAX	(64 + NFS4_OPAQUE_LIMIT)
+
 /* Room for one object's attributes, not counting the bitmap. */
 #define	NFSV4_ATTRBUF		2048
 
@@ -89,10 +95,19 @@ uint64_t nfsv4_attr_change(const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
 
+uint32_t nfsv4_attr_parse(struct nfsv4_compound *,
+	    const struct nfsv4_fattr *, struct vattr *, uint64_t *);
+bool	nfsv4_attr_put_mask(XDR *, uint64_t);
+
 uint32_t nfsv4_errno(int);
 uint32_t nfsv4_name_check(const struct nfsv4_name *);
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
+uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);
+uint32_t nfsv4_cfh_setvp(struct nfsv4_compound *, struct nfsv4_cfh *,
+	    struct vnode *);
+int	nfsv4_namei(struct nameidata *, struct vnode *, const char *, uint32_t,
+	    uint32_t, kauth_cred_t);
 uint32_t nfsv4_cfh_lookup(struct nfsv4_compound *, struct nfsv4_cfh *,
 	    const char *, size_t, struct nfsv4_cfh *);
 const char *nfsv4_cfh_path(const struct nfsv4_cfh *, size_t *);
@@ -106,6 +121,17 @@ uint32_t nfsv4_op_getattr(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_readdir(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_readlink(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_secinfo(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_close(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_commit(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_open(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_open_confirm(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_open_downgrade(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_read(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_write(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_renew(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_setclientid(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_setclientid_confirm(struct nfsv4_compound *,
+	    union nfsv4_args *);
 uint32_t nfsv4_op_getfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookup(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);

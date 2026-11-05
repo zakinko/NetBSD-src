@@ -473,3 +473,167 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	kmem_free(buf, NFSV4_ATTRBUF);
 	return st;
 }
+
+/*
+ * Owners on the way in.  Numbers are the only form understood, s5.9, and
+ * a string that is not one has no translation here.
+ */
+static uint32_t
+attr_parse_id(XDR *x, uint32_t *idp)
+{
+	char buf[12];
+	uint32_t len;
+	uint64_t v;
+	u_int i;
+
+	if (!xdr_u_int32_t(x, &len))
+		return NFS4ERR_BADXDR;
+	if (len == 0 || len >= sizeof(buf)) {
+		return nfsv4_xdr_skip(x, len) ? NFS4ERR_BADOWNER :
+		    NFS4ERR_BADXDR;
+	}
+	if (!xdr_opaque(x, buf, len))
+		return NFS4ERR_BADXDR;
+	if (buf[0] == '0' && len > 1)		/* "no leading zeros" */
+		return NFS4ERR_BADOWNER;
+	v = 0;
+	for (i = 0; i < len; i++) {
+		if (buf[i] < '0' || buf[i] > '9')
+			return NFS4ERR_BADOWNER;
+		v = v * 10 + (buf[i] - '0');
+	}
+	if (v > UINT32_MAX)
+		return NFS4ERR_BADOWNER;
+	*idp = (uint32_t)v;
+	return NFS4_OK;
+}
+
+static uint32_t
+attr_parse_nfstime(XDR *x, struct timespec *ts)
+{
+	uint64_t s;
+	uint32_t ns;
+
+	if (!xdr_u_int64_t(x, &s) || !xdr_u_int32_t(x, &ns))
+		return NFS4ERR_BADXDR;
+	if (ns >= 1000000000)
+		return NFS4ERR_INVAL;
+	ts->tv_sec = (time_t)(int64_t)s;
+	ts->tv_nsec = ns;
+	return NFS4_OK;
+}
+
+/* settime4; RFC 7531 s2 */
+static uint32_t
+attr_parse_settime(XDR *x, struct timespec *ts, u_int *flags)
+{
+	uint32_t how;
+
+	if (!xdr_u_int32_t(x, &how))
+		return NFS4ERR_BADXDR;
+	switch (how) {
+	case SET_TO_SERVER_TIME4:
+		vfs_timestamp(ts);
+		*flags |= VA_UTIMES_NULL;
+		return NFS4_OK;
+	case SET_TO_CLIENT_TIME4:
+		return attr_parse_nfstime(x, ts);
+	default:
+		return NFS4ERR_BADXDR;
+	}
+}
+
+/* RFC 7530 s5.7, those of access W or R W that are supported */
+static const uint64_t attr_settable =
+    BIT(FATTR4_SIZE) | BIT(FATTR4_MODE) | BIT(FATTR4_OWNER) |
+    BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_TIME_ACCESS_SET) |
+    BIT(FATTR4_TIME_CREATE) | BIT(FATTR4_TIME_MODIFY_SET);
+
+/*
+ * Read the fattr4 in the arguments into va, and the mask of what was
+ * in it into *setp.  Unknown attributes are NFS4ERR_ATTRNOTSUPP and
+ * those that cannot be set NFS4ERR_INVAL, s5.5.  attr_vals must hold
+ * exactly the values of the bitmap (RFC 7530 s2.2).  The arguments are
+ * left positioned after it, whatever happens.
+ */
+uint32_t
+nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
+    struct vattr *va, uint64_t *setp)
+{
+	XDR *x = c->c_ax;
+	uint64_t m = attr_mask(&fa->fa_mask);
+	uint32_t st, v, id;
+	u_int n, end;
+
+	vattr_null(va);
+	*setp = 0;
+	if (fa->fa_mask.bm_more || (m & ~attr_supported) != 0)
+		return NFS4ERR_ATTRNOTSUPP;
+	if ((m & ~attr_settable) != 0)
+		return NFS4ERR_INVAL;
+
+	end = XDR_GETPOS(x);
+	if (!XDR_SETPOS(x, fa->fa_pos))
+		return NFS4ERR_BADXDR;
+
+	st = NFS4_OK;
+	for (n = 0; n < 64 && st == NFS4_OK; n++) {
+		if ((m & BIT(n)) == 0)
+			continue;
+		switch (n) {
+		case FATTR4_SIZE:
+			if (!xdr_u_int64_t(x, &va->va_size))
+				st = NFS4ERR_BADXDR;
+			break;
+		case FATTR4_MODE:
+			if (!xdr_u_int32_t(x, &v))
+				st = NFS4ERR_BADXDR;
+			else if ((v & ~07777U) != 0)	/* s6.2.2 */
+				st = NFS4ERR_INVAL;
+			else
+				va->va_mode = v;
+			break;
+		case FATTR4_OWNER:
+			st = attr_parse_id(x, &id);
+			if (st == NFS4_OK)
+				va->va_uid = id;
+			break;
+		case FATTR4_OWNER_GROUP:
+			st = attr_parse_id(x, &id);
+			if (st == NFS4_OK)
+				va->va_gid = id;
+			break;
+		case FATTR4_TIME_ACCESS_SET:
+			st = attr_parse_settime(x, &va->va_atime,
+			    &va->va_vaflags);
+			break;
+		case FATTR4_TIME_CREATE:
+			st = attr_parse_nfstime(x, &va->va_birthtime);
+			break;
+		case FATTR4_TIME_MODIFY_SET:
+			st = attr_parse_settime(x, &va->va_mtime,
+			    &va->va_vaflags);
+			break;
+		}
+	}
+	if (st == NFS4_OK && XDR_GETPOS(x) != fa->fa_pos + fa->fa_len)
+		st = NFS4ERR_BADXDR;
+	if (!XDR_SETPOS(x, end))
+		st = NFS4ERR_BADXDR;
+	if (st == NFS4_OK)
+		*setp = m;
+	return st;
+}
+
+/* The bitmap of what was set, for attrset and attrsset. */
+bool
+nfsv4_attr_put_mask(XDR *x, uint64_t set)
+{
+	struct nfsv4_bitmap bm;
+
+	bm.bm_n = 2;
+	bm.bm_w[0] = W0(set);
+	bm.bm_w[1] = W1(set);
+	bm.bm_more = false;
+	return nfsv4_xdr_bitmap(x, &bm);
+}

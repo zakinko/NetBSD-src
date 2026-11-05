@@ -61,6 +61,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfs_var.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
+#include <fs/nfsv4/nfsv4_state.h>
 
 /*
  * Not from the RFC.  NFSV4_NTHREADS is how many operations can sleep at
@@ -84,18 +85,30 @@ struct nfsv4_opdesc {
 static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
+	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
+	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETATTR]	= { nfsv4_op_getattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETFH]	= { nfsv4_op_getfh,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUP]	= { nfsv4_op_lookup,	NFSV4_OPF_FH },
 	[NFSV4_OP_LOOKUPP]	= { nfsv4_op_lookupp,	NFSV4_OPF_FH },
+	[NFSV4_OP_OPEN]		= { nfsv4_op_open,	NFSV4_OPF_FH },
+	[NFSV4_OP_OPEN_CONFIRM]	= { nfsv4_op_open_confirm, NFSV4_OPF_FH },
+	[NFSV4_OP_OPEN_DOWNGRADE] =
+				  { nfsv4_op_open_downgrade, NFSV4_OPF_FH },
 	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	0 },
 	[NFSV4_OP_PUTPUBFH]	= { nfsv4_op_putpubfh,	0 },
 	[NFSV4_OP_PUTROOTFH]	= { nfsv4_op_putrootfh,	0 },
+	[NFSV4_OP_READ]		= { nfsv4_op_read,	NFSV4_OPF_FH },
 	[NFSV4_OP_READDIR]	= { nfsv4_op_readdir,	NFSV4_OPF_FH },
 	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
+	[NFSV4_OP_RENEW]	= { nfsv4_op_renew,	0 },
 	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
 	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO]	= { nfsv4_op_secinfo,	NFSV4_OPF_FH },
+	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid, 0 },
+	[NFSV4_OP_SETCLIENTID_CONFIRM] =
+				  { nfsv4_op_setclientid_confirm, 0 },
+	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH },
 };
 
 static struct oncrpc_svc *nfsv4_svc;
@@ -199,6 +212,7 @@ nfsv4_compound(struct oncrpc_req *rq)
 	c.c_ax = ax;
 	c.c_rx = rx;
 	a = kmem_alloc(sizeof(*a), KM_SLEEP);
+	c.c_rbuf = kmem_alloc(NFSV4_REPLAY_MAX, KM_SLEEP);
 
 	/* As versions 2 and 3: the exports hold still for the whole call. */
 	netexport_rdlock();
@@ -249,7 +263,9 @@ nfsv4_compound(struct oncrpc_req *rq)
 out:
 	nfsv4_cfh_clear(&c.c_cur);
 	nfsv4_cfh_clear(&c.c_saved);
+	nfsv4_cfh_clear(&c.c_scratch);
 	netexport_rdunlock();
+	kmem_free(c.c_rbuf, NFSV4_REPLAY_MAX);
 	kmem_free(a, sizeof(*a));
 	return disp;
 }
@@ -336,12 +352,16 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
+		nfsv4_state_init();
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
-		if (error != 0)
+		if (error != 0) {
+			nfsv4_state_fini();
 			return error;
+		}
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
 			oncrpc_svc_destroy(nfsv4_svc);
+			nfsv4_state_fini();
 			return error;
 		}
 		nfsv4_sysctl_init();
@@ -350,6 +370,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
 		oncrpc_svc_destroy(nfsv4_svc);
+		nfsv4_state_fini();
 		return 0;
 	default:
 		return ENOTTY;

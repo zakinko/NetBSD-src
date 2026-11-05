@@ -5,6 +5,7 @@ defflag				ONCRPC: xdr
 define	xdr
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_msg.c		oncrpc
+file	oncrpc/oncrpc_rm.c		oncrpc
 file	oncrpc/xdr_mbuf.c		xdr
 file	oncrpc/xdr_module.c		xdr
 

@@ -6,6 +6,10 @@ on:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
       - 'sys/oncrpc/**'
+      - 'sys/kern/vfs_lockf.c'
+      - 'sys/sys/lockf.h'
+      - 'sys/ufs/ffs/ffs_inode.c'
+      - 'sys/fs/tmpfs/tmpfs_subr.c'
       - 'tests/fs/nfsv4/**'
       - 'ci/nfsv4/**'
       - '.github/workflows/nfsv4.yml'
@@ -22,22 +26,29 @@ jobs:
         with:
           fetch-depth: 60
       # The kernel holds nothing of sys/fs/nfsv4, only the module does,
-      # so it stays good across pushes until the base moves.
+      # so it stays good across pushes until the base moves or what the
+      # server needs of the kernel changes.  The tools outlast that.
+      - uses: actions/cache/restore@v4
+        id: tools
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
       - uses: actions/cache/restore@v4
         id: kernel
         with:
-          path: |
-            nb/tools
-            nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base') }}
+          path: nb/netbsd
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
+      - uses: actions/cache/save@v4
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
       - uses: actions/cache/save@v4
         if: steps.kernel.outputs.cache-hit != 'true'
         with:
-          path: |
-            nb/tools
-            nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base') }}
+          path: nb/netbsd
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
@@ -54,7 +65,7 @@ jobs:
   test:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,19 +84,36 @@ jobs:
           sync: rsync
           copyback: false
           run: uname -a
+      - name: ctime on the stock kernel, as the control
+        run: |
+          ssh netbsd 'mkdir -p /var/tmp/nfsv4'
+          scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - name: ctime on the kernel under test
+        run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
           scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+      - name: Tunnel to the server
+        run: |
+          ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+              -L 2049:127.0.0.1:2049 netbsd
+          sleep 2
+      - name: The Linux client
+        run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
       - name: What the kernel said
         if: always()
         run: |
           ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; ps -ax | grep -c nfsv4; dmesg | tail -40" | tee out/kernel.txt || echo no answer
       - name: Summarise
         if: always()
-        run: python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+        run: |
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,5 +121,7 @@ jobs:
           path: |
             out/pynfs*
             out/summary.txt
+            out/ctime-*.txt
+            out/linux-client.txt
             out/kernel.txt
           retention-days: 30

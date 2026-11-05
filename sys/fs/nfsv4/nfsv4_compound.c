@@ -706,6 +706,7 @@ out:
 	netexport_rdunlock();
 	if (c.c_setacl != NULL)
 		acl_free(c.c_setacl);
+	nfsv4_label_free(&c);
 	kmem_free(c.c_rbuf, NFSV4_REPLAY_MAX);
 	kmem_free(a, sizeof(*a));
 	return disp;

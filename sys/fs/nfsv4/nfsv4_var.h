@@ -119,6 +119,8 @@ struct nfsv4_compound {
 	struct nfsv4_xstore c_xs;
 	struct nfsv4_attrov c_ov;	/* for the GETATTR going on */
 	bool		c_probed;	/* fs_locations of an absent fs, s9.14.3 */
+	char		*c_setlabel;	/* the same, for sec_label */
+	u_int		c_setlabellen;
 	uint32_t	c_minor;
 	uint32_t	c_numops;
 	uint32_t	c_opi;		/* index of the current operation */
@@ -174,6 +176,9 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
  * has the most of them: ACL_MAX_ENTRIES of 28 bytes at the longest.
  */
 #define	NFSV4_ATTRBUF		8192
+
+/* slai_data<>, a choice: RFC 7862 s12.2.4 leaves it to the LFS. */
+#define	NFSV4_LABEL_MAX		4096
 
 #define	NFSV4_IMPL_MAX		64
 extern char nfsv4_impl_domain[], nfsv4_impl_name[];
@@ -348,6 +353,12 @@ uint32_t nfsv4_op_read_plus(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_seek(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_write_same(struct nfsv4_compound *, union nfsv4_args *);
 bool	nfsv4_xattr_supported(struct vnode *, kauth_cred_t);
+bool	nfsv4_label_supported(struct vnode *);
+bool	nfsv4_label_put(XDR *, struct vnode *);
+uint32_t nfsv4_label_parse(struct nfsv4_compound *, XDR *);
+uint32_t nfsv4_label_set(struct nfsv4_compound *, struct vnode *,
+	    kauth_cred_t);
+void	nfsv4_label_free(struct nfsv4_compound *);
 uint32_t nfsv4_op_getxattr(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_listxattrs(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_removexattr(struct nfsv4_compound *, union nfsv4_args *);

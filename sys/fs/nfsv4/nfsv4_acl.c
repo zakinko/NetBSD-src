@@ -300,10 +300,12 @@ nfsv4_acl_set(struct nfsv4_compound *c, struct vnode *vp, kauth_cred_t cred)
 	if (st0 != NFS4_OK)
 		return st0;
 	struct acl *acl = c->c_setacl;
+	uint32_t st;
 	int error;
 
-	if (acl == NULL)
-		return NFS4_OK;
+	st = nfsv4_label_set(c, vp, cred);
+	if (acl == NULL || st != NFS4_OK)
+		return st;
 	c->c_setacl = NULL;
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	error = VOP_SETACL(vp, ACL_TYPE_NFS4, acl, cred);

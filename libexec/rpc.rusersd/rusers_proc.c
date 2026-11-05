@@ -253,7 +253,8 @@ do_names_2(int all)
 		if ((idle = getidle(e->line, e->host)) > 0 && !all)
 			continue;
 		utmp_idlep[nu] = &utmp_idle[nu];
-		utmp_idle[nu].ui_utmp.ut_time = e->tv.tv_sec;
+		/* An XDR int on the wire, whatever the size of the long. */
+		utmp_idle[nu].ui_utmp.ut_time = (int32_t)e->tv.tv_sec;
 		utmp_idle[nu].ui_idle = idle;
 		(void)strncpy(utmp_idle[nu].ui_utmp.ut_line, e->line,
 		    sizeof(utmp_idle[nu].ui_utmp.ut_line));

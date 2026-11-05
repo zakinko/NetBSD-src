@@ -178,7 +178,8 @@ rusers_reply(char *replyp, struct netbuf *raddrp, struct netconfig *nconf)
 		    HOSTWID, host, 
 		    up->uia_arr[x]->ui_utmp.ut_line);
 
-		uttime = up->uia_arr[x]->ui_utmp.ut_time;
+		/* rusersd sends the low 32 bits; they are not negative. */
+		uttime = (uint32_t)up->uia_arr[x]->ui_utmp.ut_time;
 		snprintf(date, sizeof(date), "%s",
 		    &(ctime(&uttime))[4]);
 

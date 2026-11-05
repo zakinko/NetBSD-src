@@ -328,7 +328,7 @@ xdr_fh(XDR *xdrsp, struct nfhret *np)
 			return (0);
 		if (!xdr_opaque(xdrsp, (caddr_t)np->nfh, np->fhsize))
 			return (0);
-		if (!xdr_long(xdrsp, &authcnt))
+		if (!xdr_long(xdrsp, &authcnt) || authcnt < 0)
 			return (0);
 		for (i = 0; i < authcnt; i++) {
 			if (!xdr_long(xdrsp, &auth))

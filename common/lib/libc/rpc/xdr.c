@@ -215,9 +215,16 @@ xdr_long(XDR *xdrs, long *lp)
 
 	switch (xdrs->x_op) {
 	case XDR_ENCODE:
+		/* An XDR int is 32 bits, RFC 4506 s4.1, whatever a long is. */
+		if (*lp != (int32_t)*lp)
+			return (FALSE);
 		return (XDR_PUTLONG(xdrs, lp));
 	case XDR_DECODE:
-		return (XDR_GETLONG(xdrs, lp));
+		if (!XDR_GETLONG(xdrs, lp))
+			return (FALSE);
+		/* x_getlong does not sign extend, so -1 came back as 2^32-1. */
+		*lp = (int32_t)*lp;
+		return (TRUE);
 	case XDR_FREE:
 		return (TRUE);
 	}
@@ -238,6 +245,9 @@ xdr_u_long(XDR *xdrs, u_long *ulp)
 
 	switch (xdrs->x_op) {
 	case XDR_ENCODE:
+		/* RFC 4506 s4.2. */
+		if (*ulp != (uint32_t)*ulp)
+			return (FALSE);
 		return (XDR_PUTLONG(xdrs, (long *)ulp));
 	case XDR_DECODE:
 		return (XDR_GETLONG(xdrs, (long *)ulp));

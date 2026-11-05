@@ -363,9 +363,10 @@ void *
 rpcbproc_gettime_com(void *arg __unused, struct svc_req *rqstp __unused,
     SVCXPRT *transp __unused, rpcvers_t rpcbversnum __unused)
 {
-	static time_t curtime;
+	/* What the callers give to xdr_u_long, which is not a time_t. */
+	static u_long curtime;
 
-	(void) time(&curtime);
+	curtime = (uint32_t)time(NULL);
 	return &curtime;
 }
 

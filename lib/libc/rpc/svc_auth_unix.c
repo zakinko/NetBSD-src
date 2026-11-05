@@ -89,7 +89,7 @@ _svcauth_unix(struct svc_req *rqst, struct rpc_msg *msg)
 	xdrmem_create(&xdrs, msg->rm_call.cb_cred.oa_base, auth_len,XDR_DECODE);
 	buf = XDR_INLINE(&xdrs, auth_len);
 	if (buf != NULL) {
-		aup->aup_time = IXDR_GET_INT32(buf);
+		aup->aup_time = IXDR_GET_U_INT32(buf);
 		str_len = (size_t)IXDR_GET_U_INT32(buf);
 		if (str_len > MAX_MACHINE_NAME) {
 			stat = AUTH_BADCRED;

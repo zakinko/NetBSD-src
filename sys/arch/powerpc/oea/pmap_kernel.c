@@ -72,17 +72,22 @@ pmap_alloc_poolpage(int flags)
 
 	if (__predict_false(!uvm.page_init_done)) {
 		struct vm_page *pg;
-		paddr_t pa __diagused;
 
 		pg = uvm_pagealloc(NULL, 0, NULL, flags);
 		KASSERT(pg != NULL);
-		pa = VM_PAGE_TO_PHYS(pg);
-		KASSERT(pa < PMAP_DIRECT_MAPPED_LEN);
+#if !defined(PPC_OEA64_SLB)
+		KASSERT(VM_PAGE_TO_PHYS(pg) < PMAP_DIRECT_MAPPED_LEN);
+#endif
 		return pg;
 	}
 
+#if defined(PPC_OEA64_SLB)
+	/* PMAP_MAP_POOLPAGE() reaches every page, through the DMAP above */
+	return uvm_pagealloc(NULL, 0, NULL, flags);
+#else
 	return uvm_pagealloc_strat(NULL, 0, NULL, flags, UVM_PGA_STRAT_ONLY,
 	    VM_FREELIST_DIRECT_MAPPED);
+#endif
 }
 #endif /* !PPC_OEA64 */
 

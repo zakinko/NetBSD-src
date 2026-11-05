@@ -120,13 +120,22 @@ static u_int mem_cnt, avail_cnt;
 
 #if defined(PMAP_OEA64_SLB)
 /*
- * ESIDs 1 through this one are mapped 1:1 with large pages, so their SLB
- * entries carry L.  Zero until pmap_setup_segment0_map() has laid them
- * down, which is what keeps an entry from claiming a size the page table
- * does not have.  Segment 0 is not among them: it is mapped with 4KB
- * pages and the kernel is running out of it before any of this.
+ * Physical memory from segment 1 up to this is mapped at PMAP_DMAP_BASE
+ * with large pages, so the SLB entries of those ESIDs carry L.  Zero
+ * until pmap_setup_segment0_map() has laid them down, which is what
+ * keeps an entry from claiming a size the page table does not have.
+ * Segment 0 is not among them: it is mapped 1:1 with 4KB pages and the
+ * kernel is running out of it before any of this.
  */
-static register_t pmap_slb_large_esid;
+static paddr_t pmap_dmap_end;
+
+static inline bool
+pmap_dmap_large_p(vaddr_t va)
+{
+
+	return va >= PMAP_DMAP_BASE + SEGMENT_LENGTH &&
+	    va - PMAP_DMAP_BASE < pmap_dmap_end;
+}
 
 /*
  * 2^m, the implemented real address.  m = 42: 970FX User's Manual v1.7,
@@ -1668,12 +1677,12 @@ pmap_slb_set(struct slb *slb, register_t vsid, register_t esid,
 	 * The segments pmap_setup_segment0_map() laid down with 16MB
 	 * pages have to say so here; nothing in the PTE records a size,
 	 * so this bit is the only thing that tells the processor how to
-	 * read them.  pmap_slb_large_esid is zero until those entries
+	 * read them.  pmap_dmap_end is zero until those entries
 	 * exist, so this cannot fire early.  Only the kernel's: a user
 	 * segment at the same ESID is mapped in 4KB pages under its own
 	 * VSID, and marking it large made every fetch from it miss.
 	 */
-	if (kernel && esid != 0 && esid <= pmap_slb_large_esid)
+	if (kernel && pmap_dmap_large_p(esid << ADDR_SR_SHFT))
 		v |= SLBV_LARGE;
 
 	slb->slb_v = v;
@@ -3368,16 +3377,15 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 #if defined(PMAP_OEA64_SLB)
 	/*
 	 * pmap_setup_segment0_map() enters the direct map straight into
-	 * the table, with no pvo: all of segment 0 in 4KB pages and the
-	 * segments up to pmap_slb_large_esid in 16MB ones.  Looking for a
-	 * pvo there found none, and bus_dmamap_load() of a pool page
-	 * panicked in pmap_pvo_find_va().
+	 * the table, with no pvo: all of segment 0 in 4KB pages 1:1 and the
+	 * rest at PMAP_DMAP_BASE in 16MB ones.  Looking for a pvo there
+	 * found none, and bus_dmamap_load() of a pool page panicked in
+	 * pmap_pvo_find_va().
 	 */
 	if (pm == pmap_kernel() &&
-	    ((va >> ADDR_SR_SHFT) == 0 ||
-	     (va >> ADDR_SR_SHFT) <= pmap_slb_large_esid)) {
+	    ((va >> ADDR_SR_SHFT) == 0 || pmap_dmap_large_p(va))) {
 		if (pap)
-			*pap = va;
+			*pap = PMAP_UNMAP_POOLPAGE(va);
 		PMAP_UNLOCK();
 		return true;
 	}
@@ -4182,12 +4190,31 @@ pmap_steal_memory(vsize_t vsize, vaddr_t *vstartp, vaddr_t *vendp)
 		}
 	}
 
+#if defined(PMAP_OEA64_SLB)
+	/*
+	 * Too big for segment 0: anywhere, through the DMAP.  What is
+	 * stolen here is only ever reached with translation on.
+	 */
+	for (bank = uvm_physseg_get_first();
+	     pa == 0 && uvm_physseg_valid_p(bank);
+	     bank = uvm_physseg_get_next(bank)) {
+		start = uvm_physseg_get_start(bank);
+		end = uvm_physseg_get_end(bank);
+		if ((end - start) >= npgs)
+			pa = ptoa(start);
+	}
+#endif
+
 	if (pa == 0)
 		panic("pmap_steal_memory: no appropriate memory to steal!");
 
 	uvm_physseg_unplug(start, npgs);
 
+#if defined(PMAP_OEA64_SLB)
+	va = PMAP_MAP_POOLPAGE(pa);
+#else
 	va = (vaddr_t) pa;
+#endif
 	memset((void *) va, 0, size);
 	pmap_pages_stolen += npgs;
 #ifdef DEBUG
@@ -4404,9 +4431,10 @@ pmap_setup_segment0_map(int use_large_pages, ...)
 
 #if defined(PMAP_OEA64_SLB)
     /*
-     * Everything above that segment is direct-mapped too, because
-     * PMAP_DIRECT_MAPPED_LEN says so and the loader puts things -- the
-     * symbol table among them -- wherever Open Firmware gave it room.
+     * Everything above that segment is mapped at PMAP_DMAP_BASE (see
+     * <powerpc/oea/pmap.h> for why not 1:1), for pool pages and for what
+     * the loader put wherever Open Firmware gave it room -- the symbol
+     * table among them.
      * One segment of 4KB entries is 65536 PTEs; doing the same to a
      * gigabyte would be a quarter of a million more, and to the 4TB the
      * 970FX can address, unthinkable.  So these use the 16MB pages the
@@ -4440,10 +4468,17 @@ pmap_setup_segment0_map(int use_large_pages, ...)
 		    (unsigned long)pmap_slb_real_limit());
 		top = pmap_slb_real_limit();
 	}
+	/* The DMAP must end below the copy window and the kernel's space */
+	if (top > (vaddr_t)USER_ADDR - PMAP_DMAP_BASE) {
+		printf("pmap: memory from %#lx up is not direct-mapped\n",
+		    (unsigned long)((vaddr_t)USER_ADDR - PMAP_DMAP_BASE));
+		top = (vaddr_t)USER_ADDR - PMAP_DMAP_BASE;
+	}
 
 	for (va = SEGMENT_LENGTH; va < top; va += 1UL << ADDR_LPIDX_SHFT) {
-		ptegidx = va_to_pteg_large(pmap_kernel(), va);
-		pmap_pte_create_large(&pte, pmap_kernel(), va, va | pte_lo);
+		ptegidx = va_to_pteg_large(pmap_kernel(), PMAP_DMAP_BASE + va);
+		pmap_pte_create_large(&pte, pmap_kernel(),
+		    PMAP_DMAP_BASE + va, va | pte_lo);
 		(void)pmap_pte_insert(ptegidx, &pte);
 	}
 
@@ -4452,7 +4487,7 @@ pmap_setup_segment0_map(int use_large_pages, ...)
 	 * an entry claims a page size the table has no entries for.
 	 */
 	if (top > SEGMENT_LENGTH)
-		pmap_slb_large_esid = (top - 1) >> ADDR_SR_SHFT;
+		pmap_dmap_end = top;
     }
 #endif /* PMAP_OEA64_SLB */
 

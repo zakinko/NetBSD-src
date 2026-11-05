@@ -133,19 +133,30 @@ __BEGIN_DECLS
     ((vaddr_t)SEGMENT_LENGTH * (PMAP_DIRECT_MAPPED_SR + 1))
 #elif defined(PPC_OEA64_SLB)
 /*
- * pmap_setup_segment0_map() maps all of physical memory 1:1, so every
- * real address is direct-mapped, and the architecture's real address
- * has 62 bits (Book III 2.01, Figure 16).  That is a bound on every
- * implementation, which may have fewer (4.5.1); the one this kernel
- * actually has is applied where the mapping is laid down.  The kernel's
- * own virtual space starts at VM_MIN_KERNEL_ADDRESS, far above either.
+ * Only segment 0 is mapped 1:1, as with segment registers.  The SLB is
+ * not reloaded on entry to the kernel, so the user's entries are still in
+ * it there, and the user's address space starts at segment 1 -- the ABI
+ * links programs at 0x10000000.  Memory 1:1 above segment 0 was reached
+ * through whichever entry held that ESID, the user's included: the
+ * kernel took a DSI on its own pool pages once they came from above
+ * 256MB.
+ *
+ * The rest of physical memory is mapped at PMAP_DMAP_BASE + pa, in
+ * ESIDs no user address has (VM_MAXUSER_ADDRESS is 2^48).  The base is
+ * this kernel's choice, not the architecture's: the lowest address of
+ * the upper 2^20 ESIDs, the ones va_to_vsid() gives kernel VSIDs to,
+ * below USER_ADDR and the kernel's own space.  PMAP_MAP_POOLPAGE() hands
+ * out either.  Whatever must be reached with translation off and on
+ * alike -- the page table, the pvos, uareas -- comes from below
+ * PMAP_DIRECT_MAPPED_LEN.
  *
  * Left undefined, <powerpc/pmap.h> makes it ~0UL, which puts the whole
  * kernel map inside the direct region: pmap_pvo_find_va() then panics
  * on uvm's "not mapped yet" question, and the range checks against
  * this bound in pmap_bootstrap() can never fire.
  */
-#define	PMAP_DIRECT_MAPPED_LEN	((vaddr_t)1 << 62)
+#define	PMAP_DIRECT_MAPPED_LEN	SEGMENT_LENGTH
+#define	PMAP_DMAP_BASE		((vaddr_t)0xffffUL << 48)
 #endif
 
 #if defined (PPC_OEA) || defined (PPC_OEA64_BRIDGE)
@@ -227,9 +238,16 @@ static __inline paddr_t vtophys (vaddr_t);
  * VA==PA all at once.  But pmap_copy_page() and pmap_zero_page() will have
  * this problem, too.
  */
-#if !defined(PPC_OEA64)
+#if defined(PPC_OEA64_SLB)
+#define	PMAP_MAP_POOLPAGE(pa)	((pa) < PMAP_DIRECT_MAPPED_LEN ? \
+				    (vaddr_t)(pa) : PMAP_DMAP_BASE + (pa))
+#define	PMAP_UNMAP_POOLPAGE(va)	((va) < PMAP_DMAP_BASE ? \
+				    (paddr_t)(va) : (va) - PMAP_DMAP_BASE)
+#elif !defined(PPC_OEA64)
 #define	PMAP_MAP_POOLPAGE(pa)	(pa)
 #define	PMAP_UNMAP_POOLPAGE(pa)	(pa)
+#endif
+#if !defined(PPC_OEA64)
 #define POOL_VTOPHYS(va)	vtophys((vaddr_t) va)
 
 #define	PMAP_ALLOC_POOLPAGE(flags)	pmap_alloc_poolpage(flags)

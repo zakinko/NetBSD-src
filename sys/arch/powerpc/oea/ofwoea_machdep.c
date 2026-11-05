@@ -379,6 +379,13 @@ ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
 #endif
 
 #if NKSYMS || defined(DDB) || defined(MODULAR)
+#if defined(PPC_OEA64_SLB)
+	/* Wherever the loader put them, which may be above segment 0 */
+	if (startsym != NULL) {
+		startsym = (void *)PMAP_MAP_POOLPAGE((paddr_t)startsym);
+		endsym = (void *)PMAP_MAP_POOLPAGE((paddr_t)endsym);
+	}
+#endif
 	ksyms_addsyms_elf((int)((uintptr_t)endsym - (uintptr_t)startsym), startsym, endsym);
 #endif
 

@@ -31,17 +31,10 @@
  *
  * The locks themselves are lockf's, reached by VOP_ADVLOCK with neither
  * F_POSIX nor F_FLOCK and a lock owner as the id, which lockf is fine
- * with.  Such locks do conflict with those of local processes.  Three
- * things cannot be had from it without changing it:
- *
- *	the owner of a conflicting lock, for LOCK4denied, so clientid 0
- *	and an empty owner are given
- *
- *	whether an owner holds anything, for RELEASE_LOCKOWNER, so
- *	st_held remembers that the state has seen a LOCK and no LOCKU of
- *	the whole file since
- *
- *	offsets from 2^63 up, which off_t cannot say
+ * with.  Such locks do conflict with those of local processes.  F_GETLKID
+ * and F_HASLK say whose a lock is and whether an owner has one.  What
+ * cannot be had from it is an offset from 2^63 up, which off_t cannot
+ * say.
  */
 
 #include <sys/cdefs.h>
@@ -50,6 +43,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/param.h>
 #include <sys/fcntl.h>
 #include <sys/kmem.h>
+#include <sys/lockf.h>
 #include <sys/systm.h>
 #include <sys/vnode.h>
 
@@ -98,11 +92,19 @@ lock_type(uint32_t type, short *fltype)
 	}
 }
 
-/* Encode LOCK4denied from what F_GETLK says, s16.10.5. */
+/*
+ * Encode LOCK4denied from what F_GETLKID says, s16.10.5.  The id is
+ * looked for among the owners, not followed.  One that is not there is a
+ * local process or an open file: the RFC has no owner for those, so
+ * clientid 0 and an empty owner are the server's choice.
+ */
 static u_int
-lock_denied(struct nfsv4_compound *c, const struct flock *fl)
+lock_denied(struct nfsv4_compound *c, const struct lf_query *q)
 {
+	const struct flock *fl = &q->lfq_fl;
 	struct nfsv4_lock_denied ld;
+	struct nfsv4_owner_s *sw;
+	u_int len;
 	XDR rb;
 
 	memset(&ld, 0, sizeof(ld));
@@ -110,9 +112,17 @@ lock_denied(struct nfsv4_compound *c, const struct flock *fl)
 	ld.ld_length = fl->l_len == 0 ? UINT64_MAX : (uint64_t)fl->l_len;
 	ld.ld_type = fl->l_type == F_WRLCK ? WRITE_LT : READ_LT;
 	ld.ld_owner = (const uint8_t *)"";
+	mutex_enter(&nfsv4_state_lock);
+	if ((sw = nfsv4_owner_byid(q->lfq_id)) != NULL) {
+		ld.ld_clientid = sw->sw_client->cl_id;
+		ld.ld_ownerlen = sw->sw_len;
+		ld.ld_owner = sw->sw_data;
+	}
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	(void)nfsv4_xdr_lock_denied(&rb, &ld);
-	return xdr_getpos(&rb);
+	len = xdr_getpos(&rb);
+	mutex_exit(&nfsv4_state_lock);
+	return len;
 }
 
 /*
@@ -125,6 +135,7 @@ lock_set(struct nfsv4_compound *c, struct nfsv4_owner_s *lo, struct flock *fl,
     u_int *rlen)
 {
 	struct vnode *vp = c->c_cur.cf_vp;
+	struct lf_query q;
 	struct flock t;
 	int error;
 
@@ -135,10 +146,15 @@ lock_set(struct nfsv4_compound *c, struct nfsv4_owner_s *lo, struct flock *fl,
 	if (error != EAGAIN)
 		return error == ENOLCK ? NFS4ERR_RESOURCE :
 		    nfsv4_errno(error);
-	t = *fl;
-	if (VOP_ADVLOCK(vp, lo, F_GETLK, &t, 0) != 0 || t.l_type == F_UNLCK)
-		t = *fl;
-	*rlen = lock_denied(c, &t);
+	/* It may have gone since, or the file system not know the op. */
+	q.lfq_fl = *fl;
+	q.lfq_id = NULL;
+	if (VOP_ADVLOCK(vp, lo, F_GETLKID, &q.lfq_fl, 0) != 0 ||
+	    q.lfq_fl.l_type == F_UNLCK) {
+		q.lfq_fl = *fl;
+		q.lfq_id = NULL;
+	}
+	*rlen = lock_denied(c, &q);
 	return NFS4ERR_DENIED;
 }
 
@@ -199,7 +215,12 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 				nfsv4_owner_busy(lo);
 				seq = nfsv4_seq_check(lo, la->lock_seqid,
 				    NFSV4_OP_LOCK);
-				/* s16.10.4: this owner has state here. */
+				/*
+				 * s16.10.4: this owner has state here, and
+				 * the boolean should not be set.  pynfs's
+				 * LOCK24 does that after an OPEN upgrade and
+				 * wants NFS4_OK; the RFC's BAD_SEQID stands.
+				 */
 				LIST_FOREACH(t, &lo->sw_states, st_olist) {
 					if (t->st_open == ost)
 						st = t;
@@ -271,7 +292,6 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 			LIST_INSERT_HEAD(&ost->st_locks, st, st_plist);
 		} else
 			st->st_seqid++;
-		st->st_held = true;
 		nfsv4_stateid_out(st, &si);
 		mutex_exit(&nfsv4_state_lock);
 		xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
@@ -299,7 +319,7 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_lockt *la = &a->lockt;
 	struct nfsv4_client *cl;
 	struct nfsv4_owner_s *lo;
-	struct flock fl;
+	struct lf_query q;
 	const void *id;
 	uint32_t status;
 	short type;
@@ -310,7 +330,7 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (status == NFS4_OK)
 		status = lock_type(la->type, &type);
 	if (status == NFS4_OK)
-		status = lock_range(la->offset, la->length, &fl);
+		status = lock_range(la->offset, la->length, &q.lfq_fl);
 	if (status != NFS4_OK)
 		return status;
 
@@ -330,13 +350,14 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 	 * lo is only compared with.
 	 */
 	id = lo != NULL ? (const void *)lo : (const void *)c;
-	fl.l_type = type;
-	error = VOP_ADVLOCK(c->c_cur.cf_vp, __UNCONST(id), F_GETLK, &fl, 0);
+	q.lfq_fl.l_type = type;
+	error = VOP_ADVLOCK(c->c_cur.cf_vp, __UNCONST(id), F_GETLKID,
+	    &q.lfq_fl, 0);
 	if (error != 0)
 		return nfsv4_errno(error);
-	if (fl.l_type == F_UNLCK)
+	if (q.lfq_fl.l_type == F_UNLCK)
 		return NFS4_OK;
-	rlen = lock_denied(c, &fl);
+	rlen = lock_denied(c, &q);
 	return XDR_PUTBYTES(c->c_rx, c->c_rbuf, rlen) ? NFS4ERR_DENIED :
 	    NFS4ERR_RESOURCE;
 }
@@ -392,8 +413,6 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (status == NFS4_OK) {
 		mutex_enter(&nfsv4_state_lock);
 		st->st_seqid++;
-		if (la->offset == 0 && la->length == UINT64_MAX)
-			st->st_held = false;
 		nfsv4_stateid_out(st, &si);
 		mutex_exit(&nfsv4_state_lock);
 		xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
@@ -403,6 +422,47 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 	return nfsv4_seq_reply(c, lo, la->seqid, NFSV4_OP_LOCKU, status, rlen);
 }
 
+/*
+ * Does lo hold a lock on any file.  It is busy, so it keeps its states
+ * and gets no new ones, but one can lose its file with the open it came
+ * under, so the list is gone over afresh after each VOP.
+ */
+static bool
+lock_owner_held(struct nfsv4_owner_s *lo)
+{
+	struct nfsv4_state *st;
+	struct vnode *vp;
+	struct flock fl;
+	bool held = false;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+	KASSERT(lo->sw_busy);
+
+	LIST_FOREACH(st, &lo->sw_states, st_olist)
+		st->st_asked = false;
+	while (!held) {
+		LIST_FOREACH(st, &lo->sw_states, st_olist) {
+			if (!st->st_asked && st->st_file != NULL)
+				break;
+		}
+		if (st == NULL)
+			break;
+		st->st_asked = true;
+		vp = st->st_file->f_vp;
+		vref(vp);
+		mutex_exit(&nfsv4_state_lock);
+		memset(&fl, 0, sizeof(fl));
+		fl.l_whence = SEEK_SET;
+		fl.l_type = F_WRLCK;
+		if (VOP_ADVLOCK(vp, lo, F_HASLK, &fl, 0) != 0 ||
+		    fl.l_type != F_UNLCK)
+			held = true;
+		vrele(vp);
+		mutex_enter(&nfsv4_state_lock);
+	}
+	return held;
+}
+
 /* RFC 7530 s16.37 */
 uint32_t
 nfsv4_op_release_lockowner(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -410,7 +470,6 @@ nfsv4_op_release_lockowner(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_owner *ow = &a->release_lockowner.owner;
 	struct nfsv4_client *cl;
 	struct nfsv4_owner_s *lo;
-	struct nfsv4_state *st;
 	struct nfsv4_reap reap;
 	uint32_t status;
 
@@ -421,10 +480,8 @@ nfsv4_op_release_lockowner(struct nfsv4_compound *c, union nfsv4_args *a)
 	    (lo = nfsv4_owner_find(cl, NFSV4_OWNER_LOCK, ow->ow_data,
 	    ow->ow_len)) != NULL) {
 		nfsv4_owner_busy(lo);
-		LIST_FOREACH(st, &lo->sw_states, st_olist) {
-			if (st->st_held)
-				status = NFS4ERR_LOCKS_HELD;
-		}
+		if (lock_owner_held(lo))
+			status = NFS4ERR_LOCKS_HELD;
 		if (status == NFS4_OK)
 			nfsv4_owner_free(lo, &reap);
 		else

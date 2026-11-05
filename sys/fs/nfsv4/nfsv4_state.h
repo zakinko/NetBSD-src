@@ -117,7 +117,7 @@ struct nfsv4_state {
 	uint32_t	st_deny;
 	uint32_t	st_accbits;	/* each access ever opened with */
 	uint32_t	st_denybits;
-	bool		st_held;	/* lock, may hold locks */
+	bool		st_asked;	/* lock, by lock_owner_held() */
 	struct vnode	*st_reapvp;	/* a reference, while reaping */
 	bool		st_free;	/* reaping ends it */
 	bool		st_closed;	/* kept for a resent CLOSE */
@@ -149,6 +149,8 @@ struct nfsv4_owner_s *
 	    const uint8_t *, uint32_t);
 void	nfsv4_owner_busy(struct nfsv4_owner_s *);
 void	nfsv4_owner_idle(struct nfsv4_owner_s *);
+struct nfsv4_owner_s *
+	nfsv4_owner_byid(const void *);
 enum nfsv4_seq
 	nfsv4_seq_check(const struct nfsv4_owner_s *, uint32_t, uint32_t);
 struct nfsv4_state *

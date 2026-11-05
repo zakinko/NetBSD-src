@@ -166,6 +166,27 @@ nfsv4_owner_add(struct nfsv4_client *cl, struct nfsv4_owner_s **spare,
 	return sw;
 }
 
+/*
+ * The lock owner that gave id to lockf, if it still is one.  A linear
+ * search, for a denied lock; id is not to be trusted to point to one.
+ */
+struct nfsv4_owner_s *
+nfsv4_owner_byid(const void *id)
+{
+	struct nfsv4_client *cl;
+	struct nfsv4_owner_s *sw;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
+		LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+			if (sw == id && sw->sw_type == NFSV4_OWNER_LOCK)
+				return sw;
+		}
+	}
+	return NULL;
+}
+
 void
 nfsv4_owner_busy(struct nfsv4_owner_s *sw)
 {
@@ -716,6 +737,11 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	    time_uptime > conf->cl_expire))
 		dead = conf;
 
+	/*
+	 * s16.33.5: the principal differs and the lease is in force, whether
+	 * or not the client has state.  pynfs's CID2 wants NFS4_OK when it
+	 * has none, which the RFC does not say.
+	 */
 	if (conf != NULL && dead == NULL && conf->cl_uid != uid) {
 		ca = conf->cl_cb;
 		mutex_exit(&nfsv4_state_lock);

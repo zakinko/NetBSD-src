@@ -536,7 +536,7 @@ verify_same(struct nfsv4_compound *c, const struct nfsv4_fattr *fa, bool *same)
 	    (fa->fa_mask.bm_n > 0 &&
 	    (fa->fa_mask.bm_w[0] & (1U << FATTR4_RDATTR_ERROR)) != 0))
 		return NFS4ERR_INVAL;
-	if (!nfsv4_attr_supported(&fa->fa_mask))
+	if (!nfsv4_attr_supported(&fa->fa_mask, c->c_cur.cf_vp))
 		return NFS4ERR_ATTRNOTSUPP;
 
 	mine = kmem_alloc(NFSV4_ATTRBUF, KM_SLEEP);

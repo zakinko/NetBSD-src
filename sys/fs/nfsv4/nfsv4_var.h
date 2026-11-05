@@ -116,7 +116,7 @@ uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    struct nfsv4_bitmap *, u_int *);
 uint64_t nfsv4_attr_change(const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
-bool	nfsv4_attr_supported(const struct nfsv4_bitmap *);
+bool	nfsv4_attr_supported(const struct nfsv4_bitmap *, struct vnode *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
 
 uint32_t nfsv4_attr_parse(struct nfsv4_compound *,

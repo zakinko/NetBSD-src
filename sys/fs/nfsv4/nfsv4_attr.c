@@ -106,6 +106,16 @@ static const uint64_t attr_statvfs =
 /* Attributes of a pseudo node; it is a read-only directory, s7.3. */
 #define	NFSV4_PSEUDO_MODE	0555
 
+/* acl and aclsupport go with the file system; vp is NULL on a pseudo node. */
+static uint64_t
+attr_supported_by(struct vnode *vp)
+{
+
+	if (nfsv4_acl_supported(vp))
+		return attr_supported;
+	return attr_supported & ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
+}
+
 static inline uint64_t
 attr_mask(const struct nfsv4_bitmap *bm)
 {
@@ -126,10 +136,10 @@ nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm)
 }
 
 bool
-nfsv4_attr_supported(const struct nfsv4_bitmap *bm)
+nfsv4_attr_supported(const struct nfsv4_bitmap *bm, struct vnode *vp)
 {
 
-	return (attr_mask(bm) & ~attr_supported) == 0;
+	return (attr_mask(bm) & ~attr_supported_by(vp)) == 0;
 }
 
 static uint32_t
@@ -274,9 +284,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	XDR x;
 	int error;
 
-	sup = attr_supported;
-	if (!nfsv4_acl_supported(vp))
-		sup &= ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
+	sup = attr_supported_by(vp);
 	m = attr_mask(want) & sup & ~attr_setonly;
 	if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);

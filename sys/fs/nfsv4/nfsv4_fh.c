@@ -35,6 +35,8 @@
  *
  *	NFSV4_FHT_REAL		fhandle_t, from vfs_composefh()
  *	NFSV4_FHT_PSEUDO	path of a node of the pseudo file system
+ *	NFSV4_FHT_ATTRDIR	as REAL: the named attributes of that file
+ *	NFSV4_FHT_ATTR		as REAL, then a name of byte 1's length
  *
  * The pseudo file system is computed, with no table behind it.  Its
  * nodes are the proper ancestors of the mount points exported to this
@@ -73,6 +75,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define	NFSV4_FHT_PSEUDO	1
 #define	NFSV4_FHT_REAL		2
+#define	NFSV4_FHT_ATTRDIR	3
+#define	NFSV4_FHT_ATTR		4
 #define	NFSV4_FH_HDR		4
 #define	NFSV4_FH_PATHMAX	(NFS4_FHSIZE - NFSV4_FH_HDR)
 
@@ -144,10 +148,11 @@ nfsv4_cfh_clear(struct nfsv4_cfh *cf)
 	cf->cf_vp = NULL;
 	cf->cf_cred = NULL;
 	cf->cf_set = false;
+	cf->cf_attr = 0;
 }
 
-static void
-cfh_copy(struct nfsv4_cfh *to, const struct nfsv4_cfh *from)
+void
+nfsv4_cfh_copy(struct nfsv4_cfh *to, const struct nfsv4_cfh *from)
 {
 
 	nfsv4_cfh_clear(to);
@@ -200,6 +205,41 @@ cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
 	}
 	cf->cf_cred = cred;
 	cf->cf_exflags = exflags;
+	return NFS4_OK;
+}
+
+/*
+ * Make the file cf is of the node kind of its named attributes, or 0
+ * for the file again: see nfsv4_xattr.c.
+ */
+uint32_t
+nfsv4_cfh_setattr(struct nfsv4_cfh *cf, u_int kind, const char *name,
+    size_t len)
+{
+	struct nfsv4_fh *fh = &cf->cf_fh;
+
+	if (cf->cf_attr == NFSV4_ATTR_FILE)
+		fh->fh_len -= strlen(cf->cf_aname);
+	if (len > NFSV4_ANAME_MAX || fh->fh_len + len > NFS4_FHSIZE)
+		return NFS4ERR_NAMETOOLONG;
+	cf->cf_attr = kind;
+	switch (kind) {
+	case NFSV4_ATTR_DIR:
+		fh->fh_data[0] = NFSV4_FHT_ATTRDIR;
+		break;
+	case NFSV4_ATTR_FILE:
+		fh->fh_data[0] = NFSV4_FHT_ATTR;
+		fh->fh_data[1] = (uint8_t)len;
+		memcpy(fh->fh_data + fh->fh_len, name, len);
+		fh->fh_len += len;
+		memcpy(cf->cf_aname, name, len);
+		cf->cf_aname[len] = '\0';
+		break;
+	default:
+		fh->fh_data[0] = NFSV4_FHT_REAL;
+		fh->fh_data[1] = 0;
+		break;
+	}
 	return NFS4_OK;
 }
 
@@ -380,7 +420,8 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 		fhandle_t	fh;
 		char		buf[NFS4_FHSIZE];
 	} u;
-	size_t len;
+	char aname[NFSV4_ANAME_MAX + 1];
+	size_t len, alen = 0;
 	uint32_t st;
 	int error, exflags;
 
@@ -395,7 +436,16 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 		st = cfh_setpath(c, &c->c_cur,
 		    (const char *)fh->fh_data + NFSV4_FH_HDR, len);
 		return st == NFS4ERR_NOENT ? NFS4ERR_STALE : st;
+	case NFSV4_FHT_ATTR:
+		alen = fh->fh_data[1];
+		if (alen == 0 || alen > NFSV4_ANAME_MAX || alen >= len)
+			return NFS4ERR_BADHANDLE;
+		len -= alen;
+		memcpy(aname, fh->fh_data + NFSV4_FH_HDR + len, alen);
+		aname[alen] = '\0';
+		break;
 	case NFSV4_FHT_REAL:
+	case NFSV4_FHT_ATTRDIR:
 		break;
 	default:
 		return NFS4ERR_BADHANDLE;
@@ -424,9 +474,16 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 		    nfsv4_errno(error);
 	VOP_UNLOCK(vp);
 	st = nfsv4_cfh_setvp(c, &c->c_cur, vp);
-	if (st != NFS4_OK)
+	if (st != NFS4_OK) {
 		vrele(vp);
-	return st;
+		return st;
+	}
+	if (fh->fh_data[0] == NFSV4_FHT_ATTRDIR)
+		return nfsv4_cfh_setattr(&c->c_cur, NFSV4_ATTR_DIR, "", 0);
+	if (fh->fh_data[0] == NFSV4_FHT_ATTR)
+		return nfsv4_cfh_setattr(&c->c_cur, NFSV4_ATTR_FILE, aname,
+		    alen);
+	return NFS4_OK;
 }
 
 uint32_t
@@ -448,7 +505,7 @@ uint32_t
 nfsv4_op_savefh(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 
-	cfh_copy(&c->c_saved, &c->c_cur);
+	nfsv4_cfh_copy(&c->c_saved, &c->c_cur);
 	return NFS4_OK;
 }
 
@@ -458,7 +515,7 @@ nfsv4_op_restorefh(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (!c->c_saved.cf_set)
 		return NFS4ERR_RESTOREFH;
-	cfh_copy(&c->c_cur, &c->c_saved);
+	nfsv4_cfh_copy(&c->c_cur, &c->c_saved);
 	return NFS4_OK;
 }
 
@@ -560,6 +617,8 @@ nfsv4_cfh_lookup(struct nfsv4_compound *c, struct nfsv4_cfh *dir,
 	uint32_t st;
 	int error;
 
+	if (dir->cf_attr != 0)
+		return nfsv4_xattr_lookup(c, dir, name, to);
 	if (dir->cf_vp == NULL) {
 		cur = nfsv4_cfh_path(dir, &curlen);
 		if (curlen == 1)	/* "/" */

@@ -341,18 +341,27 @@ nfsv4_state_byother(uint64_t other)
 	return NULL;
 }
 
+/* What is open on vp, or on its named attribute aname if not NULL. */
 struct nfsv4_file *
-nfsv4_file_find(struct vnode *vp)
+nfsv4_file_find_attr(struct vnode *vp, const char *aname)
 {
 	struct nfsv4_file *f;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
 	LIST_FOREACH(f, &nfsv4_file_hash[file_hash(vp)], f_list) {
-		if (f->f_vp == vp)
+		if (f->f_vp == vp && f->f_isattr == (aname != NULL) &&
+		    (aname == NULL || strcmp(f->f_aname, aname) == 0))
 			return f;
 	}
 	return NULL;
+}
+
+struct nfsv4_file *
+nfsv4_file_find(struct vnode *vp)
+{
+
+	return nfsv4_file_find_attr(vp, NULL);
 }
 
 /*
@@ -364,16 +373,28 @@ struct nfsv4_state *
 nfsv4_state_add(struct nfsv4_state **stp, struct nfsv4_owner_s *sw,
     struct nfsv4_file **fp, struct vnode *vp, u_int type)
 {
+
+	return nfsv4_state_add_attr(stp, sw, fp, vp, type, NULL);
+}
+
+struct nfsv4_state *
+nfsv4_state_add_attr(struct nfsv4_state **stp, struct nfsv4_owner_s *sw,
+    struct nfsv4_file **fp, struct vnode *vp, u_int type, const char *aname)
+{
 	struct nfsv4_state *st = *stp;
 	struct nfsv4_file *f;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
-	f = nfsv4_file_find(vp);
+	f = nfsv4_file_find_attr(vp, aname);
 	if (f == NULL) {
 		f = *fp;
 		*fp = NULL;
 		f->f_vp = vp;
+		if (aname != NULL) {
+			f->f_isattr = true;
+			strlcpy(f->f_aname, aname, sizeof(f->f_aname));
+		}
 		vref(vp);
 		LIST_INIT(&f->f_states);
 		LIST_INSERT_HEAD(&nfsv4_file_hash[file_hash(vp)], f, f_list);

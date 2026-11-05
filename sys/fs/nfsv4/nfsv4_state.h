@@ -113,6 +113,8 @@ struct nfsv4_file {
 	LIST_HEAD(, nfsv4_state) f_states;
 	struct vnode	*f_vp;		/* a reference */
 	struct nfsv4_fh	f_fh;		/* if delegated, for CB_RECALL */
+	bool		f_isattr;	/* opens of a named attribute */
+	char		f_aname[NFSV4_ANAME_MAX + 1];
 };
 
 #define	NFSV4_ST_OPEN		1
@@ -206,6 +208,9 @@ enum nfsv4_seq
 struct nfsv4_state *
 	nfsv4_state_add(struct nfsv4_state **, struct nfsv4_owner_s *,
 	    struct nfsv4_file **, struct vnode *, u_int);
+struct nfsv4_state *
+	nfsv4_state_add_attr(struct nfsv4_state **, struct nfsv4_owner_s *,
+	    struct nfsv4_file **, struct vnode *, u_int, const char *);
 void	nfsv4_state_unlink(struct nfsv4_state *, struct nfsv4_reap *, bool);
 void	nfsv4_owner_free(struct nfsv4_owner_s *, struct nfsv4_reap *);
 uint32_t nfsv4_stateid_lookup(const struct nfsv4_stateid *,
@@ -216,6 +221,8 @@ bool	nfsv4_stateid_special(const struct nfsv4_stateid *);
 void	nfsv4_stateid_out(const struct nfsv4_state *, struct nfsv4_stateid *);
 struct nfsv4_file *
 	nfsv4_file_find(struct vnode *);
+struct nfsv4_file *
+	nfsv4_file_find_attr(struct vnode *, const char *);
 struct nfsv4_client *
 	nfsv4_client_byid(uint64_t);
 void	nfsv4_client_renew(struct nfsv4_client *);

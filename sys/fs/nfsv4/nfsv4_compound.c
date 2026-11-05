@@ -102,6 +102,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_LOOKUPP]	= { nfsv4_op_lookupp,	NFSV4_OPF_FH },
 	[NFSV4_OP_NVERIFY]	= { nfsv4_op_nverify,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN]		= { nfsv4_op_open,	NFSV4_OPF_FH },
+	[NFSV4_OP_OPENATTR]	= { nfsv4_op_openattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN_CONFIRM]	= { nfsv4_op_open_confirm, NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN_DOWNGRADE] =
 				  { nfsv4_op_open_downgrade, NFSV4_OPF_FH },
@@ -192,6 +193,8 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	else {
 		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
 			c->c_drc = true;
+		if (c->c_cur.cf_set && c->c_cur.cf_attr != 0)
+			return nfsv4_xattr_op(c, op, a, od->od_func);
 		return (*od->od_func)(c, a);
 	}
 

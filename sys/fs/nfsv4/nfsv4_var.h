@@ -39,6 +39,15 @@ struct vattr;
 struct vnode;
 
 /*
+ * A named attribute's name, whose limit is what is sure to fit in a
+ * handle beside any file system's own: a choice, RFC 7530 s5.3 asking
+ * for all the names a directory could have.
+ */
+#define	NFSV4_ATTR_DIR		1
+#define	NFSV4_ATTR_FILE		2
+#define	NFSV4_ANAME_MAX		64
+
+/*
  * A current or saved filehandle.  A real one holds a reference to its
  * vnode, unlocked, and the credential to use on it: which credential
  * that is depends on the export, so on the file system of the handle.
@@ -50,6 +59,8 @@ struct nfsv4_cfh {
 	struct vnode	*cf_vp;		/* NULL in the pseudo file system */
 	kauth_cred_t	cf_cred;
 	int		cf_exflags;
+	u_int		cf_attr;	/* NFSV4_ATTR_*; see nfsv4_xattr.c */
+	char		cf_aname[NFSV4_ANAME_MAX + 1];
 };
 
 /*
@@ -129,6 +140,17 @@ uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
 
 uint32_t nfsv4_errno(int);
+void	nfsv4_write_verf(struct nfsv4_verifier *);
+
+int	nfsv4_xattr_size(const struct nfsv4_cfh *, uint64_t *);
+int	nfsv4_xattr_list(const struct nfsv4_cfh *, char **, size_t *, size_t *);
+bool	nfsv4_xattr_any(const struct nfsv4_cfh *);
+uint32_t nfsv4_xattr_lookup(struct nfsv4_compound *, struct nfsv4_cfh *,
+	    const char *, struct nfsv4_cfh *);
+uint32_t nfsv4_xattr_prepare(struct nfsv4_cfh *, const char *, bool, bool,
+	    bool);
+uint32_t nfsv4_xattr_op(struct nfsv4_compound *, uint32_t, union nfsv4_args *,
+	    nfsv4_op_t);
 
 bool	nfsv4_acl_supported(struct vnode *);
 uint32_t nfsv4_acl_get(struct vnode *, kauth_cred_t, struct acl **);
@@ -142,6 +164,8 @@ void	nfsv4_cfh_clear(struct nfsv4_cfh *);
 uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);
 uint32_t nfsv4_cfh_setvp(struct nfsv4_compound *, struct nfsv4_cfh *,
 	    struct vnode *);
+void	nfsv4_cfh_copy(struct nfsv4_cfh *, const struct nfsv4_cfh *);
+uint32_t nfsv4_cfh_setattr(struct nfsv4_cfh *, u_int, const char *, size_t);
 int	nfsv4_namei(struct nameidata *, struct vnode *, const char *, uint32_t,
 	    uint32_t, kauth_cred_t);
 uint32_t nfsv4_cfh_lookup(struct nfsv4_compound *, struct nfsv4_cfh *,
@@ -162,6 +186,7 @@ uint32_t nfsv4_op_commit(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_delegpurge(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_delegreturn(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_openattr(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open_confirm(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_open_downgrade(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_read(struct nfsv4_compound *, union nfsv4_args *);

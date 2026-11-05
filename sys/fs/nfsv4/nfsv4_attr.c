@@ -30,9 +30,9 @@
  * Attributes, RFC 7530 s5.
  *
  * Those that can be had from the file system or are fixed are given;
- * of the RECOMMENDED ones, archive, fs_locations, hidden, mimetype,
- * quota_*, system and time_backup are not, and so are left out of
- * supported_attrs as s16.7.4 allows.  acl and aclsupport are in it only
+ * of the RECOMMENDED ones, archive, hidden, mimetype, quota_*, system and
+ * time_backup are not, and so are left out of supported_attrs as s16.7.4
+ * allows.  acl and aclsupport are in it only
  * where the file system has ACLs.
  */
 
@@ -69,7 +69,8 @@ static const uint64_t attr_supported =
     BIT(FATTR4_CASE_INSENSITIVE) | BIT(FATTR4_CASE_PRESERVING) |
     BIT(FATTR4_CHOWN_RESTRICTED) | BIT(FATTR4_FILEID) |
     BIT(FATTR4_FILES_AVAIL) | BIT(FATTR4_FILES_FREE) |
-    BIT(FATTR4_FILES_TOTAL) | BIT(FATTR4_HOMOGENEOUS) |
+    BIT(FATTR4_FILES_TOTAL) | BIT(FATTR4_FS_LOCATIONS) |
+    BIT(FATTR4_HOMOGENEOUS) |
     BIT(FATTR4_MAXFILESIZE) | BIT(FATTR4_MAXLINK) | BIT(FATTR4_MAXNAME) |
     BIT(FATTR4_MAXREAD) | BIT(FATTR4_MAXWRITE) | BIT(FATTR4_MODE) |
     BIT(FATTR4_NO_TRUNC) | BIT(FATTR4_NUMLINKS) | BIT(FATTR4_OWNER) |
@@ -207,6 +208,49 @@ attr_u64(XDR *x, uint64_t v)
 	return xdr_u_int64_t(x, &v);
 }
 
+/*
+ * fs_locations, s8.8.  No file system is known to live anywhere else,
+ * so there are no locations, as s8.8 has it, and only fs_root says
+ * anything: the mount point, which is the path a client reaches it by
+ * through the pseudo file system.
+ */
+static bool
+attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
+{
+	const char *p, *end, *e;
+	size_t len;
+	uint32_t n = 0, l;
+
+	if (cf->cf_vp != NULL) {
+		p = cf->cf_vp->v_mount->mnt_stat.f_mntonname;
+		len = strlen(p);
+	} else
+		p = nfsv4_cfh_path(cf, &len);
+	end = p + len;
+	for (e = p; e < end; e++) {
+		if (*e != '/' && (e == p || e[-1] == '/'))
+			n++;
+	}
+	if (!xdr_u_int32_t(x, &n))
+		return false;
+	while (p < end) {
+		if (*p == '/') {
+			p++;
+			continue;
+		}
+		e = memchr(p, '/', end - p);
+		if (e == NULL)
+			e = end;
+		l = (uint32_t)(e - p);
+		if (!xdr_u_int32_t(x, &l) ||
+		    !xdr_opaque(x, __UNCONST(p), l))
+			return false;
+		p = e;
+	}
+	n = 0;
+	return xdr_u_int32_t(x, &n);	/* locations<> */
+}
+
 /* Numbers, as RFC 7530 s5.9 allows outside Kerberos. */
 static bool
 attr_id(XDR *x, uint32_t id)
@@ -230,6 +274,16 @@ attr_pseudo_fileid(const struct nfsv4_cfh *cf)
 	for (i = 0; i < len; i++)
 		h = (h ^ (uint8_t)p[i]) * 0x100000001b3ULL;
 	return h;
+}
+
+/* The high bit keeps it from the numbers that files have. */
+static uint64_t
+attr_named_fileid(uint64_t id, const char *name)
+{
+
+	for (; *name != '\0'; name++)
+		id = (id ^ (uint8_t)*name) * 0x100000001b3ULL;
+	return id | (1ULL << 63);
 }
 
 /*
@@ -306,6 +360,17 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		VOP_UNLOCK(vp);
 		if (error != 0)
 			return nfsv4_errno(error);
+		if (cf->cf_attr == NFSV4_ATTR_FILE) {
+			/* Its own number among the file system's. */
+			va.va_fileid = attr_named_fileid(va.va_fileid,
+			    cf->cf_aname);
+			va.va_size = 0;
+			if ((m & BIT(FATTR4_SIZE)) != 0) {
+				error = nfsv4_xattr_size(cf, &va.va_size);
+				if (error != 0)
+					return nfsv4_errno(error);
+			}
+		}
 		if ((m & BIT(FATTR4_MOUNTED_ON_FILEID)) != 0) {
 			error = attr_mounted_on(vp, cf->cf_cred, &va, &id);
 			if (error != 0)
@@ -354,7 +419,9 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			    ACL4_SUPPORT_DENY_ACL);
 			break;
 		case FATTR4_TYPE:
-			ok = attr_u32(&x, vp ? attr_ftype(va.va_type) : NF4DIR);
+			ok = attr_u32(&x, cf->cf_attr == NFSV4_ATTR_DIR ?
+			    NF4ATTRDIR : cf->cf_attr == NFSV4_ATTR_FILE ?
+			    NF4NAMEDATTR : vp ? attr_ftype(va.va_type) : NF4DIR);
 			break;
 		case FATTR4_FH_EXPIRE_TYPE:
 			ok = attr_u32(&x, FH4_PERSISTENT);
@@ -377,7 +444,13 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		case FATTR4_NO_TRUNC:
 			ok = attr_u32(&x, 1);
 			break;
+		case FATTR4_FS_LOCATIONS:
+			ok = attr_fs_locations(&x, cf);
+			break;
 		case FATTR4_NAMED_ATTR:
+			ok = attr_u32(&x, vp != NULL && cf->cf_attr == 0 &&
+			    nfsv4_xattr_any(cf));
+			break;
 		case FATTR4_CASE_INSENSITIVE:
 			ok = attr_u32(&x, 0);
 			break;

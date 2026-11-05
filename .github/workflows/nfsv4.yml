@@ -116,6 +116,14 @@ jobs:
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
       - name: Restarts, which are not in all
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh reboot" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-reboot
+      - name: Named attributes and fs_locations
+        run: |
+          cp ci/nfsv4/named-attr.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          for e in /export/acl /tank/x /export/pynfs; do
+            echo "=== $e"
+            python3 ./named-attr.py "$e" ssh netbsd getextattr user one || echo "named-attr $e: $?"
+          done 2>&1 | tee "$OLDPWD/out/named-attr.txt"
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
@@ -141,5 +149,6 @@ jobs:
             out/summary.txt
             out/ctime-*.txt
             out/linux-client.txt
+            out/named-attr.txt
             out/kernel.txt
           retention-days: 30

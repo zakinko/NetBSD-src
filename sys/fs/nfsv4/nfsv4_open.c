@@ -270,8 +270,8 @@ open_access(const struct nfsv4_cfh *cf, struct vnode *vp, uint32_t access)
  * file, and a second OPEN adds to it.
  */
 static uint32_t
-open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
-    uint32_t deny, struct nfsv4_state **spare, struct nfsv4_file **sparef,
+open_share(struct nfsv4_owner_s *sw, struct vnode *vp, const char *aname,
+    uint32_t access, uint32_t deny, struct nfsv4_state **spare, struct nfsv4_file **sparef,
     struct nfsv4_stateid *si, const struct nfsv4_cfh *cf,
     struct nfsv4_deleg_spare *ds, struct nfsv4_open_deleg *od)
 {
@@ -286,7 +286,8 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 	 * minds an open that may write, or that denies reading, which
 	 * the holder would not send here; s10.4 again.
 	 */
-	status = nfsv4_deleg_conflict(vp, sw->sw_client, 0,
+	status = aname != NULL ? NFS4_OK :
+	    nfsv4_deleg_conflict(vp, sw->sw_client, 0,
 	    (access & OPEN4_SHARE_ACCESS_WRITE) != 0 ||
 	    (deny & OPEN4_SHARE_DENY_READ) != 0 ?
 	    NFSV4_DC_WRITE : NFSV4_DC_READ);
@@ -294,7 +295,7 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 		mutex_exit(&nfsv4_state_lock);
 		return status;
 	}
-	f = nfsv4_file_find(vp);
+	f = nfsv4_file_find_attr(vp, aname);
 	if (f != NULL) {
 		LIST_FOREACH(st, &f->f_states, st_flist) {
 			if (st->st_type != NFSV4_ST_OPEN)
@@ -311,7 +312,8 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 	if (mine != NULL)
 		mine->st_seqid++;
 	else {
-		mine = nfsv4_state_add(spare, sw, sparef, vp, NFSV4_ST_OPEN);
+		mine = nfsv4_state_add_attr(spare, sw, sparef, vp,
+		    NFSV4_ST_OPEN, aname);
 		mine->st_seqid = 1;
 	}
 	mine->st_access |= access;
@@ -393,7 +395,7 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		return NFS4ERR_ISDIR;
 	if (vp->v_type != VREG)
 		return NFS4ERR_SYMLINK;
-	st = open_share(sw, vp, oa->share_access, oa->share_deny, spare,
+	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, cf, NULL, NULL);
 	if (st != NFS4_OK)
 		return st;
@@ -405,6 +407,61 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		mutex_exit(&nfsv4_state_lock);
 	}
 	return open_reply(c, sw, &si, &ci, 0, &od, rlen);
+}
+
+/* s16.16.5 in an attribute directory; see nfsv4_xattr.c. */
+static uint32_t
+open_attr(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
+    struct nfsv4_owner_s *sw, struct nfsv4_state **spare,
+    struct nfsv4_file **sparef, u_int *rlen)
+{
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct nfsv4_change_info ci;
+	struct nfsv4_stateid si;
+	struct nfsv4_open_deleg od;
+	struct vattr sva;
+	uint64_t set = 0;
+	uint32_t st;
+	bool create = oa->opentype == OPEN4_CREATE;
+	int error;
+
+	if (!OPEN4_ACCESS_OK(oa->share_access) ||
+	    !OPEN4_DENY_OK(oa->share_deny))
+		return NFS4ERR_INVAL;
+	st = nfsv4_name_check(&oa->file);
+	if (st != NFS4_OK)
+		return st;
+	if (create && oa->createmode == EXCLUSIVE4)
+		return NFS4ERR_INVAL;	/* s16.16.5 */
+	vattr_null(&sva);
+	if (create) {
+		st = nfsv4_attr_parse(c, &oa->createattrs, &sva, &set);
+		if (st != NFS4_OK)
+			return st;
+	}
+	if ((oa->share_access & OPEN4_SHARE_ACCESS_READ) != 0 &&
+	    (error = nfsv4_access_vp(cf, VREAD)) != 0)
+		return nfsv4_errno(error);
+	if ((create || (oa->share_access & OPEN4_SHARE_ACCESS_WRITE) != 0) &&
+	    (error = nfsv4_access_vp(cf, VWRITE)) != 0)
+		return nfsv4_errno(error);
+	st = nfsv4_xattr_prepare(cf, oa->file.nm_str, create,
+	    create && oa->createmode == GUARDED4,
+	    (set & (1ULL << FATTR4_SIZE)) != 0 && sva.va_size == 0);
+	if (st != NFS4_OK)
+		return st;
+	st = open_share(sw, cf->cf_vp, oa->file.nm_str, oa->share_access,
+	    oa->share_deny, spare, sparef, &si, cf, NULL, NULL);
+	if (st != NFS4_OK)
+		return st;
+	st = nfsv4_cfh_setattr(cf, NFSV4_ATTR_FILE, oa->file.nm_str,
+	    oa->file.nm_len);
+	if (st != NFS4_OK)
+		return st;
+	memset(&ci, 0, sizeof(ci));
+	memset(&od, 0, sizeof(od));
+	return open_reply(c, sw, &si, &ci, set & (1ULL << FATTR4_SIZE), &od,
+	    rlen);
 }
 
 static uint32_t
@@ -431,10 +488,14 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	 * grace period: of a reclaimed delegation, s10.2.1, or of a client
 	 * restarted, and neither can conflict with a reclaim to come.
 	 */
+	if (cf->cf_attr != 0 && oa->claim != CLAIM_NULL)
+		return NFS4ERR_NOTSUPP;
 	switch (oa->claim) {
 	case CLAIM_NULL:
 		if (nfsv4_grace_active())
 			return NFS4ERR_GRACE;
+		if (cf->cf_attr != 0)
+			return open_attr(c, oa, sw, spare, sparef, rlen);
 		break;
 	case CLAIM_PREVIOUS:
 		return open_previous(c, oa, sw, spare, sparef, ds, rlen);
@@ -473,7 +534,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		st = nfsv4_deleg_claim_prev(sw->sw_client, vp, &od);
 	if (st != NFS4_OK)
 		goto bad;
-	st = open_share(sw, vp, oa->share_access, oa->share_deny, spare,
+	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, cf, ds, &od);
 	if (st != NFS4_OK)
 		goto bad;
@@ -866,6 +927,8 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 	struct nfsv4_state *open;
 	struct nfsv4_file *f;
 	struct nfsv4_client *self = NULL;
+	const char *aname = c->c_cur.cf_attr == NFSV4_ATTR_FILE ?
+	    c->c_cur.cf_aname : NULL;
 	uint32_t status = NFS4_OK, bit;
 
 	bit = write ? OPEN4_SHARE_DENY_WRITE : OPEN4_SHARE_DENY_READ;
@@ -894,14 +957,21 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 			status = NFS4ERR_OPENMODE;
 			goto out;
 		}
+		if (st->st_file->f_isattr != (aname != NULL) ||
+		    (aname != NULL && strcmp(st->st_file->f_aname, aname) != 0)) {
+			status = NFS4ERR_BAD_STATEID;
+			goto out;
+		}
 		self = st->st_owner->sw_client;
 	}
 	/* s10.4.1: without an open, these are the equivalent of one. */
-	status = nfsv4_deleg_conflict(vp, self, 0,
-	    write ? NFSV4_DC_WRITE : NFSV4_DC_READ);
-	if (status != NFS4_OK)
-		goto out;
-	f = nfsv4_file_find(vp);
+	if (aname == NULL) {
+		status = nfsv4_deleg_conflict(vp, self, 0,
+		    write ? NFSV4_DC_WRITE : NFSV4_DC_READ);
+		if (status != NFS4_OK)
+			goto out;
+	}
+	f = nfsv4_file_find_attr(vp, aname);
 	if (f != NULL) {
 		LIST_FOREACH(o, &f->f_states, st_flist) {
 			if (o->st_type == NFSV4_ST_OPEN && o != open &&
@@ -986,8 +1056,8 @@ out:
  * The verifier of WRITE and COMMIT changes with each instance of the
  * server, s16.36.4.
  */
-static void
-write_verf(struct nfsv4_verifier *v)
+void
+nfsv4_write_verf(struct nfsv4_verifier *v)
 {
 
 	memset(v, 0, sizeof(*v));
@@ -1067,7 +1137,7 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	n -= uio.uio_resid;
 	committed = wa->stable;
-	write_verf(&verf);
+	nfsv4_write_verf(&verf);
 	return xdr_u_int32_t(c->c_rx, &n) &&
 	    xdr_u_int32_t(c->c_rx, &committed) &&
 	    nfsv4_xdr_verifier(c->c_rx, &verf) ? NFS4_OK : NFS4ERR_RESOURCE;
@@ -1098,6 +1168,6 @@ nfsv4_op_commit(struct nfsv4_compound *c, union nfsv4_args *a)
 	VOP_UNLOCK(vp);
 	if (error != 0)
 		return nfsv4_errno(error);
-	write_verf(&verf);
+	nfsv4_write_verf(&verf);
 	return nfsv4_xdr_verifier(c->c_rx, &verf) ? NFS4_OK : NFS4ERR_RESOURCE;
 }

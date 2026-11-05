@@ -380,6 +380,36 @@ readdir_real(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	return st;
 }
 
+/* Named attributes.  Cookies are positions in the file system's list. */
+static uint32_t
+readdir_xattr(struct readdir_state *rd, uint64_t cookie, bool *eofp)
+{
+	char *buf = NULL;
+	size_t len, alen, off;
+	uint64_t i, first;
+	uint32_t st = NFS4_OK;
+	u_int n;
+	int error;
+
+	error = nfsv4_xattr_list(rd->rd_dir, &buf, &len, &alen);
+	if (error != 0)
+		return nfsv4_errno(error);
+	first = cookie == 0 ? 0 : cookie - NFSV4_COOKIE_BASE + 1;
+	for (i = 0, off = 0; off < len && st == NFS4_OK && !rd->rd_full; i++) {
+		n = (uint8_t)buf[off++];
+		if (n > len - off)
+			break;
+		if (i >= first && n <= NFSV4_ANAME_MAX && n != 0)
+			st = readdir_entry(rd, buf + off, n,
+			    i + NFSV4_COOKIE_BASE);
+		off += n;
+	}
+	*eofp = !rd->rd_full;
+	if (alen != 0)
+		kmem_free(buf, alen);
+	return st;
+}
+
 uint32_t
 nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 {
@@ -391,7 +421,8 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int i;
 	bool eof = false;
 
-	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
+	if (cf->cf_vp != NULL && cf->cf_attr == 0 &&
+	    cf->cf_vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
 	if (!nfsv4_attr_getonly_ok(&ra->mask))
 		return NFS4ERR_INVAL;
@@ -432,7 +463,9 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (!nfsv4_xdr_verifier(&rd.rd_x, &verf))
 		panic("nfsv4_op_readdir: limit");
-	if (cf->cf_vp == NULL)
+	if (cf->cf_attr != 0)
+		st = readdir_xattr(&rd, ra->cookie, &eof);
+	else if (cf->cf_vp == NULL)
 		st = readdir_pseudo(&rd, ra->cookie, &eof);
 	else
 		st = readdir_real(&rd, ra->cookie, &eof);

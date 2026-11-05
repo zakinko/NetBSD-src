@@ -302,6 +302,8 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (!sf->cf_set)
 		return NFS4ERR_NOFILEHANDLE;
+	if (sf->cf_attr != 0)
+		return NFS4ERR_XDEV;		/* s5.3 */
 	st = dir_check(sf);
 	if (st == NFS4_OK)
 		st = dir_check(tf);
@@ -437,6 +439,8 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_NOFILEHANDLE;
 	if (sf->cf_vp == NULL || sf->cf_vp->v_type == VDIR)
 		return NFS4ERR_ISDIR;
+	if (sf->cf_attr != 0)
+		return NFS4ERR_XDEV;		/* s5.3 */
 	st = dir_check(cf);
 	if (st == NFS4_OK)
 		st = nfsv4_name_check(nm);

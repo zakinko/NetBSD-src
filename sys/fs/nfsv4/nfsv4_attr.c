@@ -346,6 +346,7 @@ attr_change_type(const struct vnode *vp)
 
 	if (vp != NULL &&
 	    (strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_FFS) == 0 ||
+	    strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_MFS) == 0 ||
 	    strcmp(vp->v_mount->mnt_stat.f_fstypename, MOUNT_TMPFS) == 0))
 		return NFS4_CHANGE_TYPE_IS_TIME_METADATA;
 	return NFS4_CHANGE_TYPE_IS_UNDEFINED;

@@ -230,6 +230,8 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* A reclaim to come may name the file, s9.6.2. */
 	if (st == NFS4_OK && nfsv4_grace_active())
 		st = NFS4ERR_GRACE;
+	if (st == NFS4_OK && nfsv4_open_denies_remove(cf, nm->nm_str))
+		st = NFS4ERR_FILE_OPEN;
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
 	if (st != NFS4_OK)

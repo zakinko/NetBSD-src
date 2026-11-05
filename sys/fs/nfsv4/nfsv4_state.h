@@ -271,5 +271,6 @@ void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 uint32_t nfsv4_deleg_break(struct vnode *, const struct nfsv4_client *,
 	    uint64_t, u_int);
 uint32_t nfsv4_deleg_break_name(const struct nfsv4_cfh *, const char *);
+bool	nfsv4_open_denies_remove(const struct nfsv4_cfh *, const char *);
 
 #endif /* !_FS_NFSV4_NFSV4_STATE_H_ */

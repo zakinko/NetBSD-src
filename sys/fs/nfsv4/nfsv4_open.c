@@ -195,8 +195,9 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 	vattr_null(&va);
 	va.va_type = VREG;
+	/* s6.4.3: without attributes, nothing until SETATTR says so. */
 	va.va_mode = sva.va_mode != (mode_t)VNOVAL ? sva.va_mode :
-	    NFSV4_CREATE_MODE;
+	    oa->createmode == EXCLUSIVE4 ? 0 : NFSV4_CREATE_MODE;
 	sva.va_mode = VNOVAL;
 	error = VOP_CREATE(nd.ni_dvp, &vp, &nd.ni_cnd, &va);
 	if (error == 0)

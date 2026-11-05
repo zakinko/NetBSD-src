@@ -1598,6 +1598,7 @@ include "miscfs/overlay/files.overlay"
 include "miscfs/procfs/files.procfs"
 include "miscfs/umapfs/files.umapfs"
 include "nfs/files.nfs"
+include "oncrpc/files.oncrpc"
 include "ufs/files.ufs"
 include "fs/nfs/files.newnfs"
 

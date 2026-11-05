@@ -39,7 +39,7 @@ void opensolaris_utsname_init(void);
 void opensolaris_init(void *);
 void opensolaris_fini(void *);
 
-MODULE(MODULE_CLASS_MISC, solaris, NULL);
+MODULE(MODULE_CLASS_MISC, solaris, "xdr");
 
 static int
 solaris_modcmd(modcmd_t cmd, void *arg)

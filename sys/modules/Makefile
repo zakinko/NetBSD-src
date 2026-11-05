@@ -436,6 +436,7 @@ SUBDIR+=	dtrace
 .endif
 
 SUBDIR+=        sodium
+SUBDIR+=	xdr
 
 # we need solaris for the dtrace and zfs modules
 .if (${MKDTRACE} != "no" || ${MKZFS} != "no")

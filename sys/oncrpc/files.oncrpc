@@ -1,0 +1,10 @@
+#	$NetBSD$
+
+define	xdr
+file	oncrpc/xdr_module.c		xdr
+
+prefix	../common/lib/libc/rpc
+file	xdr.c				xdr
+file	xdr_array.c			xdr
+file	xdr_mem.c			xdr
+prefix

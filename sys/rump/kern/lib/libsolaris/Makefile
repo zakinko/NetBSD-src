@@ -9,6 +9,11 @@ S!=             cd ${.PARSEDIR}/../../../../;pwd
 
 .include "${.CURDIR}/../../../../modules/solaris/Makefile.solmod"
 
+# The kernel gets these from the xdr module.
+.PATH:	${S}/oncrpc
+.PATH:	${S}/../common/lib/libc/rpc
+SRCS+=	xdr_module.c xdr.c xdr_array.c xdr_mem.c
+
 LIB=	rumpkern_solaris
 COMMENT=Solaris compatibility layer (for ZFS)
 

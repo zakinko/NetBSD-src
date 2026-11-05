@@ -22,12 +22,6 @@ SRCS+=	fm.c
 SRCS+=	list.c
 SRCS+=	nvpair_alloc_system.c
 
-.PATH:	${NETBSDSRCDIR}/common/lib/libc/rpc
-
-SRCS+=	xdr.c
-SRCS+=	xdr_array.c
-SRCS+=	xdr_mem.c
-
 .PATH:	${ZFSDIR}/dist/uts/common/zmod
 
 SRCS+=	adler32.c

@@ -445,6 +445,8 @@
 ./usr/libdata/debug/@MODULEDIR@/wapbl/wapbl.kmod.debug			modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/wsbell				modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/wsbell/wsbell.kmod.debug		modules-base-kernel	kmod,debug
+./usr/libdata/debug/@MODULEDIR@/xdr				modules-base-kernel	kmod,debug
+./usr/libdata/debug/@MODULEDIR@/xdr/xdr.kmod.debug		modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/zfs				modules-base-kernel     kmod,zfs,debug
 ./usr/libdata/debug/@MODULEDIR@/zfs/zfs.kmod.debug			modules-base-kernel     kmod,zfs,debug
 ./usr/libdata/debug/@MODULEDIR@/zlib				modules-base-kernel     kmod,debug

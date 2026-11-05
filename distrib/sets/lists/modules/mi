@@ -523,6 +523,8 @@
 ./@MODULEDIR@/wapbl/wapbl.kmod			modules-base-kernel	kmod
 ./@MODULEDIR@/wsbell				modules-base-kernel	kmod
 ./@MODULEDIR@/wsbell/wsbell.kmod		modules-base-kernel	kmod
+./@MODULEDIR@/xdr				modules-base-kernel	kmod
+./@MODULEDIR@/xdr/xdr.kmod			modules-base-kernel	kmod
 ./@MODULEDIR@/zfs				modules-base-kernel     kmod,zfs
 ./@MODULEDIR@/zfs/zfs.kmod			modules-base-kernel     kmod,zfs
 ./@MODULEDIR@/zlib				modules-base-kernel     kmod

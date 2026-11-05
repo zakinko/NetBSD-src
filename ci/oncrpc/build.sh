@@ -1,0 +1,28 @@
+#!/bin/sh
+# Cross build a trunk kernel and the modules under test.  build.sh WORK OUT
+set -eu
+W=$1; OUT=$2
+T=$W/tools; O=$W/obj; J=$(nproc)
+mkdir -p "$W" "$OUT/modules"
+log() { "$@" >"$OUT/step.log" 2>&1 || { tail -60 "$OUT/step.log"; exit 1; }; }
+for k in ONCRPCT ONCRPCS; do
+	printf 'include "arch/amd64/conf/GENERIC"\n' >sys/arch/amd64/conf/$k
+done
+# Built in as well as a module; the test kernel keeps it out so that
+# the module path is what runs.
+printf 'options 	ONCRPC\n' >>sys/arch/amd64/conf/ONCRPCS
+[ -x "$T/bin/nbmake-amd64" ] || log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" tools
+log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" -u kernel=ONCRPCT kernel=ONCRPCS
+cp "$O/sys/arch/amd64/compile/ONCRPCT/netbsd" "$OUT/netbsd"
+grep -c ' xdr_\| oncrpc_' /dev/null || :
+"$T/bin/nbnm" "$O/sys/arch/amd64/compile/ONCRPCS/netbsd" 2>/dev/null |
+    grep -cE ' T (xdr_u_int|oncrpc_svc_create)$' || :
+for d in sys/modules/xdr sys/modules/oncrpc sys/modules/solaris \
+    tests/modules/k_oncrpc; do
+	[ -d "$d" ] || continue
+	m=${d##*/}
+	(cd "$d" && "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no obj dependall) \
+	    >"$OUT/$m.log" 2>&1 || { tail -40 "$OUT/$m.log"; exit 1; }
+	cp "$O/$d/$m.kmod" "$OUT/modules/"
+done
+ls -l "$OUT" "$OUT/modules"

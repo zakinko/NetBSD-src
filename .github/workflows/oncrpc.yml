@@ -1,0 +1,71 @@
+name: oncrpc
+on:
+  push:
+    branches: [oncrpc]
+    paths:
+      - 'sys/oncrpc/**'
+      - 'sys/modules/oncrpc/**'
+      - 'sys/modules/xdr/**'
+      - 'sys/modules/solaris/**'
+      - 'sys/rump/kern/lib/libsolaris/**'
+      - 'external/cddl/osnet/sys/kern/mod.c'
+      - 'common/lib/libc/rpc/**'
+      - 'tests/modules/k_oncrpc/**'
+      - 'tests/modules/t_oncrpc.c'
+      - 'ci/oncrpc/**'
+      - '.github/workflows/oncrpc.yml'
+  workflow_dispatch:
+concurrency:
+  group: oncrpc-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
+      - uses: actions/cache@v4
+        with:
+          path: nb/tools
+          key: oncrpc-tools-36eddebcc36c-amd64
+      - run: sh ci/oncrpc/build.sh "$PWD/nb" "$PWD/out"
+      - run: cp ci/oncrpc/each-commit.sh nb/ && sh nb/each-commit.sh "$PWD/nb"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/oncrpc
+            tests/modules/t_oncrpc.c
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/oncrpc/swap.sh out/netbsd ONCRPCT ssh netbsd
+      - run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/oncrpc && tar -C /var/tmp/oncrpc -xf -'
+          scp ci/oncrpc/in-vm.sh netbsd:/var/tmp/oncrpc/
+          if [ -f tests/modules/t_oncrpc.c ]; then scp tests/modules/t_oncrpc.c netbsd:/var/tmp/oncrpc/; fi
+          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=6 netbsd 'sh /var/tmp/oncrpc/in-vm.sh'
+      - name: What the kernel said
+        if: always()
+        run: ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|solaris'; dmesg | tail -30" || echo no answer

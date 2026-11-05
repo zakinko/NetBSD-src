@@ -36,6 +36,8 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: pci_machdep_ofw.c,v 1.23 2026/06/27 13:31:03 rkujawa Exp $");
 
+#include "opt_interrupt.h"
+
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/time.h>
@@ -60,6 +62,8 @@ __KERNEL_RCSID(0, "$NetBSD: pci_machdep_ofw.c,v 1.23 2026/06/27 13:31:03 rkujawa
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_pci.h>
 
+#include <powerpc/pic/picvar.h>
+
 pcitag_t genppc_pci_indirect_make_tag(void *, int, int, int);
 void genppc_pci_indirect_decompose_tag(void *, pcitag_t, int *, int *, int *);
 
@@ -76,6 +80,9 @@ genofw_find_picnode(int node)
 			return i;
 	return -1;
 }
+
+static const char * const xicp_compat[] = { "IBM,ppc-xicp", NULL };
+static const char * const ivpe_compat[] = { "ibm,power-ivpe", NULL };
 
 void
 genofw_find_ofpics(int startnode)
@@ -172,6 +179,12 @@ foundic:
 		    (strcmp(name, "mpc5200-pic") == 0 ||
 		     strcmp(name, "mpc5200b-pic") == 0))
 			picnodes[nrofpics].type = PICNODE_TYPE_MPC5200;
+		/* The presentation layer node (PAPR 10.60, B.6.7.1.1) */
+		if (of_compatible(node, xicp_compat) > 0)
+			picnodes[nrofpics].type = PICNODE_TYPE_XICS;
+		/* The XIVE exploitation mode node (B.6.7) */
+		if (of_compatible(node, ivpe_compat) > 0)
+			picnodes[nrofpics].type = PICNODE_TYPE_XIVE;
 		nrofpics++;
 	}
 }
@@ -254,6 +267,19 @@ genofw_setup_pciintr_map(void *v, struct genppc_pci_chipset_businfo *pbi,
 		if (curdev != dev)
 			sub = prop_dictionary_create_with_capacity(4);
 		pin = map[i*reclen + acells];
+#ifdef PIC_XICS
+		/* ISNs are not dense; the pic hands out the number */
+		if (picnodes[pic].type == PICNODE_TYPE_XICS) {
+			int irq = xics_map_isn(map[i*reclen + acells + icells + 1]);
+			intr_num = prop_number_create_integer(irq < 0 ? 255 : irq);
+		} else
+#endif
+#ifdef PIC_XIVE
+		if (picnodes[pic].type == PICNODE_TYPE_XIVE) {
+			int irq = xive_map_lisn(map[i*reclen + acells + icells + 1]);
+			intr_num = prop_number_create_integer(irq < 0 ? 255 : irq);
+		} else
+#endif
 		intr_num = prop_number_create_integer(map[i*reclen + acells + icells + 1] + picnodes[pic].offset);
 		snprintf(key, sizeof(key), "pin-%c", 'A' + (pin-1));
 		prop_dictionary_set(sub, key, intr_num);

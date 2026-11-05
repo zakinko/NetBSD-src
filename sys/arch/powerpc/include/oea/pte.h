@@ -41,7 +41,8 @@
  * Page Table Entries
  */
 #ifndef	_LOCORE
-#if defined(PMAP_OEA64) || defined(PMAP_OEA64_BRIDGE)
+#if defined(PMAP_OEA64) || defined(PMAP_OEA64_BRIDGE) || \
+    defined(PMAP_OEA64_SLB)
 struct pte {
 	register64_t pte_hi;
 	register64_t pte_lo;
@@ -59,7 +60,14 @@ struct pteg {
 #endif	/* _LOCORE */
 
 /* High word: */
-#if defined (PMAP_OEA64)
+/*
+ * The SLB generation belongs with the other 64-bit ones.  Falling to
+ * the 32-bit arm gives it PTE_VALID 0x80000000 -- the valid bit of a
+ * 32-bit PTE, which in a 64-bit one is a bit of the VSID -- so every
+ * entry it writes reads back as invalid and the processor finds no
+ * translation for the kernel itself.
+ */
+#if defined (PMAP_OEA64) || defined (PMAP_OEA64_SLB)
 #define	PTE_VALID	0x00000001
 #define	PTE_HID		0x00000002
 #define	PTE_API		0x00000f80
@@ -123,7 +131,8 @@ struct pteg {
 #define	ADDR_SR_SHFT	28
 #define	ADDR_PIDX	0x0ffff000
 #define	ADDR_PIDX_SHFT	12
-#if defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE)
+#if defined (PMAP_OEA64) || defined (PMAP_OEA64_BRIDGE) || \
+    defined (PMAP_OEA64_SLB)
 #define	ADDR_API_SHFT	23	/* API is 5 bits */
 #else
 #define	ADDR_API_SHFT	22	/* API is 6 bits */
@@ -212,6 +221,36 @@ struct slb {
 #define	SLBE_ESID_SHFT	28		/*       36 bits, so 28 below */
 #define	SLBE_VALID	0x08000000	/* 36    Entry is valid */
 #define	SLBE_INDEX	0x00000fff	/* 52:63 Which entry slbmte writes */
+
+/*
+ * Large pages.  The SLB's L bit picks between 4KB (p=12) and "large",
+ * and 4.4 leaves the large size to the implementation, allowing 8KB to
+ * 256MB (13 <= p <= 28).  The 970FX picks 16MB (p=24) -- Table 5-1 of
+ * its User's Manual, "Page size / 970FX-specific / 16 MB" -- and there
+ * is no second choice to make, so p is a constant here.
+ *
+ * The editions disagree about the PTE.  Book III 2.01 (Figure 17) gives
+ * doubleword 0 as AVPN 0:56, SW 57:60, H 62, V 63 and calls the rest
+ * reserved, so read alone it makes the size the segment's and nothing
+ * else's.  2.02 (Figure 23) makes bit 61 L, "Virtual page is large
+ * (L=1) or 4 KB (L=0)".  The 970FX goes with 2.02: its User's Manual
+ * calls its 16MB pages a "new large page architecture", and an entry
+ * without L in a segment whose SLB entry has L set is not matched.  So
+ * both carry it -- the SLB's L says how to search, the PTE's says what
+ * the entry is.
+ *
+ * With p = 24 the PTE fields change shape.  "If p <= 23, the AVPN field
+ * contains bits 0:56 of the VPN.  Otherwise bits 0:79-p of the AVPN
+ * field contain bits 0:79-p of the VPN, and bits 80-p:56 of the AVPN
+ * field must be zeros" -- so AVPN holds VPN 0:55 and bit 56 is zero,
+ * which leaves the VSID where it was and the four bits below it holding
+ * EA 36:39 instead of the five of a 4KB API.
+ */
+#define	ADDR_LPIDX	0x0f000000	/* EA 36:39, page within segment */
+#define	ADDR_LPIDX_SHFT	24		/*           p = 24 */
+#define	PTE_LAPI	0x00000f00	/* AVPN 52:55; 56 stays zero */
+#define	PTE_LAPI_SHFT	8
+#define	PTE_L		0x00000004	/* 61    Large page; 2.02 Figure 23 */
 #endif /* PMAP_OEA64_SLB */
 
 #define	SR_KEY_LEN	9		/* 64 groups of 8 segment entries */

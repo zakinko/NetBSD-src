@@ -81,18 +81,45 @@ ofw_unlock(register_t s)
 #endif /* MULTIPROCESSOR */
 	mtmsr(s);
 }
+/*
+ * The client interface passes its arguments and results as an array of
+ * cells, and the cells are 32 bits wide even where the firmware itself is
+ * 64-bit: SLOF's client.fs reads nargs with l@ and walks the array with
+ * la1+.  Laying these structures out with C pointers works only while a
+ * pointer is one cell, so on an LP64 kernel the low half of the first
+ * pointer is read as nargs and the firmware walks off the end.
+ *
+ * Every slot is therefore one cell, and a pointer goes in as OFW_CELL().
+ * That truncates, so every address handed to the firmware this way has to
+ * be below 4GB -- which is where the kernel is loaded, and where the
+ * firmware's own memory lives.  A caller passing something from above
+ * that line would need to bounce it through OF_buf, as the property and
+ * path calls already do.
+ */
+typedef uint32_t	cell_t;
+
+#define	OFW_CELL(p)	((cell_t)(uintptr_t)(p))
+#define	OFW_PTR(c)	((void *)(uintptr_t)(c))
+/*
+ * A count the firmware returns is signed, -1 for failure (IEEE 1275-1994,
+ * 6.3.2.2 getprop, 6.3.2.3 read), and it is no longer an int once cell_t
+ * is unsigned: compared with one it is converted to unsigned, so -1 passed
+ * "size > 0" and a failed read copied 0xffffffff bytes.
+ */
+#define	OFW_INT(c)	((int)(int32_t)(c))
+
 
 int
 OF_peer(int phandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		int sibling;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	sibling;
 	} args = {
-		"peer",
+		0,
 		1,
 		1,
 	};
@@ -100,6 +127,7 @@ OF_peer(int phandle)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("peer");
 	args.phandle = phandle;
 	if (openfirmware(&args) == -1)
 		rv = 0;
@@ -114,13 +142,13 @@ int
 OF_child(int phandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		int child;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	child;
 	} args = {
-		"child",
+		0,
 		1,
 		1,
 	};
@@ -128,6 +156,7 @@ OF_child(int phandle)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("child");
 	args.phandle = phandle;
 	if (openfirmware(&args) == -1)
 		rv = 0;
@@ -142,13 +171,13 @@ int
 OF_parent(int phandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		int parent;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	parent;
 	} args = {
-		"parent",
+		0,
 		1,
 		1,
 	};
@@ -156,6 +185,7 @@ OF_parent(int phandle)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("parent");
 	args.phandle = phandle;
 	if (openfirmware(&args) == -1)
 		rv = 0;
@@ -170,13 +200,13 @@ int
 OF_instance_to_package(int ihandle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		int phandle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	phandle;
 	} args = {
-		"instance-to-package",
+		0,
 		1,
 		1,
 	};
@@ -184,6 +214,7 @@ OF_instance_to_package(int ihandle)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("instance-to-package");
 	args.ihandle = ihandle;
 	if (openfirmware(&args) == -1)
 		rv = -1;
@@ -198,14 +229,14 @@ int
 OF_getproplen(int handle, const char *prop)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		const char *prop;
-		int proplen;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	proplen;
 	} args = {
-		"getproplen",
+		0,
 		2,
 		1,
 	};
@@ -213,9 +244,10 @@ OF_getproplen(int handle, const char *prop)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("getproplen");
 	strncpy(OF_buf, prop, 32);
 	args.phandle = handle;
-	args.prop = OF_buf;
+	args.prop = OFW_CELL(OF_buf);
 	if (openfirmware(&args) == -1)
 		rv = -1;
 	else
@@ -229,16 +261,16 @@ int
 OF_getprop(int handle, const char *prop, void *buf, int buflen)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		const char *prop;
-		void *buf;
-		int buflen;
-		int size;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	size;
 	} args = {
-		"getprop",
+		0,
 		4,
 		1,
 	};
@@ -249,19 +281,20 @@ OF_getprop(int handle, const char *prop, void *buf, int buflen)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("getprop");
 	strncpy(OF_buf, prop, 32);
 	args.phandle = handle;
-	args.prop = OF_buf;
-	args.buf = &OF_buf[33];
+	args.prop = OFW_CELL(OF_buf);
+	args.buf = OFW_CELL(&OF_buf[33]);
 	args.buflen = buflen;
 	if (openfirmware(&args) == -1)
 		rv = -1;
 	else {
-		if (args.size > buflen)
-			args.size = buflen;
-		if (args.size > 0)
-			ofbcopy(&OF_buf[33], buf, args.size);
-		rv = args.size;
+		rv = OFW_INT(args.size);
+		if (rv > buflen)
+			rv = buflen;
+		if (rv > 0)
+			ofbcopy(&OF_buf[33], buf, rv);
 	}
 
 	ofw_unlock(s);
@@ -272,16 +305,16 @@ int
 OF_setprop(int handle, const char *prop, const void *buf, int buflen)
 {
 	struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		const char *prop;
-		const void *buf;
-		int buflen;
-		int size;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	size;
 	} args = {
-		"setprop", 
+		0, 
 		4,
 		1
 	};
@@ -292,10 +325,11 @@ OF_setprop(int handle, const char *prop, const void *buf, int buflen)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("setprop");
 	ofbcopy(buf, OF_buf, buflen);
 	args.phandle = handle;
-	args.prop = prop;
-	args.buf = OF_buf;
+	args.prop = OFW_CELL(prop);
+	args.buf = OFW_CELL(OF_buf);
 	args.buflen = buflen;
 	if (openfirmware(&args) == -1)
 		rv = -1;
@@ -310,15 +344,15 @@ int
 OF_nextprop(int handle, const char *prop, void *nextprop)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		const char *prop;
-		char *buf;
-		int flag;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	prop;
+		cell_t	buf;
+		cell_t	flag;
 	} args = {
-		"nextprop",
+		0,
 		3,
 		1,
 	};
@@ -326,10 +360,11 @@ OF_nextprop(int handle, const char *prop, void *nextprop)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("nextprop");
 	strncpy(OF_buf, prop, 32);
 	args.phandle = handle;
-	args.prop = OF_buf;
-	args.buf = &OF_buf[33];
+	args.prop = OFW_CELL(OF_buf);
+	args.buf = OFW_CELL(&OF_buf[33]);
 	if (openfirmware(&args) == -1)
 		rv = -1;
 	else {
@@ -345,13 +380,13 @@ int
 OF_finddevice(const char *name)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		const char *device;
-		int phandle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	device;
+		cell_t	phandle;
 	} args = {
-		"finddevice",
+		0,
 		1,
 		1,
 	};
@@ -359,8 +394,9 @@ OF_finddevice(const char *name)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("finddevice");
 	strncpy(OF_buf, name, NBPG);
-	args.device = OF_buf;
+	args.device = OFW_CELL(OF_buf);
 	if (openfirmware(&args) == -1)
 		rv = -1;
 	else
@@ -374,15 +410,15 @@ int
 OF_instance_to_path(int ihandle, char *buf, int buflen)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		char *buf;
-		int buflen;
-		int length;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	length;
 	} args = {
-		"instance-to-path",
+		0,
 		3,
 		1,
 	};
@@ -393,17 +429,18 @@ OF_instance_to_path(int ihandle, char *buf, int buflen)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("instance-to-path");
 	args.ihandle = ihandle;
-	args.buf = OF_buf;
+	args.buf = OFW_CELL(OF_buf);
 	args.buflen = buflen;
 	if (openfirmware(&args) < 0)
 		rv = -1;
 	else {
-		if (args.length > buflen)
-			args.length = buflen;
-		if (args.length > 0)
-			ofbcopy(OF_buf, buf, args.length);
-		rv = args.length;
+		rv = OFW_INT(args.length);
+		if (rv > buflen)
+			rv = buflen;
+		if (rv > 0)
+			ofbcopy(OF_buf, buf, rv);
 	}
 
 	ofw_unlock(s);
@@ -414,15 +451,15 @@ int
 OF_package_to_path(int phandle, char *buf, int buflen)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		char *buf;
-		int buflen;
-		int length;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	buf;
+		cell_t	buflen;
+		cell_t	length;
 	} args = {
-		"package-to-path",
+		0,
 		3,
 		1,
 	};
@@ -433,17 +470,18 @@ OF_package_to_path(int phandle, char *buf, int buflen)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("package-to-path");
 	args.phandle = phandle;
-	args.buf = OF_buf;
+	args.buf = OFW_CELL(OF_buf);
 	args.buflen = buflen;
 	if (openfirmware(&args) < 0)
 		rv = -1;
 	else {
-		if (args.length > buflen)
-			args.length = buflen;
-		if (args.length > 0)
-			ofbcopy(OF_buf, buf, args.length);
-		rv = args.length;
+		rv = OFW_INT(args.length);
+		if (rv > buflen)
+			rv = buflen;
+		if (rv > 0)
+			ofbcopy(OF_buf, buf, rv);
 	}
 
 	ofw_unlock(s);
@@ -454,14 +492,14 @@ int
 OF_call_method(const char *method, int ihandle, int nargs, int nreturns, ...)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		const char *method;
-		int ihandle;
-		int args_n_results[12];
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	method;
+		cell_t	ihandle;
+		cell_t	args_n_results[12];
 	} args = {
-		"call-method",
+		0,
 		2,
 		1,
 	};
@@ -475,9 +513,10 @@ OF_call_method(const char *method, int ihandle, int nargs, int nreturns, ...)
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("call-method");
 	args.nargs = nargs + 2;
 	args.nreturns = nreturns + 1;
-	args.method = method;
+	args.method = OFW_CELL(method);
 	args.ihandle = ihandle;
 
 	va_start(ap, nreturns);
@@ -508,14 +547,14 @@ int
 OF_call_method_1(const char *method, int ihandle, int nargs, ...)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		const char *method;
-		int ihandle;
-		int args_n_results[8];
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	method;
+		cell_t	ihandle;
+		cell_t	args_n_results[8];
 	} args = {
-		"call-method",
+		0,
 		2,
 		2,
 	};
@@ -529,8 +568,9 @@ OF_call_method_1(const char *method, int ihandle, int nargs, ...)
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("call-method");
 	args.nargs = nargs + 2;
-	args.method = method;
+	args.method = OFW_CELL(method);
 	args.ihandle = ihandle;
 
 	va_start(ap, nargs);
@@ -554,16 +594,17 @@ int
 OF_open(const char *dname)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		const char *dname;
-		int handle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	dname;
+		cell_t	handle;
 	} args = {
-		"open",
+		0,
 		1,
 		1,
 	};
+
 	int l;
 
 	if ((l = strlen(dname)) >= PAGE_SIZE)
@@ -572,8 +613,9 @@ OF_open(const char *dname)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("open");
 	ofbcopy(dname, OF_buf, l + 1);
-	args.dname = OF_buf;
+	args.dname = OFW_CELL(OF_buf);
 	if (openfirmware(&args) == -1)
 		rv = -1;
 	else
@@ -587,18 +629,19 @@ void
 OF_close(int handle)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int handle;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	handle;
 	} args = {
-		"close",
+		0,
 		1,
 		0,
 	};
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("close");
 	args.handle = handle;
 	openfirmware(&args);
 
@@ -612,25 +655,27 @@ int
 OF_read(int handle, void *addr, int len)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		void *addr;
-		int len;
-		int actual;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	addr;
+		cell_t	len;
+		cell_t	actual;
 	} args = {
-		"read",
+		0,
 		3,
 		1,
 	};
+
 	int l, act = 0;
 	char *p = addr;
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("read");
 	args.ihandle = handle;
-	args.addr = OF_buf;
+	args.addr = OFW_CELL(OF_buf);
 	for (; len > 0; len -= l, p += l) {
 		l = uimin(PAGE_SIZE, len);
 		args.len = l;
@@ -638,13 +683,13 @@ OF_read(int handle, void *addr, int len)
 			act = -1;
 			goto out;
 		}
-		if (args.actual > 0) {
-			ofbcopy(OF_buf, p, args.actual);
-			act += args.actual;
+		if (OFW_INT(args.actual) > 0) {
+			ofbcopy(OF_buf, p, OFW_INT(args.actual));
+			act += OFW_INT(args.actual);
 		}
-		if (args.actual < l) {
+		if (OFW_INT(args.actual) < l) {
 			if (act == 0) {
-				act = args.actual;
+				act = OFW_INT(args.actual);
 			}
 			goto out;
 		}
@@ -659,25 +704,27 @@ int
 OF_write(int handle, const void *addr, int len)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int ihandle;
-		void *addr;
-		int len;
-		int actual;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	ihandle;
+		cell_t	addr;
+		cell_t	len;
+		cell_t	actual;
 	} args = {
-		"write",
+		0,
 		3,
 		1,
 	};
+
 	int l, act = 0;
 	const char *p = addr;
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("write");
 	args.ihandle = handle;
-	args.addr = OF_buf;
+	args.addr = OFW_CELL(OF_buf);
 	for (; len > 0; len -= l, p += l) {
 		l = uimin(PAGE_SIZE, len);
 		ofbcopy(p, OF_buf, l);
@@ -687,7 +734,7 @@ OF_write(int handle, const void *addr, int len)
 			act = -1;
 			goto out;
 		}
-		l = args.actual;
+		l = OFW_INT(args.actual);
 		act += l;
 	}
 
@@ -700,15 +747,15 @@ int
 OF_seek(int handle, u_quad_t pos)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int handle;
-		int poshi;
-		int poslo;
-		int status;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	handle;
+		cell_t	poshi;
+		cell_t	poslo;
+		cell_t	status;
 	} args = {
-		"seek",
+		0,
 		3,
 		1,
 	};
@@ -716,6 +763,7 @@ OF_seek(int handle, u_quad_t pos)
 	const register_t s = ofw_lock();
 	int rv;
 
+	args.name = OFW_CELL("seek");
 	args.handle = handle;
 	args.poshi = (int)(pos >> 32);
 	args.poslo = (int)pos;
@@ -733,14 +781,14 @@ void
 OF_start_cpu(int phandle, u_int pc, int arg)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		int phandle;
-		u_int pc;
-		int arg;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	phandle;
+		cell_t	pc;
+		cell_t	arg;
 	} args = {
-		"start-cpu",
+		0,
 		3,
 		0,
 	};
@@ -748,6 +796,7 @@ OF_start_cpu(int phandle, u_int pc, int arg)
 	const register_t s = ofw_lock();
 	bool failed = false;
 
+	args.name = OFW_CELL("start-cpu");
 	args.phandle = phandle;
 	args.pc = pc;
 	args.arg = arg;
@@ -765,15 +814,16 @@ void
 OF_boot(const char *bstr)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		char *bootspec;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	bootspec;
 	} args = {
-		"boot",
+		0,
 		1,
 		0,
 	};
+
 	int l;
 
 	if ((l = strlen(bstr)) >= PAGE_SIZE)
@@ -781,8 +831,9 @@ OF_boot(const char *bstr)
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("boot");
 	ofbcopy(bstr, OF_buf, l + 1);
-	args.bootspec = OF_buf;
+	args.bootspec = OFW_CELL(OF_buf);
 	openfirmware(&args);
 
 	ofw_unlock(s);
@@ -793,17 +844,18 @@ void
 OF_enter(void)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
 	} args = {
-		"enter",
+		0,
 		0,
 		0,
 	};
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("enter");
 	openfirmware(&args);
 
 	ofw_unlock(s);
@@ -813,17 +865,18 @@ void
 OF_exit(void)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
 	} args = {
-		"exit",
+		0,
 		0,
 		0,
 	};
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("exit");
 	openfirmware(&args);
 
 	ofw_unlock(s);
@@ -834,13 +887,13 @@ void
 (*OF_set_callback (void (*newfunc)(void *))) (void *)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
-		void (*newfunc)(void *);
-		void (*oldfunc)(void *);
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	newfunc;
+		cell_t	oldfunc;
 	} args = {
-		"set-callback",
+		0,
 		1,
 		1,
 	};
@@ -848,11 +901,12 @@ void
 	const register_t s = ofw_lock();
 	void (*rv)(void *);
 
-	args.newfunc = newfunc;
+	args.name = OFW_CELL("set-callback");
+	args.newfunc = OFW_CELL(newfunc);
 	if (openfirmware(&args) == -1)
 		rv = NULL;
 	else
-		rv = args.oldfunc;
+		rv = (void (*)(void *))(uintptr_t)args.oldfunc;
 
 	ofw_unlock(s);
 	return rv;
@@ -862,12 +916,12 @@ int
 OF_interpret(const char *cmd, int nargs, int nreturns, ...)
 {
 	static struct {
-		const char *name;
-		uint32_t nargs;
-		uint32_t nreturns;
-		uint32_t slots[16];
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
+		cell_t	slots[16];
 	} args = {
-		"interpret",
+		0,
 		1,
 		2,
 	};
@@ -883,6 +937,7 @@ OF_interpret(const char *cmd, int nargs, int nreturns, ...)
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("interpret");
 	ofbcopy(cmd, OF_buf, len + 1);
 	i = 0;
 	args.slots[i] = (uintptr_t)OF_buf;
@@ -916,17 +971,18 @@ void
 OF_quiesce(void)
 {
 	static struct {
-		const char *name;
-		int nargs;
-		int nreturns;
+		cell_t	name;
+		cell_t	nargs;
+		cell_t	nreturns;
 	} args = {
-		"quiesce",
+		0,
 		0,
 		0,
 	};
 
 	const register_t s = ofw_lock();
 
+	args.name = OFW_CELL("quiesce");
 	openfirmware(&args);
 
 	ofw_unlock(s);

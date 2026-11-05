@@ -127,6 +127,18 @@ void i8259_disable_irq(struct pic_ops *, int);
 void i8259_ack_irq(struct pic_ops *, int);
 int i8259_get_irq(struct pic_ops *, int);
 
+/* PAPR XICS, legacy mode */
+extern bool xics_active;
+void setup_xics(int);
+void xics_cpu_init(void);
+int xics_map_isn(uint32_t);
+
+/* PAPR XIVE, exploitation mode */
+extern bool xive_active;
+void setup_xive(int);
+void xive_cpu_init(void);
+int xive_map_lisn(uint32_t);
+
 /* openpic common decls */
 void opic_finish_setup(struct pic_ops *pic);
 void openpic_set_priority(int cpu, int pri);

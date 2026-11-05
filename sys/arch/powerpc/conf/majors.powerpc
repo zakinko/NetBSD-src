@@ -94,6 +94,7 @@ device-major	xlcom		char 99			xlcom
 device-major	satmgr		char 100		satmgr
 device-major	psc		char 101		psc
 device-major	verite3d	char 102		veritefb
+device-major	pvty		char 103		pvty
 
 # Majors up to 143 are reserved for machine-dependent drivers.
 # New machine-independent driver majors are assigned in 

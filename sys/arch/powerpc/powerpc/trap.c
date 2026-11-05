@@ -188,6 +188,11 @@ trap(struct trapframe *tf)
 				 */
 				if (rv == 0)
 					uvm_grow(p, trunc_page(va));
+#ifdef PPC_OEA64_SLB
+				/* The window may have gone while we slept. */
+				if (rv == 0)
+					pmap_setusr_refresh();
+#endif
 			}
 			if (rv == 0)
 				return;

@@ -43,6 +43,9 @@
  *
  * [*] Little-endian mode on the 601 is implemented in the HID0 register.
  */
+#ifdef _LP64
+#define	PSL_SF		0x8000000000000000UL /* 64-bit mode (Book III-S 2.07, 3.2.1) */
+#endif
 #define	PSL_VEC		0x02000000	/* ..6. AltiVec vector unit available */
 #define	PSL_SPV		0x02000000	/* B... (e500) SPE enable */
 #define	PSL_UCLE	0x00400000	/* B... user-mode cache lock enable */

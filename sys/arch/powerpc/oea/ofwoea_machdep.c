@@ -93,8 +93,9 @@ extern struct model_data modeldata;
 #endif
 
 typedef struct _rangemap {
-	u_int32_t addr;
-	u_int32_t size;
+	bus_addr_t addr;	/* parent (CPU) address */
+	bus_addr_t child;	/* the same place in the child's space */
+	bus_size_t size;
 	int type;
 } rangemap_t;
 
@@ -131,7 +132,12 @@ u_int timebase_freq = 0;
 
 int ofw_quiesce;
 
-extern int ofwmsr;
+/*
+ * ofw_subr.S keeps this as a whole MSR, so it is register-wide.  An int
+ * here would name the high half on a big-endian LP64 kernel, and the
+ * PSL_IP below -- which lives in the low half -- would never be cleared.
+ */
+extern register_t ofwmsr;
 extern uint32_t ticks_per_sec;
 extern uint32_t ns_per_tick;
 extern uint32_t ticks_per_intr;
@@ -140,6 +146,78 @@ static void get_timebase_frequency(void);
 static void init_decrementer(void);
 
 static void restore_ofmap(void);
+
+#if defined(PPC_OEA64_SLB)
+/*
+ * A partition of the LPAR option (LoPAPR 1.1) does not own its page
+ * table.  R1-14.5.3-1 puts "ibm,hypertas-functions" in /rtas when the
+ * platform is in LPAR mode, and the page table hcall()s are the set
+ * named "hcall-pft" (Table 176).  The table's size is the second cell of
+ * "ibm,pft-size" in each cpu node (R1-14.5.4.1-2, B.6.4).
+ *
+ * pmap_setup_segment0_map() maps memory above the first segment with
+ * 16MB pages, L=1 and LP=0 in the SLB entry and in the PTE.  H_ENTER
+ * refuses a page size the region does not allow (14.5.4.1.2), so the
+ * same node's "ibm,segment-page-sizes" (C.6) has to offer exactly that:
+ * a base size of 2^24 whose SLB encoding is L, holding a 2^24 page whose
+ * PTE encoding is 0.
+ */
+static void
+ofwoea_papr_probe(void)
+{
+	char funcs[1024], type[16];
+	uint32_t cell[64];
+	int node, cpus, len, i, j, n;
+	bool large = false;
+
+	node = OF_finddevice("/rtas");
+	if (node == -1)
+		return;
+	len = OF_getprop(node, "ibm,hypertas-functions", funcs,
+	    sizeof(funcs) - 1);
+	if (len <= 0)
+		return;
+	len = MIN(len, (int)sizeof(funcs) - 1);	/* the whole length */
+	funcs[len] = '\0';
+	for (i = 0; i < len; i += strlen(funcs + i) + 1)
+		if (strcmp(funcs + i, "hcall-pft") == 0)
+			break;
+	if (i >= len)
+		return;
+
+	cpus = OF_finddevice("/cpus");
+	for (node = OF_child(cpus); node != 0; node = OF_peer(node)) {
+		memset(type, 0, sizeof(type));
+		if (OF_getprop(node, "device_type", type,
+		    sizeof(type) - 1) > 0 && strcmp(type, "cpu") == 0)
+			break;
+	}
+	if (node == 0 || node == -1)
+		panic("LPAR: no cpu node under /cpus");
+
+	if (OF_getprop(node, "ibm,pft-size", cell, 2 * sizeof(cell[0])) !=
+	    2 * sizeof(cell[0]) || cell[1] == 0)
+		panic("LPAR: no ibm,pft-size");
+
+	len = OF_getprop(node, "ibm,segment-page-sizes", cell, sizeof(cell));
+	n = len > 0 ? MIN(len, (int)sizeof(cell)) / sizeof(cell[0]) : 0;
+	for (i = 0; i + 3 <= n; ) {
+		const uint32_t base = cell[i], slb = cell[i + 1];
+		const uint32_t cnt = cell[i + 2];
+
+		for (i += 3, j = 0; j < cnt && i + 2 <= n; j++, i += 2)
+			if (base == 24 && slb == SLBV_LARGE &&
+			    cell[i] == 24 && cell[i + 1] == 0)
+				large = true;
+	}
+	if (!large)
+		panic("LPAR: ibm,segment-page-sizes offers no 16MB page"
+		    " as L=1, LP=0");
+
+	OF_getprop(node, "ibm,pft-size", cell, 2 * sizeof(cell[0]));
+	pmap_pft_shift = cell[1];
+}
+#endif /* PPC_OEA64_SLB */
 
 void
 ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
@@ -203,6 +281,9 @@ ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
 
 	uvm_md_init();
 
+#if defined(PPC_OEA64_SLB)
+	ofwoea_papr_probe();
+#endif
 	pmap_bootstrap(startkernel, endkernel);
 
 /* as far as I can tell, the pmap_setup_seg0 stuff is horribly broken */
@@ -214,6 +295,18 @@ ofwoea_initppc(u_int startkernel, u_int endkernel, char *args)
  * bridge, so this is not for PPC_OEA64: naming the function there does
  * not even compile.
  */
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * The same 1:1 map of the first segment the bridge needs, for the
+	 * same reason: no BATs.  Unconditional here -- every processor this
+	 * kernel runs on reloads the SLB in software and none of them has
+	 * BAT registers -- where the bridge asks oeacpufeat first, because
+	 * there it is an option a 64-bit processor may or may not be using.
+	 */
+	pmap_setup_segment0_map(0, msgbuf_paddr, msgbuf_paddr,
+	    round_page(MSGBUFSIZE), 0x0);
+#endif /* PPC_OEA64_SLB */
+
 #if defined (PPC_OEA64_BRIDGE)
 #if defined (PMAC_G5)
 	/* Mapin 1st 256MB segment 1:1, also map in mem needed to access OFW*/
@@ -388,8 +481,17 @@ restore_ofmap(void)
 			break;
 		}
 
-		if (va < 0xf0000000)	/* XXX */
-			continue;
+		/*
+		 * Every translation, not only those at or above 0xf0000000:
+		 * a client that takes over the MMU and still calls Open
+		 * Firmware in virtual mode must preserve the firmware's
+		 * translations (PowerPC Processor Binding 2.1, 4.2.6), and
+		 * "translations" lists them all (5.1.7).  Firmware that keeps
+		 * its data below that line -- OpenBIOS puts it at the top of
+		 * RAM, mapped 1:1 -- took a DSI on its own data inside a
+		 * client interface call whenever that data lay outside
+		 * segment 0.
+		 */
 
 		/*
 		 * XXX macallan@
@@ -430,6 +532,23 @@ struct powerpc_bus_space genppc_isa_mem_space_tag = {
 static char ex_storage[EXSTORAGE_MAX][EXTENT_FIXED_STORAGE_SIZE(EXTMAP_RANGES)]
 	__attribute__((aligned(8)));
 
+
+/*
+ * A "ranges" entry is child-phys, parent-phys, size (IEEE 1275-1994,
+ * Annex A): parent-phys is the parent's #address-cells wide and size is
+ * this node's #size-cells, each cell a 32-bit integer, most significant
+ * first.  Taking only the last cell of each dropped the high word of a
+ * PCI host bridge that sits above 4GB, as the PAPR platform's do.
+ */
+static bus_addr_t
+ranges_cells(const u_int32_t *cell, int ncells)
+{
+	uint64_t v = 0;
+
+	while (ncells-- > 0)
+		v = (v << 32) | *cell++;
+	return (bus_addr_t)v;
+}
 
 static void
 find_ranges(int base, rangemap_t *regions, int *cur, int type)
@@ -491,13 +610,22 @@ find_ranges(int base, rangemap_t *regions, int *cur, int type)
 		case RANGE_TYPE_FIRSTPCI:
 			for (i=0; i < len/(4*reclen); i++) {
 				DPRINTF("FOUND PCI RANGE\n");
-				regions[*cur].size =
-				    map[i*reclen + parent_acells + acells + scells - 1];
+				regions[*cur].size = ranges_cells(
+				    &map[i*reclen + acells + parent_acells], scells);
 				/* skip ranges of size==0 */
 				if (regions[*cur].size == 0)
 					continue;
 				regions[*cur].type = (map[i*reclen] >> 24) & 0x3;
-				regions[*cur].addr = map[i*reclen + parent_acells + acells - 1];
+				regions[*cur].addr = ranges_cells(
+				    &map[i*reclen + acells], parent_acells);
+				/*
+				 * A PCI address is phys.hi, the space code
+				 * and the rest, then phys.mid and phys.lo,
+				 * which together are the address (PCI Bus
+				 * Binding 2.1, 2.2.1.1).
+				 */
+				regions[*cur].child = ranges_cells(
+				    &map[i*reclen + 1], acells - 1);
 				(*cur)++;
 			}
 			break;
@@ -523,6 +651,8 @@ find_ranges(int base, rangemap_t *regions, int *cur, int type)
 				regions[*cur].size = map[2];
 				regions[*cur].addr = map[1];
 			}				
+			/* "reg", not "ranges": there is no other space */
+			regions[*cur].child = regions[*cur].addr;
 			(*cur)++;		
 			break;
 	}
@@ -541,7 +671,7 @@ static int
 find_lowest_range(rangemap_t *ranges, int nrof, int type)
 {
 	int i, low = 0;
-	u_int32_t addr = 0xffffffff;
+	bus_addr_t addr = ~(bus_addr_t)0;
 
 	for (i=0; i < nrof; i++) {
 		if (ranges[i].type == type && ranges[i].addr != 0 &&
@@ -550,7 +680,7 @@ find_lowest_range(rangemap_t *ranges, int nrof, int type)
 			addr = ranges[i].addr;
 		}
 	}
-	if (addr == 0xffffffff)
+	if (addr == ~(bus_addr_t)0)
 		return -1;
 	return low;
 }
@@ -638,8 +768,8 @@ ofwoea_map_space(int rangetype, int iomem, int node,
 	DPRINTF("cur == %d\n", cur);
 	/* now list should contain a list of memory regions */
 	for (i=0; i < cur; i++)
-		DPRINTF("addr=0x%x size=0x%x type=%d\n", list[i].addr,
-		    list[i].size, list[i].type);
+		DPRINTF("addr=0x%" PRIxBUSADDR " size=0x%" PRIxBUSSIZE
+		    " type=%d\n", list[i].addr, list[i].size, list[i].type);
 
 	range = find_lowest_range(list, cur, iomem);
 	i = 0;
@@ -668,12 +798,12 @@ ofwoea_map_space(int rangetype, int iomem, int node,
 		range = find_lowest_range(list, cur, iomem);
 	}
 	DPRINTF("RANGE iomem=%d FOUND\n", iomem);
-	DPRINTF("addr=0x%x size=0x%x type=%d\n", region.addr,
-		    region.size, region.type);
+	DPRINTF("addr=0x%" PRIxBUSADDR " size=0x%" PRIxBUSSIZE
+		    " type=%d\n", region.addr, region.size, region.type);
 	DPRINTF("HOLES FOUND\n");
 	for (i=0; i < nrofholes; i++)
-		DPRINTF("addr=0x%x size=0x%x type=%d\n", holes[i].addr,
-		    holes[i].size, holes[i].type);
+		DPRINTF("addr=0x%" PRIxBUSADDR " size=0x%" PRIxBUSSIZE
+		    " type=%d\n", holes[i].addr, holes[i].size, holes[i].type);
 	/* AT THIS POINT WE MAP IT */
 
 	if ((rangetype == RANGE_TYPE_PCI) || (rangetype == RANGE_TYPE_MACIO)) {
@@ -681,18 +811,21 @@ ofwoea_map_space(int rangetype, int iomem, int node,
 			panic("Not enough ex_storage space. "
 			    "Increase EXSTORAGE_MAX");
 
-		/* XXX doing this in here might be wrong */
-		if (iomem == 1) {
-			/* we map an IO region */
-			tag->pbs_offset = region.addr;
-			tag->pbs_base = 0;
-			tag->pbs_limit = region.size;
-		} else {
-			/* ... or a memory region */
-			tag->pbs_offset = 0;
-			tag->pbs_base = region.addr;
-			tag->pbs_limit = region.size + region.addr;
-		}
+		/*
+		 * The tag's base and limit are bus addresses, the ones a
+		 * base register holds, and pbs_offset takes them to CPU
+		 * addresses.  Memory used to be given the parent address as
+		 * its base and no offset, and I/O a child base of 0; both
+		 * are right only where the bridge maps the space at that
+		 * child address.  A PAPR host bridge maps 32-bit memory at
+		 * 0x80000000 on the bus but far above 4GB in the CPU's
+		 * space, and with the parent address as the bus range a
+		 * 32-bit base register could not be placed.  Where child
+		 * and parent agree the offset is 0 and nothing changes.
+		 */
+		tag->pbs_offset = region.addr - region.child;
+		tag->pbs_base = region.child;
+		tag->pbs_limit = region.child + region.size;
 
 		error = bus_space_init(tag, name, ex_storage[exmap],
 		    sizeof(ex_storage[exmap]));
@@ -700,17 +833,14 @@ ofwoea_map_space(int rangetype, int iomem, int node,
 		if (error)
 			panic("ofwoea_bus_space_init: can't init tag %s", name);
 		for (i=0; i < nrofholes; i++) {
-			if (holes[i].type == RANGE_IO) {
-				error = extent_alloc_region(tag->pbs_extent,
-				    holes[i].addr - tag->pbs_offset,
-				    holes[i].size, EX_NOWAIT);
-			} else {
-				error = extent_alloc_region(tag->pbs_extent,
-				    holes[i].addr, holes[i].size, EX_NOWAIT);
-			}
+			/* holes are parent addresses; the extent is the bus's */
+			error = extent_alloc_region(tag->pbs_extent,
+			    holes[i].addr - tag->pbs_offset,
+			    holes[i].size, EX_NOWAIT);
 			if (error)
 				panic("ofwoea_bus_space_init: can't block out"
-				    " reserved space 0x%x-0x%x: error=%d",
+				    " reserved space 0x%" PRIxBUSADDR "-0x%"
+				    PRIxBUSADDR ": error=%d",
 				    holes[i].addr, holes[i].addr+holes[i].size,
 				    error);
 		}

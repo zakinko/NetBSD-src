@@ -1,0 +1,17 @@
+#	$NetBSD$
+#
+# NetBSD/ofppc, LP64, for processors that reload the SLB in software.
+# GENERIC64 is the same machine built for the segment table; see
+# std.ofppc64.slb for which processors are which.
+#
+
+include "arch/ofppc/conf/GENERIC"
+include "arch/ofppc/conf/std.ofppc64.slb"
+
+# PAPR partitions (qemu -M pseries)
+options 	PIC_XICS
+options 	PIC_XIVE	# POWER9 and later, if ofwboot asked for it
+pvty*		at mainbus?	# PAPR virtual terminal
+
+# As in GENERIC64: COMPAT_NETBSD32 has no machine dependent half here.
+no options 	COMPAT_NETBSD32

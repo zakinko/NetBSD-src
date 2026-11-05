@@ -444,6 +444,8 @@ int genofw_pci_conf_hook(void *, int, int, int, pcireg_t);
 #define PICNODE_TYPE_OHARE	4
 #define PICNODE_TYPE_IVR	5
 #define PICNODE_TYPE_MPC5200	6
+#define PICNODE_TYPE_XICS	7
+#define PICNODE_TYPE_XIVE	8
 
 typedef struct _ofw_pic_node_t {
 	int node;

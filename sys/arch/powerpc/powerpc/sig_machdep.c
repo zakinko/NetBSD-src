@@ -54,6 +54,18 @@ __KERNEL_RCSID(0, "$NetBSD: sig_machdep.c,v 1.55 2023/12/20 15:29:06 thorpej Exp
 #include <powerpc/pcb.h>
 #include <powerpc/psl.h>
 
+/*
+ * The thread pointer: r2 in the 32-bit ABI, r13 in the 64-bit one, where
+ * r2 holds the TOC (64-bit PowerPC ELF ABI Supplement 1.9, 3.2.1).
+ * Writing it to r2 there replaced the TOC of whatever called
+ * _lwp_setprivate(), ld.elf_so first of all.
+ */
+#ifdef _LP64
+#define	_REG_TLS	_REG_R13
+#else
+#define	_REG_TLS	_REG_R2
+#endif
+
 /* Pushing either of these must leave the stack aligned. */
 CTASSERT((sizeof(siginfo_t) & STACK_ALIGNBYTES) == 0);
 CTASSERT((sizeof(ucontext_t) & STACK_ALIGNBYTES) == 0);
@@ -75,6 +87,9 @@ sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 	ucontext_t uc;
 	vaddr_t sp, sip, ucp;
 	int onstack, error;
+#ifdef _LP64
+	register_t hdesc[3], tdesc[3];
+#endif
 
 	/* Do we need to jump onto the signal stack? */
 	onstack = (ss->ss_flags & (SS_DISABLE | SS_ONSTACK)) == 0 &&
@@ -126,6 +141,18 @@ sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 	 */
 	error = (copyout(&ksi->ksi_info, (void *)sip, sizeof(ksi->ksi_info)) != 0 ||
 	    copyout(&uc, (void *)ucp, sizeof(uc)) != 0);
+#ifdef _LP64
+	/*
+	 * The handler and the trampoline are function pointers, which
+	 * point at descriptors: the entry point, the TOC for r2 and an
+	 * environment pointer for r11 (64-bit PowerPC ELF ABI Supplement
+	 * 1.9, 3.2.5).  Used as they were, the handler ran its descriptor
+	 * as code.
+	 */
+	if (error == 0)
+		error = (copyin(handler, hdesc, sizeof(hdesc)) != 0 ||
+		    copyin(sd->sd_tramp, tdesc, sizeof(tdesc)) != 0);
+#endif
 	mutex_enter(p->p_lock);
 
 	if (error) {
@@ -149,8 +176,15 @@ sendsig_siginfo(const ksiginfo_t *ksi, const sigset_t *mask)
 		tf->tf_fixreg[5]  = (register_t)ucp;
 		/* Preserve ucp across call to signal function */
 		tf->tf_fixreg[30] = (register_t)ucp;
+#ifdef _LP64
+		tf->tf_fixreg[2]  = hdesc[1];
+		tf->tf_fixreg[11] = hdesc[2];
+		tf->tf_lr         = tdesc[0];
+		tf->tf_srr0       = hdesc[0];
+#else
 		tf->tf_lr         = (register_t)sd->sd_tramp;
 		tf->tf_srr0       = (register_t)handler;
+#endif
 		break;
 
 	default:
@@ -242,12 +276,13 @@ cpu_setmcontext(struct lwp *l, const mcontext_t *mcp, unsigned int flags)
 #endif
 
 		/*
-		 * R2 is the TLS register so avoid updating it here.
+		 * The TLS register is set below, if at all, so avoid
+		 * updating it here.
 		 */
 
-		__greg_t save_r2 = tf->tf_fixreg[_REG_R2];
+		__greg_t save_tls = tf->tf_fixreg[_REG_TLS];
 		(void)memcpy(&tf->tf_fixreg, gr, 32 * sizeof (gr[0]));
-		tf->tf_fixreg[_REG_R2] = save_r2;
+		tf->tf_fixreg[_REG_TLS] = save_tls;
 		tf->tf_cr   = gr[_REG_CR];
 		tf->tf_lr   = gr[_REG_LR];
 		tf->tf_srr0 = gr[_REG_PC];
@@ -266,7 +301,7 @@ cpu_setmcontext(struct lwp *l, const mcontext_t *mcp, unsigned int flags)
 	}
 
 	if (flags & _UC_TLSBASE)
-		lwp_setprivate(l, (void *)(uintptr_t)gr[_REG_R2]);
+		lwp_setprivate(l, (void *)(uintptr_t)gr[_REG_TLS]);
 
 #ifdef PPC_HAVE_FPU
 	/* Restore FPU context, if any. */
@@ -301,7 +336,7 @@ cpu_lwp_setprivate(lwp_t *l, void *addr)
 {
 	struct trapframe * const tf = l->l_md.md_utf;
 
-	tf->tf_fixreg[_REG_R2] = (register_t)addr;
+	tf->tf_fixreg[_REG_TLS] = (register_t)addr;
 
 	return 0;
 }

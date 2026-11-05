@@ -851,7 +851,17 @@ exec_elf_makecmds(struct lwp *l, struct exec_package *epp)
 
 		ap = kmem_alloc(sizeof(*ap), KM_SLEEP);
 		ap->arg_interp = epp->ep_vmcmds.evs_cmds[nused].ev_addr;
-		epp->ep_entryoffset = interp_offset;
+		/*
+		 * ep_entryoffset is how far the image ep_entry belongs to
+		 * was moved from where it was linked, as for a PIE above;
+		 * powerpc64 adds it to the addresses an ELF V1 function
+		 * descriptor holds.  interp_offset is the entry relative to
+		 * the interpreter's base instead, and using it made the
+		 * first instruction of every dynamic program land at
+		 * descriptor + e_entry.  The interpreter is linked at 0, so
+		 * the distance moved is where it was put.
+		 */
+		epp->ep_entryoffset = ap->arg_interp;
 		epp->ep_entry = ap->arg_interp + interp_offset;
 		PNBUF_PUT(interp);
 		interp = NULL;

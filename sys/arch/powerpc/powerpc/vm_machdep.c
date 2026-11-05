@@ -134,7 +134,17 @@ cpu_lwp_fork(struct lwp *l1, struct lwp *l2, void *stack, size_t stacksize,
 	 * There happens to be a partial callframe in front of the
 	 * trapframe, too.
 	 */
+#ifdef _LP64
+	/*
+	 * cpu_switchto() returns here with blr, so this wants code, and
+	 * a C function pointer is the address of the descriptor whose
+	 * first doubleword is the code (64-bit PowerPC ELF ABI 1.9,
+	 * 3.2.5).
+	 */
+	ktf->ktf_lr = ((const register_t *)(uintptr_t)cpu_lwp_bootstrap)[0];
+#else
 	ktf->ktf_lr = (register_t) cpu_lwp_bootstrap;
+#endif
 	ktf->ktf_sp = (register_t) (ktf + 1);		/* just in case */
 
 	cf->cf_sp = (register_t) ktf;
@@ -142,6 +152,16 @@ cpu_lwp_fork(struct lwp *l1, struct lwp *l2, void *stack, size_t stacksize,
 	cf->cf_r30 = (register_t) arg;
 
 	memset((void *)sf, 0, sizeof *sf);		/* just in case */
+#ifdef _LP64
+	/*
+	 * cpu_switchto() loads r2 from here and the new lwp's first code,
+	 * lwp_startup(), is C: under ELF V1 r2 is the TOC pointer (64-bit
+	 * PowerPC ELF ABI 1.9, 3.2.1), and zero sent its first global
+	 * access to the top of the address space.  The kernel has one TOC,
+	 * so this lwp's is the same.
+	 */
+	__asm volatile("mr %0,2" : "=r"(sf->sf_fixreg2));
+#endif
 	sf->sf_sp = (register_t) cf;
 #if defined (PPC_OEA) || defined (PPC_OEA64_BRIDGE)
 	sf->sf_user_sr = pmap_kernel()->pm_sr[USER_SR]; /* again, just in case */

@@ -69,6 +69,9 @@ static struct {
         { "system-reboot", RTAS_FUNC_SYSTEM_REBOOT },
 	{ "freeze-time-base", RTAS_FUNC_FREEZE_TIME_BASE },
 	{ "thaw-time-base", RTAS_FUNC_THAW_TIME_BASE },
+	{ "ibm,set-xive", RTAS_FUNC_IBM_SET_XIVE },
+	{ "ibm,int-on", RTAS_FUNC_IBM_INT_ON },
+	{ "ibm,int-off", RTAS_FUNC_IBM_INT_OFF },
 };
 
 static int rtas_match(device_t, cfdata_t, void *);
@@ -194,6 +197,44 @@ rtas_activate(device_t self, enum devact act)
  * Support for calling to the RTAS
  */
 
+/*
+ * One caller at a time, on any processor (R-7.2.3-1); the argument
+ * buffer below is shared too.
+ */
+static __cpu_simple_lock_t rtas_lock = __SIMPLELOCK_UNLOCKED;
+
+#ifdef _LP64
+/*
+ * instantiate-rtas leaves an RTAS that must be entered with MSR[SF] 0
+ * (R-7.2.1-6), and mtmsr does not alter the high-order half of the MSR
+ * (Book III-S 2.07, 4.4.4), so go in and out with mtmsrd.  RTAS keeps
+ * r13-r31 (R-7.2.2-1), so the MSR to return to is held in r31 and the
+ * stack, a virtual address, is not touched while translation is off.
+ * entry is the address of rtas-call itself, not a function descriptor.
+ * The kernel runs at the same virtual and real address, so the code
+ * after the call is reached at the return address RTAS is given.
+ */
+static void
+rtas_enter(paddr_t pargs, paddr_t base, paddr_t entry, register_t rmsr)
+{
+	register register_t r3 __asm("r3") = pargs;
+	register register_t r4 __asm("r4") = base;
+
+	__asm volatile(
+		"mfmsr	%%r31\n"
+		"mtctr	%2\n"
+		"mtmsrd	%3\n"
+		"isync\n"
+		"bctrl\n"
+		"mtmsrd	%%r31\n"
+		"isync\n"
+	    : "+r"(r3), "+r"(r4)
+	    : "r"(entry), "r"(rmsr)
+	    : "r0", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+	      "r31", "ctr", "lr", "xer", "cr2", "cr3", "cr4", "memory");
+}
+#endif
+
 int
 rtas_call(int token, int nargs, int nreturns, ...)
 {
@@ -208,7 +249,7 @@ rtas_call(int token, int nargs, int nreturns, ...)
 	paddr_t base;
 	register_t msr;
 	void (*entry)(paddr_t, paddr_t);
-	int n;
+	int n, rv;
 
 	if (rtas0_softc == NULL)
 		return -1;
@@ -222,6 +263,10 @@ rtas_call(int token, int nargs, int nreturns, ...)
 	base = rtas0_softc->ra_base_pa;
 	entry = rtas0_softc->ra_entry_pa;
 
+	msr = mfmsr();
+	mtmsr(msr & ~PSL_EE);
+	__cpu_simple_lock(&rtas_lock);
+
 	memset(args.args_n_results, 0, RTAS_MAXARGS * sizeof(int));
 	args.nargs = nargs;
 	args.nreturns = nreturns;
@@ -232,22 +277,30 @@ rtas_call(int token, int nargs, int nreturns, ...)
 		args.args_n_results[n] = va_arg(ap, int);
 
 	__insn_barrier();
-	msr = mfmsr();
+#ifdef _LP64
+	rtas_enter(pargs, base, (paddr_t)entry, msr & ~(PSL_EE | PSL_FP |
+	    PSL_ME | PSL_FE0 | PSL_SE | PSL_BE | PSL_FE1 | PSL_IR | PSL_DR |
+	    PSL_RI | PSL_SF));
+#else
 	mtmsr(msr & ~(PSL_EE | PSL_FP | PSL_ME | PSL_FE0 | PSL_SE | PSL_BE |
 		PSL_FE1 | PSL_IR | PSL_DR | PSL_RI));
 	__asm("isync;\n");
 
 	entry(pargs, base);
 
-	mtmsr(msr);
+	mtmsr(msr & ~PSL_EE);
 	__asm("isync;\n");
+#endif
 
 	for (n = nargs; n < nargs + nreturns && n < RTAS_MAXARGS; n++)
 		*va_arg(ap, int *) = args.args_n_results[n];
 
 	va_end(ap);
 
-	return args.args_n_results[nargs];
+	rv = args.args_n_results[nargs];
+	__cpu_simple_unlock(&rtas_lock);
+	mtmsr(msr);
+	return rv;
 }
 
 int

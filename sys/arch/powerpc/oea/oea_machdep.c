@@ -134,7 +134,6 @@ oea_init(void (*handler)(void))
 	extern int dsegtrap[], dsegsize[];
 	extern int isegtrap[], isegsize[];
 	extern char cpu_slbstk[][INTSTK];
-	extern struct slb cpu_slb[][SLB_NENTRIES];
 #endif
 	extern int sctrap[], scsize[];
 	extern int alitrap[], alisize[];
@@ -310,17 +309,22 @@ oea_init(void (*handler)(void))
 	 * 0x300 gets alitrap rather than dsitrap, and 0x400 gets
 	 * trapcode, neither of which reaches the next half page.
 	 */
-	memcpy((void *)(exc_base + EXC_DSEG), dsegtrap, (size_t)dsegsize);
-	memcpy((void *)(exc_base + EXC_ISEG), isegtrap, (size_t)isegsize);
-
 	/*
-	 * And the stack they stand on.  Both handlers are entered with
-	 * translation off, so this has to be set before the first
-	 * segment interrupt, which is as soon as it is turned on --
-	 * cpu_attach_common() is far too late for this processor.
+	 * The stack the handlers stand on.  This goes in before the
+	 * vectors: once one is at 0x380 the handler can be entered -- the
+	 * firmware runs with translation on and can take a segment
+	 * interrupt of its own -- and it would take ci_slbstk as a stack
+	 * pointer while the field is still null.
+	 *
+	 * ci_slb is not set here.  That field is what ofwinit()'s save
+	 * path reads to decide whether to empty the SLB, and emptying it
+	 * is only right once entry 0 is the kernel's, which happens in
+	 * pmap_bootstrap2().
 	 */
 	ci->ci_slbstk = cpu_slbstk[ci->ci_cpuid];
-	ci->ci_slb = cpu_slb[ci->ci_cpuid];
+
+	memcpy((void *)(exc_base + EXC_DSEG), dsegtrap, (size_t)dsegsize);
+	memcpy((void *)(exc_base + EXC_ISEG), isegtrap, (size_t)isegsize);
 #endif
 
 	/*
@@ -499,6 +503,16 @@ oea_init(void (*handler)(void))
 #endif
 #ifdef PPC_HIGH_VEC
 	cpu_psluserset |= PSL_IP;	/* XXX ok? */
+#endif
+#ifdef _LP64
+	/*
+	 * A native process runs in 64-bit mode.  SF is outside the low
+	 * halfword cpu_pslusermask keeps, and userret() masks SRR1 with
+	 * it on every return, so without it in both every process ran in
+	 * 32-bit mode with its addresses cut to 32 bits.
+	 */
+	cpu_psluserset |= PSL_SF;
+	cpu_pslusermask |= PSL_SF;
 #endif
 
 	/*
@@ -925,7 +939,25 @@ oea_install_extint_vec(void (*handler)(void), u_int vector)
 {
 	extern int extint[], extsize[];
 	extern int extint_call[];
+#ifdef _LP64
+	/*
+	 * A C function pointer is the address of the function's
+	 * descriptor, not of its code (64-bit PowerPC ELF ABI 1.9,
+	 * 3.2.5); the branch wants the entry point in the first
+	 * doubleword.  trap_subr.S loads trap()'s TOC before the branch,
+	 * which is only right if the handler uses the same one.
+	 */
+	extern void trap(struct trapframe *);
+	const uintptr_t *desc = (const uintptr_t *)(uintptr_t)handler;
+	const uintptr_t *tdesc = (const uintptr_t *)(uintptr_t)trap;
+	uintptr_t offset = desc[0] - (uintptr_t)extint_call;
+
+	KASSERTMSG(desc[1] == tdesc[1],
+	    "install_extint: %p has TOC %#lx, trap() %#lx", handler,
+	    (unsigned long)desc[1], (unsigned long)tdesc[1]);
+#else
 	uintptr_t offset = (uintptr_t)handler - (uintptr_t)extint_call;
+#endif
 #ifdef PPC_HIGH_VEC
 	const uintptr_t exc_exi_base = EXC_HIGHVEC + vector;
 #else

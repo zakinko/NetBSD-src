@@ -62,6 +62,19 @@
 #define RESTORE_VRSAVE(tf,b)
 #endif
 
+#if defined(_LP64)
+/*
+ * "The 288 bytes below the stack pointer is available as volatile
+ * storage ... Interrupt handlers ... must take care to preserve this
+ * region" (64-bit PowerPC ELF ABI 1.9, 3.2.2), and the compiler keeps a
+ * leaf function's locals there.  An exception taken in the kernel
+ * builds its frame on the stack it interrupted, so it steps over them
+ * first.  One from user mode starts at the top of the pcb instead, where
+ * trapframe(l) expects to find it.
+ */
+#define	RED_ZONE	288
+#endif
+
 #if defined (PPC_OEA64) || defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 #define	RFI	rfid
 #else
@@ -439,6 +452,38 @@ _C_LABEL(isegsize) = .-_C_LABEL(isegtrap)
 #define	SLBFRAME	(CALLFRAMELEN + ((14*SZREG + 15) & ~15))
 slbtrap_common:
 	mtsprg1	%r1			/* save SP */
+	GET_CPUINFO(%r30)		/* stand on the real-mode stack */
+	ldptr	%r1,CI_SLBSTK(%r30)
+	addi	%r1,%r1,INTSTK-SLBFRAME
+
+	/*
+	 * Everything the call is allowed to destroy.  r28-r31 are in the
+	 * save area already and r1 is in SPRG1; the rest has nowhere
+	 * else to be, and the instruction the RFI returns to is still
+	 * using it.  r2 is here because a call through a global entry
+	 * point reloads the TOC.
+	 *
+	 * All of it before r3 and r4 become the arguments.  Saved after,
+	 * as they were, the interrupted code got the pmap and the address
+	 * that missed back in their place.
+	 */
+	streg	%r0,(CALLFRAMELEN+0*SZREG)(%r1)
+	streg	%r2,(CALLFRAMELEN+1*SZREG)(%r1)
+	streg	%r5,(CALLFRAMELEN+2*SZREG)(%r1)
+	streg	%r6,(CALLFRAMELEN+3*SZREG)(%r1)
+	streg	%r7,(CALLFRAMELEN+4*SZREG)(%r1)
+	streg	%r8,(CALLFRAMELEN+5*SZREG)(%r1)
+	streg	%r9,(CALLFRAMELEN+6*SZREG)(%r1)
+	streg	%r10,(CALLFRAMELEN+7*SZREG)(%r1)
+	streg	%r11,(CALLFRAMELEN+8*SZREG)(%r1)
+	streg	%r12,(CALLFRAMELEN+9*SZREG)(%r1)
+	mfctr	%r30
+	streg	%r30,(CALLFRAMELEN+10*SZREG)(%r1)
+	mfxer	%r30
+	streg	%r30,(CALLFRAMELEN+11*SZREG)(%r1)
+	streg	%r3,(CALLFRAMELEN+12*SZREG)(%r1)
+	streg	%r4,(CALLFRAMELEN+13*SZREG)(%r1)
+
 	mfsrr1	%r30			/* MSR_PR says whose address space */
 	mtcr	%r30
 	bt	MSR_PR,1f
@@ -458,36 +503,21 @@ slbtrap_common:
 	ldptr	%r3,CI_CURPM(%r3)
 2:	mr	%r4,%r31		/* the address that missed */
 
-	GET_CPUINFO(%r30)		/* stand on the real-mode stack */
-	ldptr	%r1,CI_SLBSTK(%r30)
-	addi	%r1,%r1,INTSTK-SLBFRAME
-
+#if defined(_LP64)
 	/*
-	 * Everything the call is allowed to destroy.  r28-r31 are in the
-	 * save area already and r1 is in SPRG1; the rest has nowhere
-	 * else to be, and the instruction the RFI returns to is still
-	 * using it.  r2 is here because a call through a global entry
-	 * point reloads the TOC.
+	 * ELF V1: the symbol is a descriptor, not code.  Its first
+	 * doubleword is the entry point and its second the TOC the
+	 * callee expects in r2.  Branching to the symbol itself lands
+	 * on the descriptor's words, which are a zero doubleword for
+	 * any address below 4GB.
 	 */
-	streg	%r0,(CALLFRAMELEN+0*SZREG)(%r1)
-	streg	%r2,(CALLFRAMELEN+1*SZREG)(%r1)
-	streg	%r5,(CALLFRAMELEN+2*SZREG)(%r1)
-	streg	%r6,(CALLFRAMELEN+3*SZREG)(%r1)
-	streg	%r7,(CALLFRAMELEN+4*SZREG)(%r1)
-	streg	%r8,(CALLFRAMELEN+5*SZREG)(%r1)
-	streg	%r9,(CALLFRAMELEN+6*SZREG)(%r1)
-	streg	%r10,(CALLFRAMELEN+7*SZREG)(%r1)
-	streg	%r11,(CALLFRAMELEN+8*SZREG)(%r1)
-	streg	%r12,(CALLFRAMELEN+9*SZREG)(%r1)
-	mfctr	%r30
-	streg	%r30,(CALLFRAMELEN+10*SZREG)(%r1)
-	mfxer	%r30
-	streg	%r30,(CALLFRAMELEN+11*SZREG)(%r1)
-	/* r3 and r4 are the arguments, and are saved last of all. */
-	streg	%r3,(CALLFRAMELEN+12*SZREG)(%r1)
-	streg	%r4,(CALLFRAMELEN+13*SZREG)(%r1)
-
-#if defined(DISTANT_KERNEL)
+	lis	%r31,_C_LABEL(pmap_slb_fault)@ha
+	addi	%r31,%r31,_C_LABEL(pmap_slb_fault)@l
+	ld	%r30,0(%r31)
+	ld	%r2,8(%r31)
+	mtctr	%r30
+	bctrl
+#elif defined(DISTANT_KERNEL)
 	lis	%r31,_C_LABEL(pmap_slb_fault)@ha
 	addi	%r31,%r31,_C_LABEL(pmap_slb_fault)@l
 	mtlr	%r31
@@ -625,7 +655,13 @@ _C_LABEL(extint):
 	ldptr	%r1,CI_CURPCB(%r30)	/* get kernel stack */
 	addi	%r1,%r1,USPACE-CALLFRAMELEN /* stack is top of user struct */
 	RESTORE_KERN_SRS(%r30, %r31)
+#if defined(_LP64)
+	b	2f
+1:	addi	%r1,%r1,-RED_ZONE	/* interrupted in the kernel */
+2:
+#else
 1:
+#endif
 #if defined(DISTANT_KERNEL)
 	lis	%r31,extintr@ha
 	addi	%r31,%r31,extintr@l
@@ -659,7 +695,13 @@ _C_LABEL(decrint):
 	ldptr	%r1,CI_CURPCB(%r30)	/* get kernel stack */
 	addi	%r1,%r1,USPACE-CALLFRAMELEN /* stack is top of user struct */
 	RESTORE_KERN_SRS(%r30, %r31)
+#if defined(_LP64)
+	b	2f
+1:	addi	%r1,%r1,-RED_ZONE	/* interrupted in the kernel */
+2:
+#else
 1:
+#endif
 #if defined(DISTANT_KERNEL)
 	lis	%r31,decrintr@ha
 	addi	%r31,%r31,decrintr@l
@@ -1134,6 +1176,25 @@ disitrap:
 	b	ddbtrap
 #endif
 
+#if defined(_LP64)
+/*
+ * FRAME_SETUP and INTR_SETUP leave r2 pointing at cpu_info, as the
+ * 32-bit kernel has it.  Under ELF V1 r2 is the TOC pointer (64-bit
+ * PowerPC ELF ABI 1.9, 3.2.1), and C reaches every global through it;
+ * with cpu_info there instead, trap() read kernel_map from wherever
+ * that offset landed and faulted inside the fault handler.  The second
+ * doubleword of a function's descriptor is the TOC it expects (3.2.5).
+ * bl already reaches the entry point -- the linker rewrites it -- but
+ * leaves r2 as it is.  FRAME_LEAVE puts the interrupted r2 back.
+ */
+#define	LOAD_TOC(func, reg)						\
+	lis	reg,_C_LABEL(func)@ha;					\
+	addi	reg,reg,_C_LABEL(func)@l;				\
+	ld	%r2,8(reg)
+#else
+#define	LOAD_TOC(func, reg)	/* r2 is not the TOC */
+#endif
+
 	.globl	_C_LABEL(trapstart)
 	.type	_C_LABEL(trapstart),@function
 _C_LABEL(trapstart):
@@ -1144,7 +1205,11 @@ realtrap:
 	mfsprg1	%r1			/* restore SP (might have been
 					   overwritten) */
 s_trap:
+#if defined(_LP64)
+	bf	MSR_PR,k_trap_rz	/* branch if PSL_PR is false */
+#else
 	bf	MSR_PR,k_trap		/* branch if PSL_PR is false */
+#endif
 	GET_CPUINFO(%r1)		/* get cpu_info for this cpu */
 u_trap:
 	ldptr	%r1,CI_CURPCB(%r1)
@@ -1155,6 +1220,11 @@ u_trap:
  */
 
 	RESTORE_KERN_SRS(%r30,%r31)	/* First enable KERNEL mapping */
+#if defined(_LP64)
+	b	k_trap
+k_trap_rz:
+	addi	%r1,%r1,-RED_ZONE
+#endif
 
 k_trap:
 	FRAME_SETUP(CI_TEMPSAVE)
@@ -1168,6 +1238,7 @@ trapagain:
 	isync
 /* Call C trap code: */
 	addi	%r3,%r1,FRAME_TF
+	LOAD_TOC(trap, %r4)
 	bl	_C_LABEL(trap)
 /* LINTSTUB: Var: int trapexit[1]; */
 	.globl	trapexit
@@ -1234,6 +1305,11 @@ s_sctrap:
 /* Call the appropriate syscall handler: */
 	ldptr	%r4,L_PROC(%r13)
 	ldptr	%r4,P_MD_SYSCALL(%r4)
+#if defined(_LP64)
+	/* A C function pointer is the descriptor's address (3.2.5) */
+	ld	%r2,8(%r4)
+	ld	%r4,0(%r4)
+#endif
 	mtctr	%r4
 	bctrl
 _C_LABEL(sctrapexit):
@@ -1315,6 +1391,12 @@ extintr:
 	INTR_SETUP(CI_TEMPSAVE, EXC_EXI)
 					/* make trapframe available */
 	addi	%r3,%r1,FRAME_TF	/* kern frame -> trap frame */
+	/*
+	 * The handler is patched in at run time, so its own descriptor
+	 * is not to hand; oea_install_extint_vec() checks that it shares
+	 * trap()'s TOC.
+	 */
+	LOAD_TOC(trap, %r4)
 _C_LABEL(extint_call):
 	bl	_C_LABEL(extint_call)	/* to be filled in later */
 
@@ -1374,6 +1456,7 @@ decrintr:
 	INTR_SETUP(CI_TEMPSAVE, EXC_DECR)
 
 	addi	%r3,%r1,FRAME_CF	/* intr frame -> clock frame */
+	LOAD_TOC(decr_intr, %r4)
 	bl	_C_LABEL(decr_intr)
 	b	intr_exit
 
@@ -1410,6 +1493,7 @@ ddbtrap:
 	FRAME_SETUP(CI_DDBSAVE)
 /* Call C trap code: */
 	addi	%r3,%r1,FRAME_TF
+	LOAD_TOC(ddb_trap_glue, %r4)
 	bl	_C_LABEL(ddb_trap_glue)
 	or.	%r3,%r3,%r3
 	beq	trapagain

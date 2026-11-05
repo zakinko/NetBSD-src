@@ -97,8 +97,15 @@ struct cpu_info {
 	struct pcb *ci_curpcb;
 	struct pmap *ci_curpm;
 #if defined(PPC_OEA) || defined(PPC_OEA601) || defined(PPC_OEA64) || \
-    defined(PPC_OEA64_BRIDGE) || defined(MODULAR) || defined(_MODULE)
-	void *ci_battable;		/* BAT table in use by this CPU */
+    defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB) || \
+    defined(MODULAR) || defined(_MODULE)
+	/*
+	 * BAT table in use by this CPU.  PPC_OEA64 and PPC_OEA64_SLB are
+	 * here although neither has BAT registers: ofwoea_machdep.c and
+	 * ofw_subr.S set this field without asking which generation they
+	 * are on.
+	 */
+	void *ci_battable;
 #endif
 	struct lwp *ci_softlwps[SOFTINT_COUNT];
 	int ci_cpuid;			/* from SPR_PIR */
@@ -216,6 +223,9 @@ struct cpu_hatch_data {
 	uint32_t hatch_sr[16];
 	uintptr_t hatch_ibatu[8], hatch_ibatl[8];
 	uintptr_t hatch_dbatu[8], hatch_dbatl[8];
+#endif
+#if defined(PPC_OEA64_SLB)
+	uintptr_t hatch_sdr1;
 #endif
 #if defined(PPC_BOOKE)
 	vaddr_t hatch_sp;

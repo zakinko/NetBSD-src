@@ -1,0 +1,82 @@
+#	$NetBSD$
+#
+# A 970 kernel with only what qemu's mac99 emulates.
+#
+# This began as a kernel small enough for qemu's -kernel, which places
+# the image at 0x01000000 and the command line 9MB above it, so the
+# image had to end below 0x00900000 -- GENERIC64.SLB ends at 0x00946160.
+# That is not why it is here now: -kernel was measured not to work on
+# mac99 whatever the size.  A 976-byte client loaded that way reports
+# "Kernel already loaded (0x01000000 + 0x29)" and then executes one
+# instruction, a zero word, because nothing is at that address.  The
+# path that works is ofwboot from an HFS+ disk with an Apple partition
+# map, and that has no size limit.
+#
+# What is left is a smaller build for the emulated machine.
+#
+# Built from POWERMAC_G5 rather than from a list of devices: the machine
+# knows what it needs, and writing the list by hand got the locators,
+# the mainbus root, the I2C bus and the Open Firmware helpers wrong in
+# turn.
+#
+
+include	"arch/macppc/conf/POWERMAC_G5"
+include	"arch/macppc/conf/std.macppc64.slb"
+
+# Drivers for hardware qemu's mac99 does not have.
+no wi
+no ath
+no atw
+no ral
+no rtw
+no siisata
+no svwsata
+no smusat
+no spdmem
+no wsbell
+
+# Sound, USB and the frame buffers: a serial console boot uses none.
+no audio
+no snapper
+no awacs
+no ohci
+no ehci
+no uhci
+no genfb
+no gffb
+no radeonfb
+no wsdisplay
+no wskbd
+no wsmouse
+no ukbd
+no ums
+no umass
+no uhub
+
+# Compatibility layers and debugging aids the boot test does not use.
+no options 	COMPAT_43
+no options 	COMPAT_09
+no options 	COMPAT_10
+no options 	COMPAT_11
+no options 	COMPAT_12
+no options 	COMPAT_13
+no options 	COMPAT_14
+no options 	COMPAT_15
+no options 	COMPAT_16
+no options 	COMPAT_20
+no options 	COMPAT_30
+no options 	COMPAT_40
+no options 	COMPAT_50
+no options 	COMPAT_60
+no options 	COMPAT_70
+no options 	COMPAT_80
+no options 	COMPAT_90
+no options 	DDB_HISTORY_SIZE
+no file-system	MSDOSFS
+no file-system	NTFS
+no file-system	ADOSFS
+no file-system	NFS
+no file-system	UNION
+no file-system	CODA
+no file-system	PTYFS
+no file-system	TMPFS

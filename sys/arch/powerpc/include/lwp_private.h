@@ -48,13 +48,25 @@ __CTASSERT(TLS_TP_OFFSET + sizeof(struct tls_tcb) < 0x8000);
 
 __BEGIN_DECLS
 
+/*
+ * The thread pointer is r2 in the 32-bit ABI and r13 in the 64-bit one,
+ * where r2 is the TOC pointer: "Reserved for use as system thread ID"
+ * (64-bit PowerPC ELF ABI Supplement 1.9, 3.2.1), and the thread pointer
+ * of the TLS relocations (4.5.1).
+ */
+#ifdef _LP64
+#define	__TLS_REG	"%%r13"
+#else
+#define	__TLS_REG	"%%r2"
+#endif
+
 static __inline void *
 __lwp_gettcb_fast(void)
 {
 	void *__tcb;
 
 	__asm __volatile(
-		"addi %[__tcb],%%r2,%[__offset]"
+		"addi %[__tcb]," __TLS_REG ",%[__offset]"
 	    :	[__tcb] "=r" (__tcb)
 	    :	[__offset] "n" (-(TLS_TP_OFFSET + sizeof(struct tls_tcb))));
 
@@ -67,7 +79,7 @@ __lwp_settcb(void *__tcb)
 	__tcb = (uint8_t *)__tcb + TLS_TP_OFFSET + sizeof(struct tls_tcb);
 
 	__asm __volatile(
-		"mr %%r2,%[__tcb]"
+		"mr " __TLS_REG ",%[__tcb]"
 	    :
 	    :	[__tcb] "r" (__tcb));
 

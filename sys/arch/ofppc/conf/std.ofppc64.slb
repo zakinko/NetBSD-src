@@ -1,0 +1,17 @@
+#	$NetBSD$
+#
+# Standard/required options for NetBSD/ofppc with an LP64 kernel on a
+# processor that reloads the SLB in software.
+#
+# std.ofppc64 selects PPC_OEA64, which is the hardware-walked segment
+# table of the First Edition -- the 620, POWER3 and RS64.  This is the
+# same kernel for POWER4, the 970 and everything after, where a
+# reference to a segment the SLB does not hold raises a segment
+# interrupt and the operating system writes the entry (Power ISA 3.1B,
+# 6.7.8.1, and Book III 2.01, 4.4.1 before it).
+
+include "arch/ofppc/conf/std.ofppc64"
+
+no options	PPC_OEA64
+options		PPC_OEA64_SLB
+

@@ -43,10 +43,10 @@
 	.lcomm	OF_buffer,NBPG + 36,4
 
 	/* The OpenFirmware entry point, provided by OpenFirmware. */
-	.lcomm	ofentry,4,4
+	.lcomm	ofentry,SZREG,SZREG
 
 	/* Entry trampoline used by openfirmware(). */
-	.lcomm	oftramp,4,4
+	.lcomm	oftramp,SZREG,SZREG
 
 	/* Client SR save area */
 	.lcomm	clsrsave,64,4
@@ -55,7 +55,7 @@
 
 	/* MSR used in OpenFirmware */
 	.globl	ofwmsr
-	.comm	ofwmsr,4,4
+	.comm	ofwmsr,SZREG,SZREG
 
 #ifdef FIRMWORKSBUGS
 	.lcomm	ofwreal_incharge,4,4
@@ -75,8 +75,8 @@
 ENTRY_NOPROFILE(ofwinit)
 	/* Save return address, Push a stack frame. */
 	mflr	%r0
-	stw	%r0,4(%r1)
-	stwu	%r1,-16(%r1)
+	stptr	%r0,SZREG(%r1)
+	stptru	%r1,-2*SZREG(%r1)
 
 #ifdef FIRMWORKSBUGS
 	mfmsr	%r0
@@ -92,32 +92,47 @@ ENTRY_NOPROFILE(ofwinit)
 #endif
 
 	lis	%r8,ofentry@ha
-	stw	%r5,ofentry@l(%r8)	/* save client interface handler */
+	stptr	%r5,ofentry@l(%r8)	/* save client interface handler */
 
 	/*
 	 * Call directly into OpenFirmware until we're ready to use
 	 * the trampoline.
 	 */
 	lis	%r8,oftramp@ha
-	stw	%r5,oftramp@l(%r8)
+	stptr	%r5,oftramp@l(%r8)
 
 	/* Save the MSR that OpenFirmware is using. */
 	mfmsr	%r0
 	lis	%r9,ofwmsr@ha
-	stw	%r0,ofwmsr@l(%r9)
+	stptr	%r0,ofwmsr@l(%r9)
 
 	lis	%r8,OF_buffer@ha
 	addi	%r8,%r8,OF_buffer@l
 	lis	%r9,_C_LABEL(OF_buf)@ha
-	stw	%r8,_C_LABEL(OF_buf)@l(%r9)
+	stptr	%r8,_C_LABEL(OF_buf)@l(%r9)
 
 	/*
 	 * Call into C code to perform additional early initialization.
 	 */
+#ifdef _LP64
+	/*
+	 * ELF V1: the symbol is a descriptor, not code.  Its first
+	 * doubleword is the entry point and its second the TOC the
+	 * callee expects in r2.  bl would have been rewritten by the
+	 * linker; bctrl is not, so do it here.
+	 */
+	lis	%r8,_C_LABEL(ofw_bootstrap)@ha
+	addi	%r8,%r8,_C_LABEL(ofw_bootstrap)@l
+	ld	%r9,0(%r8)
+	ld	%r2,8(%r8)
+	mtctr	%r9
+	bctrl
+#else
 	lis	%r8,_C_LABEL(ofw_bootstrap)@ha
 	addi	%r8,%r8,_C_LABEL(ofw_bootstrap)@l
 	mtctr	%r8
 	bctrl
+#endif
 
 	/*
 	 * Jump off the trampoline for all subsequent calls
@@ -125,12 +140,19 @@ ENTRY_NOPROFILE(ofwinit)
 	 */
 	lis	%r5,_C_LABEL(openfirmware_trampoline)@ha
 	addi	%r5,%r5,_C_LABEL(openfirmware_trampoline)@l
+#ifdef _LP64
+	/* Again the descriptor, and a pointer-sized store. */
+	ld	%r5,0(%r5)
 	lis	%r8,oftramp@ha
-	stw	%r5,oftramp@l(%r8)
+	std	%r5,oftramp@l(%r8)
+#else
+	lis	%r8,oftramp@ha
+	stptr	%r5,oftramp@l(%r8)
+#endif
 
 	/* Retrieve LR, pop stack frame. */
-	addi	%r1,%r1,16
-	lwz	%r0,4(%r1)
+	addi	%r1,%r1,2*SZREG
+	ldptr	%r0,SZREG(%r1)
 	mtlr	%r0
 
 	blr
@@ -140,7 +162,7 @@ ENTRY_NOPROFILE(ofwinit)
  */
 ENTRY_NOPROFILE(openfirmware_trampoline)
 	mflr	%r0
-	stw	%r0,4(%r1)		/* save return address */
+	stptr	%r0,SZREG(%r1)		/* save return address */
 
 	/*
 	 * Push stack frame and save area:
@@ -149,7 +171,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	 * [SP+4 slot for saved LR in callee]
 	 * [SP+0 saved SP]
 	 */
-	stwu	%r1,-48(%r1)
+	stptru	%r1,-6*SZREG(%r1)
 
 #ifdef FIRMWORKSBUGS
 	lis	%r4,ofwreal_incharge@ha
@@ -161,7 +183,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 1:
 #endif
 	mfmsr	%r4			/* save msr */
-	stw	%r4,8(%r1)
+	stptr	%r4,2*SZREG(%r1)
 
 	li	%r0,0			/* disable MMU */
 	mtmsr	%r0
@@ -175,7 +197,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	 * Save SDR1.
 	 */
 	mfsdr1	%r4
-	stw	%r4,12(%r1)
+	stptr	%r4,3*SZREG(%r1)
 #else
 	/* clear BAT translations */
 	mtdbatu	2,%r0
@@ -219,23 +241,32 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	 * whose entries describe the address space being left.  Entry 0
 	 * stays -- slbia does not touch it (Chapter 4), and it maps the
 	 * instruction after the slbia.
+	 *
+	 * None of that before oea_init() fills ci_slb.  This runs earlier
+	 * than that -- ofwinit() is called from locore -- and with the
+	 * field still zero the loop would write the shadow through a null
+	 * pointer: eight bytes at 0x18, 0x28, ... 0x1f8, which is the
+	 * firmware's own exception vectors.  Nothing has taken the SLB
+	 * over that early either, so leave it as the firmware left it.
 	 */
 	GET_CPUINFO(%r4)
+	ldptr	%r6,CI_SLB(%r4)
+	cmpptri	%r6,0
+	beq	3f
 	lis	%r5,_C_LABEL(ofw_pmap)@ha
 	addi	%r5,%r5,_C_LABEL(ofw_pmap)@l
 	stptr	%r5,CI_SLBPM(%r4)
 	isync
 	slbia
 	isync
-	GET_CPUINFO(%r4)
-	ldptr	%r4,CI_SLB(%r4)
-	addi	%r4,%r4,SLB_SIZEOF	/* entry 0 is the kernel's */
+	addi	%r4,%r6,SLB_SIZEOF	/* entry 0 is the kernel's */
 	li	%r5,SLB_NENTRIES-1
 	mtctr	%r5
 	li	%r5,0
 1:	streg	%r5,SLB_E(%r4)
 	addi	%r4,%r4,SLB_SIZEOF
 	bdnz	1b
+3:
 #else
 	lis	%r4,clsrsave@ha		/* save current SRs */
 	addi	%r4,%r4,clsrsave@l
@@ -265,15 +296,27 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	GET_CPUINFO(%r4)
 	lis	%r5,_C_LABEL(ofw_battable)@ha
 	addi	%r5,%r5,_C_LABEL(ofw_battable)@l
-	stw	%r5,CI_BATTABLE(%r4)
+	stptr	%r5,CI_BATTABLE(%r4)
 
 	lis	%r4,ofentry@ha		/* get firmware entry point */
-	lwz	%r4,ofentry@l(%r4)
+	ldptr	%r4,ofentry@l(%r4)
 	mtlr	%r4
 
 	lis	%r4,ofwmsr@ha		/* load Open Firmware MSR */
-	lwz	%r5,ofwmsr@l(%r4)
+	ldptr	%r5,ofwmsr@l(%r4)
+#ifdef _LP64
+	/*
+	 * Open Firmware client programs "shall execute in 32-bit mode with
+	 * an Open Firmware cell size of 1" (CHRP binding to IEEE 1275,
+	 * Rev 1.7, 10; LoPAPR 1.1, B.10 says the same), and ofwmsr is the
+	 * MSR the firmware entered the kernel with, SF clear (PowerPC
+	 * binding to IEEE 1275, Rev 2.1, 8.2.1).  mtmsr would leave the
+	 * kernel's SF set (Book III 2.01, 8.3), so go in with mtmsrd.
+	 */
+	mtmsrd	%r5
+#else
 	mtmsr	%r5
+#endif
 	isync
 
 	blrl				/* call Open Firmware */
@@ -286,7 +329,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	GET_CPUINFO(%r4)
 	lis	%r5,_C_LABEL(battable)@ha
 	addi	%r5,%r5,_C_LABEL(battable)@l
-	stw	%r5,CI_BATTABLE(%r4)
+	stptr	%r5,CI_BATTABLE(%r4)
 
 #if defined(PPC_OEA64)
 	lis	%r4,clasrsave@ha	/* restore our segment table */
@@ -299,20 +342,22 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 #elif defined(PPC_OEA64_SLB)
 	/* And back, the same way round. */
 	GET_CPUINFO(%r4)
+	ldptr	%r6,CI_SLB(%r4)
+	cmpptri	%r6,0
+	beq	3f			/* see the comment on the way in */
 	li	%r5,0
 	stptr	%r5,CI_SLBPM(%r4)
 	isync
 	slbia
 	isync
-	GET_CPUINFO(%r4)
-	ldptr	%r4,CI_SLB(%r4)
-	addi	%r4,%r4,SLB_SIZEOF	/* entry 0 is the kernel's */
+	addi	%r4,%r6,SLB_SIZEOF	/* entry 0 is the kernel's */
 	li	%r5,SLB_NENTRIES-1
 	mtctr	%r5
 	li	%r5,0
 1:	streg	%r5,SLB_E(%r4)
 	addi	%r4,%r4,SLB_SIZEOF
 	bdnz	1b
+3:
 #else
 	lis	%r4,clsrsave@ha		/* restore saved SRs */
 	addi	%r4,%r4,clsrsave@l
@@ -331,7 +376,7 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 	 * EFIKA 5200B / SmartFirmware: undo the firmware's leftover SDR1 zero
 	 * and user-valid BATs after the call.
 	 */
-	lwz	%r4,12(%r1)		/* restore kernel SDR1 (see save above) */
+	ldptr	%r4,3*SZREG(%r1)	/* restore kernel SDR1 (see save above) */
 	sync
 	mtsdr1	%r4
 	isync
@@ -361,12 +406,16 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
 #endif /* EFIKA_OFW_WORKAROUNDS */
 #endif /* PPC_OEA */
 
-	lwz	%r4,8(%r1)		/* restore msr */
+	ldptr	%r4,2*SZREG(%r1)	/* restore msr */
+#ifdef _LP64
+	mtmsrd	%r4			/* back to 64-bit mode; see above */
+#else
 	mtmsr	%r4
+#endif
 	isync
 4:	
-	addi	%r1,%r1,48		/* pop stack frame and save area */
-	lwz	%r0,4(%r1)		/* return address */
+	addi	%r1,%r1,6*SZREG		/* pop stack frame and save area */
+	ldptr	%r0,SZREG(%r1)		/* return address */
 	mtlr	%r0
 	blr
 
@@ -375,21 +424,21 @@ ENTRY_NOPROFILE(openfirmware_trampoline)
  */
 ENTRY_NOPROFILE(openfirmware)
 	mflr	%r0
-	stw	%r0,4(%r1)		/* save return address */
+	stptr	%r0,SZREG(%r1)		/* save return address */
 
 	/* Switch to OpenFirmware stack. */
 	lis	%r7,firmstk+NBPG-16@ha
 	addi	%r7,%r7,firmstk+NBPG-16@l
-	stw	%r1,0(%r7)		/* stash away prev stack pointer */
+	stptr	%r1,0(%r7)		/* stash away prev stack pointer */
 	mr	%r1,%r7
 
 	lis	%r4,oftramp@ha
-	lwz	%r4,oftramp@l(%r4)
+	ldptr	%r4,oftramp@l(%r4)
 
 	mtctr	%r4
 	bctrl
 
-	lwz	%r1,0(%r1)		/* restore previous stack pointer */
-	lwz	%r0,4(%r1)		/* return address */
+	ldptr	%r1,0(%r1)		/* restore previous stack pointer */
+	ldptr	%r0,SZREG(%r1)		/* return address */
 	mtlr	%r0
 	blr

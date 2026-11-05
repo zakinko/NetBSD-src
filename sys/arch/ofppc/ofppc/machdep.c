@@ -69,6 +69,7 @@ __KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.123 2026/09/13 09:08:30 macallan Exp $
 #include <dev/ic/comvar.h>
 #endif
 #include "rtas.h"
+#include "pvty.h"
 
 extern struct pmap ofw_pmap;
 extern char bootpath[256];
@@ -90,7 +91,7 @@ struct genfb_colormap_callback gfb_cb;
 #define	DPRINTF while (0) printf
 #endif
 
-#ifndef PPC_OEA64
+#if !defined(PPC_OEA64) && !defined(PPC_OEA64_SLB)
 /*
  * Scan the device tree for ranges, and return them as bitmap 0..15
  */
@@ -130,13 +131,13 @@ ranges_bitmap(int node, uint16_t bitmap)
 	}
 	return bitmap;
 }
-#endif /* PPC_OEA64 */
+#endif /* !PPC_OEA64 && !PPC_OEA64_SLB */
 
 void
 initppc(u_int startkernel, u_int endkernel, char *args)
 {
 	int node, i;
-#ifndef PPC_OEA64
+#if !defined(PPC_OEA64) && !defined(PPC_OEA64_SLB)
 	uint16_t bitmap;
 #endif
 
@@ -150,7 +151,7 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 	}
 	model_init();
 
-#ifndef PPC_OEA64
+#if !defined(PPC_OEA64) && !defined(PPC_OEA64_SLB)
 	/*
 	 * 12.7 defines Block Address Translation without tying it to a
 	 * word size, but no implementation this runs on has the
@@ -183,7 +184,7 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 			oea_iobat_add(0xfe000000, BAT_BL_16M);
 		}
 	}
-#endif /* PPC_OEA64 */
+#endif /* !PPC_OEA64 && !PPC_OEA64_SLB */
 
 #if defined(MULTIPROCESSOR)
 	int l;
@@ -198,7 +199,18 @@ initppc(u_int startkernel, u_int endkernel, char *args)
 		if (node <= 0)
 			continue;
 		aprint_verbose("Starting up CPU %d %s\n", i, cpupath);
+#ifdef _LP64
+		/*
+		 * start-cpu takes the real address of code (PowerPC binding
+		 * to IEEE 1275, Rev 2.1, 11.3).  An ELF V1 function symbol is
+		 * a descriptor whose first doubleword is that address (64-bit
+		 * ELF ABI 1.9, 3.2.5); the kernel runs 1:1 below 4GB.
+		 */
+		OF_start_cpu(node,
+		    (u_int)((const uint64_t *)(uintptr_t)cpu_spinstart)[0], i);
+#else
 		OF_start_cpu(node, (u_int)cpu_spinstart, i);
+#endif
 		for (l = 0; l < 100000000; l++) {
 			if (cpu_spinstart_ack == i) {
 				aprint_verbose("CPU %d spun up.\n", i);
@@ -324,6 +336,23 @@ cpu_startup(void)
 void
 consinit(void)
 {
+#if NPVTY > 0
+	/*
+	 * The PAPR client vterm, "hvterm1" (PAPR 10.60, Table 398), is a
+	 * "serial" node that ofwoea_cnprobe() would leave on the firmware
+	 * console, which has no device for /dev/console to open.
+	 */
+	static const char * const vty[] = { "hvterm1", NULL };
+	extern struct consdev pvty_cons;
+	extern int console_node;
+
+	if (console_node != -1 && of_compatible(console_node, vty) > 0) {
+		cn_tab = &pvty_cons;
+		(*cn_tab->cn_probe)(cn_tab);
+		(*cn_tab->cn_init)(cn_tab);
+		return;
+	}
+#endif
 	ofwoea_consinit();
 }
 

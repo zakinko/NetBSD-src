@@ -110,6 +110,25 @@ __start:
 #endif
 	isync
 
+#ifdef _LP64
+	/*
+	 * Open Firmware and the loader are 32-bit and come here with
+	 * MSR[SF] clear, and only mtmsrd sets it: mtmsr writes MSR[32:63]
+	 * alone (Book III 2.01, 8.3; mtmsrd is 3.4.1).  In 32-bit mode the
+	 * high word of every effective address is taken as zero (4.2.5),
+	 * so an LP64 kernel left there reaches VM_MIN_KERNEL_ADDRESS at 0,
+	 * and record forms set CR0 from the low word.  Interrupts set SF
+	 * (Figure 28) and rfid put it back, so without this the kernel ran
+	 * 64-bit only inside its trap handlers.  ofwinit() has already kept
+	 * the firmware's MSR, SF clear, for the trampoline to return to.
+	 */
+	mfmsr	%r0
+	li	%r11,1
+	rldimi	%r0,%r11,63,0		/* MSR[SF] */
+	mtmsrd	%r0
+	isync
+#endif
+
 	bl	_C_LABEL(cpu_model_init)	/* init oeacpufeat */
 
 /* compute end of kernel memory */

@@ -130,7 +130,7 @@ typedef struct {
 /* Machine-dependent uc_flags */
 #define	_UC_POWERPC_VEC	_UC_MD_BIT16	/* Vector Register File valid */
 #define	_UC_POWERPC_SPE	_UC_MD_BIT17	/* Vector Register File valid */
-#define	_UC_TLSBASE	_UC_MD_BIT19	/* thread context valid in R2 */
+#define	_UC_TLSBASE	_UC_MD_BIT19	/* thread context valid in R2 (R13 LP64) */
 #define	_UC_SETSTACK	_UC_MD_BIT20
 #define	_UC_CLRSTACK	_UC_MD_BIT21
 

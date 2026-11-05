@@ -180,7 +180,7 @@ ofwpci_attach(device_t parent, device_t self, void *aux)
 			init_ofppc_interrupt();
 			ofppc_init_comcons(isa_node);
 		}
-#ifdef PIC_MPC5200
+#if defined(PIC_MPC5200) || defined(PIC_XICS) || defined(PIC_XIVE)
 		else {
 			/*
 			 * Non-ISA SoC board but we still need to initialize the

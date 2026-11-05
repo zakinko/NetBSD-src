@@ -164,6 +164,24 @@ db_stack_trace_print(db_expr_t addr, bool have_addr, db_expr_t count,
 			full = true;
 	}
 
+/*
+ * Where a frame keeps the caller's LR and the arguments, relative to
+ * the back chain.  The 32-bit SVR4 ABI puts the LR save word at 4 and
+ * the parameter area at 8; the 64-bit one (64-bit PowerPC ELF ABI
+ * Supplement 1.9, 3.2.2 "The Stack Frame") has a 48-byte header with
+ * the CR save area at 8, the LR save area at 16 and the parameter save
+ * area at 48.  Reading an LP64 frame at 4 joins the low word of the back
+ * chain to the CR the prologue stores at 8, and every line of a
+ * traceback comes out as "0x6e3130: at 0x6e31d040224440".
+ */
+#ifdef _LP64
+#define	FRAME_LR	16
+#define	FRAME_ARGS	48
+#else
+#define	FRAME_LR	4
+#define	FRAME_ARGS	8
+#endif
+
 	if (have_addr) {
 		if (trace_thread) {
 			struct proc *p;
@@ -201,13 +219,13 @@ db_stack_trace_print(db_expr_t addr, bool have_addr, db_expr_t count,
 			break;
 		frame = R((db_addr_t *)frame);
 	    next_frame:
-		args = (db_addr_t *)(frame + 8);
+		args = (db_addr_t *)(frame + FRAME_ARGS);
 		if (frame < PAGE_SIZE)
 			break;
 	        if (count-- == 0)
 			break;
 
-		lr = R((db_addr_t *)(frame + 4)) - 4;
+		lr = R((db_addr_t *)(frame + FRAME_LR)) - 4;
 		if ((lr & 3) || (lr < 0x100)) {
 			(*pr)("saved LR(0x%x) is invalid.", lr);
 			break;

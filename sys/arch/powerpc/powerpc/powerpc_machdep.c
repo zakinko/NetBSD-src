@@ -62,6 +62,7 @@ __KERNEL_RCSID(0, "$NetBSD: powerpc_machdep.c,v 1.89 2026/04/08 04:06:41 thorpej
 #include <sys/xcall.h>
 #include <sys/ipi.h>
 #include <sys/kcore.h>
+#include <sys/paravirt_membar.h>
 
 #include <dev/mm.h>
 
@@ -916,4 +917,17 @@ mm_md_kernacc(void *va, vm_prot_t prot, bool *handled)
 
 	*handled = false;
 	return 0;
+}
+
+void
+paravirt_membar_sync(void)
+{
+
+	/*
+	 * Store-before-load ordering with respect to matching logic on
+	 * the hypervisor side, kept even in a uniprocessor kernel.  Only
+	 * sync with L=0 orders a store before a later load: lwsync leaves
+	 * out exactly that pair (Power ISA 2.07, Book II 4.4.3).
+	 */
+	__asm volatile("sync" ::: "memory");
 }

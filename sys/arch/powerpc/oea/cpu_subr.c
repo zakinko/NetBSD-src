@@ -258,6 +258,10 @@ static const struct cputab models[] = {
 	{ "970",	IBM970,		REVFMT_MAJMIN },
 	{ "970FX",	IBM970FX,	REVFMT_MAJMIN },
 	{ "970MP",	IBM970MP,	REVFMT_MAJMIN },
+	{ "POWER8",	IBMPOWER8,	REVFMT_HEX },
+	{ "POWER9",	IBMPOWER9,	REVFMT_HEX },
+	{ "Power10",	IBMPOWER10,	REVFMT_HEX },
+	{ "Cell",	IBMCELL,	REVFMT_HEX },
 	{ "POWER3II",   IBMPOWER3II,    REVFMT_MAJMIN },
 	{ "Espresso",	IBMESPRESSO,	REVFMT_MAJMIN },
 	{ "",		0,		REVFMT_HEX }
@@ -355,22 +359,78 @@ cpu_features_probe(void)
 	 * belongs here as well: it is the optional facility of 9.1,
 	 * "Bridge to SLB Architecture", and the word does not appear in
 	 * the First Edition.
+	 *
+	 * OEACPU_SLB only where the processor's own manual confirms what
+	 * pmap_setup_segment0_map() relies on: a 16MB large page chosen by
+	 * the L bit alone, and a 42-bit real address (970FX User's Manual
+	 * v1.7, Table 5-1; 970MP User's Manual v2.3, 5.1).
 	 */
-	case IBMPOWER4:
-	case IBMPOWER4II:
-	case IBM970:
 	case IBM970FX:
 	case IBM970MP:
-	case IBM970GX:
-	case IBMPOWER5GR:
-	case IBMPOWER5GS:
-	case IBMPOWER6:
-	case IBMPOWER6P5:
+		oeacpufeat |= OEACPU_64;
+		oeacpufeat |= OEACPU_64_BRIDGE;
+		oeacpufeat |= OEACPU_NOBAT;
+		oeacpufeat |= OEACPU_SLB;
+		break;
+
+	/*
+	 * Cell takes a 16MB page as L=1, LP=0 while HID6[LB] 0:1 are 00
+	 * (Programming Handbook v1.11, Table 4-3), which is what they are
+	 * after power-on reset (Cell BE Registers v1.51, 12.1.18); pmap
+	 * checks that the firmware left them so.  m = 42 (Handbook 4.2.6.4).
+	 * It keeps the bridge flag it had before.
+	 */
 	case IBMCELL:
 		oeacpufeat |= OEACPU_64;
 		oeacpufeat |= OEACPU_64_BRIDGE;
 		oeacpufeat |= OEACPU_NOBAT;
 		oeacpufeat |= OEACPU_SLB;
+		break;
+
+	/*
+	 * POWER8 takes a 16MB page as L=1, LP=0 as well, in the SLB entry
+	 * and the PTE (User's Manual v1.3, Table 3-13), and has m = 50.
+	 * No bridge: the flag would send cpu_setup() and locore to the
+	 * 970's HID registers, which POWER8 lets only the hypervisor touch
+	 * (Table 3-8).
+	 *
+	 * POWER9 the same with the hashed page table (User's Manual v2.1,
+	 * Table 4-21; HID in Table 4-8), m = 56.  Its PTE (Power ISA 3.0B,
+	 * Figure 31) moves B to the second doubleword and narrows AVA, but
+	 * with B = 0 and a 68-bit virtual address every bit this kernel sets
+	 * stays where 2.07 had it.  ofwboot asks a PAPR platform for the
+	 * hashed page table (PAPR 10.60, Table 515, vector 5 byte 24).
+	 *
+	 * Power10 again (User's Manual v1.0, Table 5-16; HID in Table 5-7;
+	 * 32 software-managed SLB entries with LPCR[UPRT] = 0, 5.10.9.1),
+	 * and Power ISA 3.1 keeps 3.0B's PTE (6.7.9.1, Figure 32).
+	 */
+	case IBMPOWER8:
+	case IBMPOWER9:
+	case IBMPOWER10:
+		oeacpufeat |= OEACPU_64;
+		oeacpufeat |= OEACPU_NOBAT;
+		oeacpufeat |= OEACPU_SLB;
+		break;
+
+	/*
+	 * The other SLB processors keep the bridge alone.  POWER6 and
+	 * later choose the large page size through the PTE's LP field
+	 * (Power ISA 2.05, Figure 21), in encodings each processor's own
+	 * manual gives.  For the 970, 970GX, POWER4, POWER4+, POWER5,
+	 * POWER5+ and POWER6 no manual is in hand.
+	 */
+	case IBMPOWER4:
+	case IBMPOWER4II:
+	case IBM970:
+	case IBM970GX:
+	case IBMPOWER5GR:
+	case IBMPOWER5GS:
+	case IBMPOWER6:
+	case IBMPOWER6P5:
+		oeacpufeat |= OEACPU_64;
+		oeacpufeat |= OEACPU_64_BRIDGE;
+		oeacpufeat |= OEACPU_NOBAT;
 		break;
 	}
 
@@ -691,7 +751,17 @@ cpu_setup(device_t self, struct cpu_info *ci)
 	/* set the cpu number */
 	ci->ci_cpuid = cpu_number();
 #if defined(_ARCH_PPC64)
-	__asm volatile("mfspr %0,%1" : "=r"(hid64_0) : "K"(SPR_HID0));
+	/*
+	 * POWER8 lets only the hypervisor read HID0 (User's Manual v1.3,
+	 * Table 3-8), and so do POWER9 (v2.1, Table 4-8) and Power10
+	 * (v1.0, Table 5-7); in a partition the read is a privileged-
+	 * instruction interrupt.  Nothing below changes it for them, so
+	 * zero stands in and is never written back.
+	 */
+	if (vers == IBMPOWER8 || vers == IBMPOWER9 || vers == IBMPOWER10)
+		hid64_0 = 0;
+	else
+		__asm volatile("mfspr %0,%1" : "=r"(hid64_0) : "K"(SPR_HID0));
 	hid64_0_save = hid64_0;
 #else
 #if defined(PPC_OEA64_BRIDGE)
@@ -879,6 +949,11 @@ cpu_setup(device_t self, struct cpu_info *ci)
 		break;
 	}
 	
+#if defined(_ARCH_PPC64)
+	if (vers == IBMPOWER8 || vers == IBMPOWER9 || vers == IBMPOWER10)
+		aprint_normal_dev(self, "powersave: %d\n", powersave);
+	else
+#endif
 #if defined(PPC_OEA64_BRIDGE) || defined(_ARCH_PPC64)
 	if (bitmasku != NULL) {
 		snprintb(hidbuf, sizeof hidbuf, bitmask, hid64_0 & 0xffffffff);
@@ -1543,15 +1618,33 @@ volatile u_int cpu_spinstart_ack, cpu_spinstart_cpunum;
 int
 cpu_spinup(device_t self, struct cpu_info *ci)
 {
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * The secondary reads this with translation off.  In a partition
+	 * that reaches only the real mode area (LoPAPR 1.1, 14.1.1), which
+	 * holds the kernel image but not necessarily this stack, so it is
+	 * kept with the kernel's data and the hatch stack below the area's
+	 * end.  cpu_spinup() runs for one processor at a time.
+	 */
+	static volatile struct cpu_hatch_data hatch_data;
+	volatile struct cpu_hatch_data *h = &hatch_data;
+	paddr_t high = 0x10000000;
+#else
 	volatile struct cpu_hatch_data hatch_data, *h = &hatch_data;
+	const paddr_t high = 0x10000000;
+#endif
 	struct pglist mlist;
 	int i, error;
 	char *hp;
 
 	KASSERT(ci != curcpu());
 
+#if defined(PPC_OEA64_SLB)
+	if (pmap_boot_rma_end != 0 && pmap_boot_rma_end < high)
+		high = pmap_boot_rma_end;
+#endif
 	/* Now allocate a hatch stack */
-	error = uvm_pglistalloc(HATCH_STACK_SIZE, 0x10000, 0x10000000, 16, 0,
+	error = uvm_pglistalloc(HATCH_STACK_SIZE, 0x10000, high, 16, 0,
 	    &mlist, 1, 1);
 	if (error) {
 		aprint_error(": unable to allocate hatch stack\n");
@@ -1573,11 +1666,27 @@ cpu_spinup(device_t self, struct cpu_info *ci)
 	h->hatch_ci = ci;
 	h->hatch_pir = ci->ci_cpuid;
 
-	cpu_hatch_stack = (uint32_t)hp + HATCH_STACK_SIZE - CALLFRAMELEN;
+	/* Below 0x10000000 by the allocation above, so 32 bits hold it. */
+	cpu_hatch_stack = (uint32_t)(uintptr_t)hp + HATCH_STACK_SIZE -
+	    CALLFRAMELEN;
 	ci->ci_lasttb = cpu_info[0].ci_lasttb;
 
 	/* copy special registers */
 
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * Only SDR1 for the SLB generation.  There are no segment
+	 * registers or ASR to copy, and the HID registers are left as the
+	 * firmware set them on each processor, as on the boot processor:
+	 * cpu_hatch() has pmap_slb_cpu_hid() and cpu_setup() do there
+	 * what was done here.  POWER8 and later let only the hypervisor
+	 * read HID0 or SDR1 (POWER8 User's Manual v1.3, Table 3-8), and
+	 * in a partition the page table is not the kernel's anyway.
+	 */
+	if (pmap_pft_shift == 0)
+		__asm volatile ("mfsdr1 %0" : "=r"(h->hatch_sdr1));
+	__USE(i);
+#else
 	h->hatch_hid0 = mfspr(SPR_HID0);
 #if defined(PPC_OEA64_BRIDGE) || defined (_ARCH_PPC64)
 	h->hatch_hid1 = mfspr(SPR_HID1);
@@ -1594,7 +1703,9 @@ cpu_spinup(device_t self, struct cpu_info *ci)
 		h->hatch_asr = mfspr(SPR_ASR);
 	else
 		h->hatch_asr = 0;
+#endif /* PPC_OEA64_SLB */
 
+#if defined(PPC_OEA) || defined(PPC_OEA64_BRIDGE)
 	if ((oeacpufeat & OEACPU_NOBAT) == 0) {
 		/* copy the bat regs */
 		__asm volatile ("mfibatu %0,0" : "=r"(h->hatch_ibatu[0]));
@@ -1615,6 +1726,7 @@ cpu_spinup(device_t self, struct cpu_info *ci)
 		__asm volatile ("mfdbatl %0,3" : "=r"(h->hatch_dbatl[3]));
 		__asm volatile ("sync; isync");
 	}
+#endif
 
 	if (md_setup_trampoline(h, ci) == -1)
 		return -1;
@@ -1668,9 +1780,20 @@ cpu_hatch(void)
 	struct cpu_info * const ci = h->hatch_ci;
 	struct pcb *pcb;
 	u_int msr;
+#if !defined(PPC_OEA64_SLB)
 	int i;
+#endif
 
 	/* Initialize timebase. */
+#if defined(PPC_OEA64_SLB)
+	/*
+	 * Not in a partition: the platform has the timebases in step
+	 * before the processors are given to the OS (PAPR 10.60, 7.3.8),
+	 * and only the hypervisor may write them (POWER8 User's Manual
+	 * v1.3, Table 3-8).
+	 */
+	if (pmap_pft_shift == 0)
+#endif
 	__asm ("mttbl %0; mttbu %0; mttbl %0" :: "r"(0));
 
 	/*
@@ -1687,6 +1810,7 @@ cpu_hatch(void)
 	curlwp = ci->ci_curlwp;
 	cpu_spinstart_ack = 0;
 
+#if defined(PPC_OEA) || defined(PPC_OEA64_BRIDGE)
 	if ((oeacpufeat & OEACPU_NOBAT) == 0) {
 		/* Initialize MMU. */
 		__asm ("mtibatu 0,%0" :: "r"(h->hatch_ibatu[0]));
@@ -1706,7 +1830,11 @@ cpu_hatch(void)
 		__asm ("mtdbatu 3,%0" :: "r"(h->hatch_dbatu[3]));
 		__asm ("mtdbatl 3,%0" :: "r"(h->hatch_dbatl[3]));
 	}
+#endif
 
+#if defined(PPC_OEA64_SLB)
+	pmap_slb_cpu_hid();
+#else
 #ifdef PPC_OEA64_BRIDGE
 	if ((oeacpufeat & OEACPU_64_BRIDGE) != 0) {
 
@@ -1718,12 +1846,14 @@ cpu_hatch(void)
 	} else
 #endif
 		mtspr(SPR_HID0, h->hatch_hid0);
+#endif /* PPC_OEA64_SLB */
 
 	if ((oeacpufeat & OEACPU_NOBAT) == 0) {
 		__asm ("mtibatl 0,%0; mtibatu 0,%1; mtdbatl 0,%0; mtdbatu 0,%1;"
 		    :: "r"(battable[0].batl), "r"(battable[0].batu));
 	}
 
+#if !defined(PPC_OEA64_SLB)
 	__asm volatile ("sync");
 	for (i = 0; i < 16; i++)
 		__asm ("mtsrin %0,%1" :: "r"(h->hatch_sr[i]), "r"(i << ADDR_SR_SHFT));
@@ -1731,16 +1861,27 @@ cpu_hatch(void)
 
 	if (oeacpufeat & OEACPU_64)
 		mtspr(SPR_ASR, h->hatch_asr);
+#endif
 
 	cpu_spinstart_ack = 1;
 	__asm ("ptesync");
+#if defined(PPC_OEA64_SLB)
+	if (pmap_pft_shift == 0)
+#endif
 	__asm ("mtsdr1 %0" :: "r"(h->hatch_sdr1));
 	__asm volatile ("sync; isync");
 
+#if defined(PPC_OEA64_SLB)
+	/* Entry 0 for the kernel before translation goes on, as boot did. */
+	pmap_slb_cpu_init();
+#endif
+
 	cpu_spinstart_ack = 5;
+#if !defined(PPC_OEA64_SLB)
 	for (i = 0; i < 16; i++)
 		__asm ("mfsrin %0,%1" : "=r"(h->hatch_sr[i]) :
 		       "r"(i << ADDR_SR_SHFT));
+#endif
 
 	/* Enable I/D address translations. */
 	msr = mfmsr();

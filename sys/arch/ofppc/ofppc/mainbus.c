@@ -345,6 +345,22 @@ init_ofppc_interrupt(void)
 			(void)init_openpic(picnodes[i].node);
 		} else if (picnodes[i].type == PICNODE_TYPE_MPC5200) {
 			aprint_debug("mpc5200 SIU pic set up as a device\n");
+#ifdef PIC_XICS
+		} else if (picnodes[i].type == PICNODE_TYPE_XICS) {
+			setup_xics(picnodes[i].node);
+#ifdef MULTIPROCESSOR
+			ipiops.ppc_establish_ipi(IST_LEVEL, IPL_HIGH, NULL);
+#endif
+#endif
+#ifdef PIC_XIVE
+		} else if (picnodes[i].type == PICNODE_TYPE_XIVE) {
+			setup_xive(picnodes[i].node);
+#ifdef MULTIPROCESSOR
+			if (xive_active)
+				ipiops.ppc_establish_ipi(IST_LEVEL, IPL_HIGH,
+				    NULL);
+#endif
+#endif
 		} else
 			aprint_error("Unhandled pic node type node=%x\n",
 			    picnodes[i].node);

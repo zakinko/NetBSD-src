@@ -86,6 +86,15 @@ _C_LABEL(kernel_text):
 	.text
 	.globl	__start
 __start:
+	/*
+	 * The entry stays a plain instruction, not an ELF V1 function
+	 * descriptor.  Firmware that loads the kernel itself does read the
+	 * entry as a descriptor -- SLOF does -- but the supported path is
+	 * ofwboot, and a 32-bit ofwboot branches straight to e_entry.  A
+	 * descriptor here would make it execute the zero doubleword.
+	 * OF_chain() in ofwboot wraps the address for the LP64 build, so
+	 * both loader widths ask the same thing of the kernel.
+	 */
 	/* Save off arguments that we need preserved. */
 	mr	%r13,%r6
 	mr	%r14,%r7
@@ -95,7 +104,29 @@ __start:
 	li	%r0,0
 	mtmsr	%r0			/* Disable FPU/MMU/exceptions */
 
+#ifdef _LP64
+	/*
+	 * Open Firmware and the loader are 32-bit and come here with
+	 * MSR[SF] clear, and only mtmsrd sets it: mtmsr writes MSR[32:63]
+	 * alone (Book III 2.01, 8.3; mtmsrd is 3.4.1).  In 32-bit mode the
+	 * high word of every effective address is taken as zero (4.2.5),
+	 * so an LP64 kernel left there reaches VM_MIN_KERNEL_ADDRESS at 0.
+	 * macppc's locore does the same.
+	 */
+	mfmsr	%r0
+	li	%r11,1
+	rldimi	%r0,%r11,63,0		/* MSR[SF] */
+	mtmsrd	%r0
+	isync
+#endif
+
 	bl	_C_LABEL(cpu_model_init)
+#ifndef _LP64
+	/*
+	 * The bridge (Book III 2.01, 9.1) lets a 32-bit kernel use segment
+	 * registers on a 64-bit processor.  An LP64 kernel is not using it,
+	 * and this would put it back in 32-bit mode: the clrldi clears SF.
+	 */
 	lis	%r12,oeacpufeat@ha
 	lwz	%r12,oeacpufeat@l(%r12)
 	andi.	%r12,%r12,OEACPU_64_BRIDGE	/* Compare against OEACPU_64_BRIDGE */
@@ -108,6 +139,7 @@ __start:
 	mtmsrd	%r0
 	mtspr	0x118,0		/* clear ASR[V] to enable segregs */
 2:
+#endif /* !_LP64 */
 	isync
 	/* compute end of kernel memory */
         lis	%r4,_C_LABEL(end)@ha

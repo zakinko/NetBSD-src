@@ -583,10 +583,20 @@ _ENTRY(cpu_lwp_bootstrap)
 	 */
 	bl	_C_LABEL(lwp_startup)
 
+#if defined(_LP64)
+	/*
+	 * r31 is a C function pointer, which under ELF V1 is the address
+	 * of the function's descriptor (64-bit PowerPC ELF ABI 1.9,
+	 * 3.2.5): the entry point, then the TOC it expects.
+	 */
+	ld	%r2,8(%r31)
+	ld	%r31,0(%r31)
+#endif
 	mtlr	%r31
 	mr	%r3,%r30
 	blrl				/* jump indirect to r31 */
-	lwz	%r31, FRAME_SRR1(%r1)	/* trapexit wants srr1 in r31 */
+	/* SRR1 is a register, not a word; lwz took the high half of it */
+	ldreg	%r31, FRAME_SRR1(%r1)	/* trapexit wants srr1 in r31 */
 #ifdef PPC_BOOKE
 	lis	%r30, 0xbeeffeed@h
 	ori	%r30, %r30, 0xbeeffeed@l
@@ -653,6 +663,49 @@ ENTRY(cpu_spinstart)
 	b	_C_LABEL(idle_loop)
 
 #endif /*MULTIPROCESSOR + OEA*/
+
+#if defined(MULTIPROCESSOR) && defined(PPC_OEA64_SLB)
+/*
+ * A secondary processor of the SLB generation, as ofppc's initppc()
+ * starts it with the "start-cpu" client service.  That begins it at a
+ * real address with the argument in r3 and every other register
+ * indeterminate (PowerPC binding to IEEE 1275, Rev 2.1, 11.3), so
+ * MSR[SF], r2 and r1 are set here before any C runs.  SF only through
+ * mtmsrd, as in locore (Book III 2.01, 3.4.1 and 8.3).  r2 is the TOC
+ * base, the second doubleword of this function's own descriptor
+ * (64-bit ELF ABI 1.9, 3.2.5).  cpu_hatch is called through its
+ * descriptor as trap_subr.S calls pmap_slb_fault.
+ */
+ENTRY(cpu_spinstart)
+	mfmsr	%r0
+	li	%r11,1
+	rldimi	%r0,%r11,63,0		/* MSR[SF] */
+	mtmsrd	%r0
+	isync
+	lis	%r31,_C_LABEL(cpu_spinstart)@ha
+	addi	%r31,%r31,_C_LABEL(cpu_spinstart)@l
+	ld	%r2,8(%r31)
+
+	lis	%r5,_C_LABEL(cpu_spinstart_ack)@ha
+	addi	%r5,%r5,_C_LABEL(cpu_spinstart_ack)@l
+	stw	%r3,0(%r5)
+	dcbf	0,%r5
+	lis	%r6,_C_LABEL(cpu_spinstart_cpunum)@ha
+1:
+	lwz	%r4,_C_LABEL(cpu_spinstart_cpunum)@l(%r6)
+	cmpw	%r4,%r3
+	bne	1b
+	lis	%r4,_C_LABEL(cpu_hatch_stack)@ha
+	lwz	%r1,_C_LABEL(cpu_hatch_stack)@l(%r4)
+	lis	%r31,_C_LABEL(cpu_hatch)@ha
+	addi	%r31,%r31,_C_LABEL(cpu_hatch)@l
+	ld	%r30,0(%r31)
+	ld	%r2,8(%r31)
+	mtctr	%r30
+	bctrl
+	mr	%r1,%r3		/* the return from cpu_hatch is the stack */
+	b	_C_LABEL(idle_loop)
+#endif /* MULTIPROCESSOR && PPC_OEA64_SLB */
 
 #if 0 /* XXX CPU configuration spaghetti */
 /*

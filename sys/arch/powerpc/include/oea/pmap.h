@@ -131,6 +131,21 @@ __BEGIN_DECLS
 #define	PMAP_DIRECT_MAPPED_SR	(MIN(USER_SR, KERNEL_SR) - 1)
 #define	PMAP_DIRECT_MAPPED_LEN \
     ((vaddr_t)SEGMENT_LENGTH * (PMAP_DIRECT_MAPPED_SR + 1))
+#elif defined(PPC_OEA64_SLB)
+/*
+ * pmap_setup_segment0_map() maps all of physical memory 1:1, so every
+ * real address is direct-mapped, and the architecture's real address
+ * has 62 bits (Book III 2.01, Figure 16).  That is a bound on every
+ * implementation, which may have fewer (4.5.1); the one this kernel
+ * actually has is applied where the mapping is laid down.  The kernel's
+ * own virtual space starts at VM_MIN_KERNEL_ADDRESS, far above either.
+ *
+ * Left undefined, <powerpc/pmap.h> makes it ~0UL, which puts the whole
+ * kernel map inside the direct region: pmap_pvo_find_va() then panics
+ * on uvm's "not mapped yet" question, and the range checks against
+ * this bound in pmap_bootstrap() can never fire.
+ */
+#define	PMAP_DIRECT_MAPPED_LEN	((vaddr_t)1 << 62)
 #endif
 
 #if defined (PPC_OEA) || defined (PPC_OEA64_BRIDGE)
@@ -173,12 +188,17 @@ void pmap_real_memory(paddr_t *, psize_t *);
 void pmap_procwr(struct proc *, vaddr_t, size_t);
 int pmap_pte_spill(pmap_t, vaddr_t, bool);
 #ifdef PPC_OEA64_SLB
+extern u_int pmap_pft_shift;
+extern paddr_t pmap_boot_rma_end;
+void pmap_slb_cpu_init(void);
+void pmap_slb_cpu_hid(void);
 /*
  * Called from the Data and Instruction Segment vectors, which is why it
  * is not static: nothing in C calls it.  pmap_pte_spill() above is here
  * for the same reason, from the DSI vector.
  */
 int pmap_slb_fault(pmap_t, vaddr_t);
+void pmap_setusr_refresh(void);
 #endif
 int pmap_ste_spill(pmap_t, vaddr_t, bool);
 void pmap_pinit(pmap_t);
@@ -260,7 +280,7 @@ vaddr_t pmap_setusr (vaddr_t);
 vaddr_t pmap_unsetusr (void);
 #endif
 
-#ifdef PPC_OEA64_BRIDGE
+#if defined(PPC_OEA64_BRIDGE) || defined(PPC_OEA64_SLB)
 int pmap_setup_segment0_map(int use_large_pages, ...);
 #endif
 

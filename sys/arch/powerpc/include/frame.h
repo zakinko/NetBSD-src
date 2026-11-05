@@ -153,7 +153,24 @@ struct trapframe32 {
 
 struct ktrapframe {
 	__register_t ktf_sp;
+#ifdef _LP64
+	/*
+	 * trap() and the rest are called with r1 here, so this is their
+	 * caller's frame: a 48-byte header whose LR save word is the third
+	 * doubleword, and a parameter save area of at least 8 doublewords
+	 * that the callee may store its arguments in (64-bit PowerPC ELF
+	 * ABI 1.9, 3.2.2).  With only sp and lr in front, the callee's LR
+	 * and arguments went into the saved registers, and cpu_switchto's
+	 * return into a new lwp read its LR from tf_fixreg[0].
+	 */
+	__register_t ktf_cr;
 	__register_t ktf_lr;
+	__register_t ktf_reserved[2];	/* compiler and link editor */
+	__register_t ktf_toc;
+	__register_t ktf_param[8];
+#else
+	__register_t ktf_lr;
+#endif
 	struct trapframe ktf_tf;
 	__register_t ktf_cframe_lr;	/* for DDB */
 };

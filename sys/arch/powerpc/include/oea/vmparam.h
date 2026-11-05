@@ -178,7 +178,19 @@
 #define	NPMAPS		32768	/* Number of pmaps in system */
 #endif
 
+#ifdef _LP64
+/*
+ * The first segment is the kernel's in every address space: the kernel
+ * runs where it was loaded, at the bottom, and entry 0 of the SLB (or
+ * its bolted STE) holds that segment whatever process is current.  A
+ * user mapping there would be translated with the kernel's VSID.  The
+ * 32-bit kernel reloads all sixteen segment registers on the way back
+ * to user space and has no such problem.
+ */
+#define	VM_MIN_ADDRESS		((vaddr_t) SEGMENT_LENGTH)
+#else
 #define	VM_MIN_ADDRESS		((vaddr_t) 0)
+#endif
 #define	VM_MAXUSER_ADDRESS32	((vaddr_t) (uint32_t) ~0xfffL)
 #ifdef _LP64
 #define	VM_MAXUSER_ADDRESS	((vaddr_t) 1UL << 48) /* 256TB */

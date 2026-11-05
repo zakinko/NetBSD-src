@@ -118,6 +118,173 @@ extern paddr_t msgbuf_paddr;
 static struct mem_region *mem, *avail;
 static u_int mem_cnt, avail_cnt;
 
+#if defined(PMAP_OEA64_SLB)
+/*
+ * ESIDs 1 through this one are mapped 1:1 with large pages, so their SLB
+ * entries carry L.  Zero until pmap_setup_segment0_map() has laid them
+ * down, which is what keeps an entry from claiming a size the page table
+ * does not have.  Segment 0 is not among them: it is mapped with 4KB
+ * pages and the kernel is running out of it before any of this.
+ */
+static register_t pmap_slb_large_esid;
+
+/*
+ * 2^m, the implemented real address.  m = 42: 970FX User's Manual v1.7,
+ * Table 5-1; 970MP v2.3, 5.1; Cell BE Handbook v1.11, 4.2.6.4.  m = 50:
+ * POWER8 User's Manual v1.3, 1.1 and 2.3.7.  m = 56 with the hashed page
+ * table: POWER9 User's Manual v2.1, 1.1 and 2.3.7.  Power10 implements
+ * RA 11:63 but takes RA(11) = 1 as control memory, reached only by paste
+ * (User's Manual v1.0, 5.9.1 and 5.9.2), so memory ends below 2^52.
+ */
+static paddr_t
+pmap_slb_real_limit(void)
+{
+
+	switch (mfpvr() >> 16) {
+	case IBMPOWER8:
+		return (paddr_t)1 << 50;
+	case IBMPOWER9:
+		return (paddr_t)1 << 56;
+	case IBMPOWER10:
+		return (paddr_t)1 << 52;
+	default:
+		return (paddr_t)1 << 42;
+	}
+}
+
+/*
+ * Nonzero when the page table is a hypervisor's and not this kernel's:
+ * the LPAR option of LoPAPR 1.1.  It is then "a hypervisor resource"
+ * (Power ISA 2.07, Book III-S 5.7.7.1, Programming Note), tlbie, tlbiel
+ * and tlbsync are hypervisor privileged (5.9.3.3), and SDR1 can be
+ * written only in hypervisor state (POWER8 User's Manual v1.3, Table
+ * 3-8).  Entries are made and removed with the hcall()s of 14.5.4.1
+ * instead, and each of those does its own tlbie.
+ *
+ * The value is log2 of the table's size in bytes, from "ibm,pft-size"
+ * (B.6.4); ofwoea sets it before pmap_bootstrap().
+ *
+ * The partition cannot read that table.  pmap_pteg_table is then a copy
+ * kept in the kernel's own memory, written alongside every hcall(), so
+ * the code that searches it -- spill, the pvo checks, ddb -- reads the
+ * copy unchanged.  Keeping a copy is this kernel's choice; LoPAPR only
+ * offers H_READ.  What the copy cannot follow is R and C, which the
+ * processor sets in the real entry, so those are always asked of the
+ * hypervisor.
+ */
+u_int pmap_pft_shift;
+#define	PMAP_PAPR_P()	(pmap_pft_shift != 0)
+
+/* LoPAPR 1.1, Table 176 */
+#define	H_REMOVE	0x04
+#define	H_ENTER		0x08
+#define	H_READ		0x0c
+#define	H_CLEAR_MOD	0x10
+#define	H_CLEAR_REF	0x14
+
+/* Table 178; the numbers are bits of a 64-bit flags word */
+#define	H_EXACT		__BIT(63 - 24)
+#define	H_READ_4	__BIT(63 - 26)
+
+/* Table 180 */
+#define	H_SUCCESS	0
+#define	H_BUSY		1
+#define	H_LONG_BUSY_MIN	9900
+#define	H_LONG_BUSY_MAX	9905
+
+/*
+ * The platform's own entries for the real mode area: "bolted", PTE bit
+ * 59, which the OS must not remove (R1-14.1.2-2).  They sit in the last
+ * slot of a group (R1-14.1.2-5).  Bit 59 is one of the software bits
+ * (Book III-S 5.7.7.1, Figure 24), which this pmap does not otherwise use.
+ */
+#define	PTE_PAPR_BOLTED	0x0000000000000010ULL
+
+/*
+ * 14.5.3: the token and parameters go in r3 up, the status comes back
+ * in r3 and the outputs in r4 up, and r0, r3-r12, CTR, XER and CR fields
+ * 0, 1 and 5-7 are not preserved.  sc with LEV=1 invokes the hypervisor
+ * (Book III-S 3.3.1).  out[] takes r4-r11, the most any of these
+ * returns (H_READ with READ_4, 14.5.4.1.3).
+ */
+static long
+pmap_hcall1(register_t token, register_t flags, register_t ptex,
+    register_t pteh, register_t ptel, register_t out[8])
+{
+	register register_t r3 __asm("r3") = token;
+	register register_t r4 __asm("r4") = flags;
+	register register_t r5 __asm("r5") = ptex;
+	register register_t r6 __asm("r6") = pteh;
+	register register_t r7 __asm("r7") = ptel;
+	register register_t r8 __asm("r8");
+	register register_t r9 __asm("r9");
+	register register_t r10 __asm("r10");
+	register register_t r11 __asm("r11");
+
+	__asm volatile("sc 1"
+	    : "+r"(r3), "+r"(r4), "+r"(r5), "+r"(r6), "+r"(r7),
+	      "=r"(r8), "=r"(r9), "=r"(r10), "=r"(r11)
+	    :
+	    : "r0", "r12", "ctr", "xer", "cr0", "cr1", "cr5", "cr6", "cr7",
+	      "memory");
+	out[0] = r4; out[1] = r5; out[2] = r6; out[3] = r7;
+	out[4] = r8; out[5] = r9; out[6] = r10; out[7] = r11;
+	return r3;
+}
+
+/*
+ * The hcall-pft functions are of the Critical class: meeting a busy
+ * resource they back out and return H_Busy, and "when subsequently
+ * called, the operation begins again" (PAPR 10.60, Table 176).  The
+ * long-busy codes are "identical to H_Busy", and an OS that cannot wait
+ * is "free to immediately turn around and try again" (Table 180).
+ */
+static long
+pmap_hcall(register_t token, register_t flags, register_t ptex,
+    register_t pteh, register_t ptel, register_t out[8])
+{
+	long rv;
+
+	do {
+		rv = pmap_hcall1(token, flags, ptex, pteh, ptel, out);
+	} while (rv == H_BUSY ||
+	    (rv >= H_LONG_BUSY_MIN && rv <= H_LONG_BUSY_MAX));
+	return rv;
+}
+
+/*
+ * With translation off a partition reaches only its real mode area, the
+ * first logical memory block, which starts at 0 (LoPAPR 14.1.1); past it
+ * the access is a storage interrupt.  pmap_bootstrap1() writes the page
+ * table copy and the pvo table with translation off, and interrupts are
+ * taken the same way, so in a partition pmap_boot_find_memory() keeps
+ * what it hands out from the bottom below this.  mem[] is the "reg" of
+ * /memory in firmware order, so the region at 0 is that first block.
+ * The message buffer, taken from the top, is written only after
+ * oea_startup() has mapped it.  cpu_spinup() keeps a secondary
+ * processor's hatch stack below it too.
+ */
+paddr_t pmap_boot_rma_end;
+
+static paddr_t
+pmap_papr_rma_end(void)
+{
+	u_int i;
+
+	for (i = 0; i < mem_cnt; i++)
+		if (mem[i].start == 0)
+			return mem[i].size;
+	panic("pmap: no memory region at 0 for the real mode area");
+}
+
+static inline register_t
+pmap_ptex(volatile const struct pte *pt)
+{
+
+	return pt - &pmap_pteg_table[0].pt[0];
+}
+#endif
+
 #if !defined(PMAP_OEA64) && !defined(PMAP_OEA64_BRIDGE) && \
     !defined(PMAP_OEA64_SLB)
 # define	PMAP_OEA 1
@@ -486,6 +653,12 @@ extern struct evcnt pmap_evcnt_idlezeroed_pages;
 
 #ifdef MD_TLBSYNC
 #define TLBSYNC()	MD_TLBSYNC()
+#elif defined(PMAP_OEA64_SLB)
+/* Hypervisor privileged in a partition, where each hcall() does its own */
+#define	TLBSYNC()	do {						\
+	if (!PMAP_PAPR_P())						\
+		__asm volatile("tlbsync" ::: "memory");			\
+} while (0)
 #else
 #define	TLBSYNC()	__asm volatile("tlbsync" ::: "memory")
 #endif
@@ -513,8 +686,60 @@ mfsrin(vaddr_t va)
 extern void mfmsr64 (register64_t *result);
 #endif /* PMAP_OEA64_BRIDGE */
 
-#define	PMAP_LOCK()		KERNEL_LOCK(1, NULL)
-#define	PMAP_UNLOCK()		KERNEL_UNLOCK_ONE(NULL)
+/*
+ * The pmap's own lock.  It was the kernel lock, which a CPU can hold
+ * while it takes an interrupt: a handler run under it that waited for a
+ * spin mutex deadlocked against a CPU that held the mutex and called into
+ * the pmap, as a disk driver does with bus_dmamap_load() in its start
+ * routine (ld_virtio_start() against lddone()).  This one is taken with
+ * external interrupts off and kept so, and its holder runs no handler.
+ * Nothing under it may sleep.
+ *
+ * It is recursive, as the kernel lock was: pool_get() under it comes back
+ * through pmap_pool_alloc() to pmap_alloc_unmanaged().  The MSR to return
+ * to is the outermost caller's.
+ */
+static struct {
+	__cpu_simple_lock_t	pl_lock;
+	struct cpu_info		*pl_owner;
+	u_int			pl_depth;
+	register_t		pl_msr;
+} pmap_lock_s = { .pl_lock = __SIMPLELOCK_UNLOCKED };
+
+static inline void
+pmap_lock(void)
+{
+	const register_t msr = MFMSR();
+	struct cpu_info *ci;
+
+	MTMSR(msr & ~PSL_EE);
+	ci = curcpu();
+	if (pmap_lock_s.pl_owner == ci) {
+		pmap_lock_s.pl_depth++;
+		return;
+	}
+	__cpu_simple_lock(&pmap_lock_s.pl_lock);
+	pmap_lock_s.pl_owner = ci;
+	pmap_lock_s.pl_depth = 1;
+	pmap_lock_s.pl_msr = msr;
+}
+
+static inline void
+pmap_unlock(void)
+{
+	register_t msr;
+
+	KASSERT(pmap_lock_s.pl_owner == curcpu());
+	if (--pmap_lock_s.pl_depth > 0)
+		return;
+	msr = pmap_lock_s.pl_msr;
+	pmap_lock_s.pl_owner = NULL;
+	__cpu_simple_unlock(&pmap_lock_s.pl_lock);
+	MTMSR(msr);
+}
+
+#define	PMAP_LOCK()		pmap_lock()
+#define	PMAP_UNLOCK()		pmap_unlock()
 
 static inline register_t
 pmap_interrupts_off(void)
@@ -553,6 +778,15 @@ tlbia(void)
 {
 	char *i;
 	
+#if defined(PMAP_OEA64_SLB)
+	/*
+	 * Nothing to do in a partition: the table was emptied with
+	 * H_REMOVE, which invalidates the TLB entry of each PTE it removes
+	 * (14.5.4.1.1), and tlbiel would not be allowed anyway.
+	 */
+	if (PMAP_PAPR_P())
+		return;
+#endif
 	SYNC();
 #if defined(PMAP_OEA)
 	/*
@@ -579,6 +813,56 @@ tlbia(void)
 	SYNC();
 }
 
+#if defined(PMAP_OEA64_SLB)
+/*
+ * VSID_MAKE keeps SR_KEY_LEN bits of the segment number, which was all
+ * of it with sixteen segment registers.  An LP64 effective address has
+ * a 36-bit ESID (Book III 2.01, 4.4.1), and two segments of one pmap
+ * whose ESIDs agree in their low nine bits were given one VSID, so a
+ * store through either reached the same page: kernel_map's first
+ * segment at VM_MIN_KERNEL_ADDRESS aliased the direct map's segment 0,
+ * and zeroing a new kernel page cleared a pool page at the same offset.
+ *
+ * The virtual address is at least 65 bits wide ("65 <= n", Storage
+ * Control Overview, Book III 2.01 and ISA 2.07 5.7), and the 970FX and
+ * the Cell PPE are exactly 65 (970FX UM 5.1, CBE Handbook 4.2.1), so a
+ * VSID has 65 - 28 = 37 bits to use: the high-order 80 - n are reserved
+ * and must be zero (4.4.1).
+ *
+ * How those bits are shared out is the operating system's choice, not
+ * the architecture's.  Here the pmap's index in pmap_vsid_bitmap sits
+ * above 21 bits of segment: 20 bits of ESID, all of a user address
+ * below VM_MAXUSER_ADDRESS, and one more for the top of the address
+ * space, where the kernel's own segments are.  The direct map starts at
+ * 0 and so takes the low half.
+ */
+#define	VSID_SLB_ESID_BITS	20
+#define	VSID_SLB_ESIDS		((register_t)1 << VSID_SLB_ESID_BITS)
+
+/*
+ * The hash that picks a PTEG uses only the low-order bits of the VSID
+ * (VA 11:49 for 256MB segments, ISA 2.07 Book III-S 5.7.7.3.1), as many
+ * as HTABSIZE leaves, and the pmap's index above bit 21 never reached
+ * them.  Every address space then hashed the same way, ESID by ESID, and
+ * two pages that met in one PTEG met there in every process: with the
+ * kernel's entries filling most of such a group, a user stack page and
+ * the instruction touching it evicted each other forever.
+ *
+ * So the low 20 bits are mixed: the ESID is multiplied by an odd number,
+ * which permutes 20-bit values, and the pmap index, scaled, is XORed in.
+ * The index stays above bit 21 as well, so (pmap, ESID) still maps to
+ * exactly one VSID.  The constants are this pmap's choice; the
+ * architecture names none.
+ */
+#define	VSID_SLB_ESID_MULT	0x9e3b5
+#define	VSID_SLB_PMAP_MULT	0x3b9c7
+CTASSERT((VM_MAXUSER_ADDRESS >> ADDR_SR_SHFT) <= VSID_SLB_ESIDS);
+CTASSERT(((vaddr_t)USER_ADDR >> ADDR_SR_SHFT | (VSID_SLB_ESIDS - 1)) ==
+    (vaddr_t)-1 >> ADDR_SR_SHFT);
+CTASSERT((uint64_t)NPMAPS << (VSID_SLB_ESID_BITS + 1) <=
+    (uint64_t)1 << (65 - ADDR_SR_SHFT));
+#endif
+
 static inline register_t
 va_to_vsid(const struct pmap *pm, vaddr_t addr)
 {
@@ -592,7 +876,20 @@ va_to_vsid(const struct pmap *pm, vaddr_t addr)
 	 * pmap contains a different SR value at any given moment (e.g.
 	 * kernel pmap on a 601 that is using I/O segments).
 	 */
+#if defined(PMAP_OEA64_SLB)
+	const register_t esid = addr >> ADDR_SR_SHFT;
+
+	KASSERT(esid < VSID_SLB_ESIDS ||
+	    (esid | (VSID_SLB_ESIDS - 1)) == (register_t)-1 >> ADDR_SR_SHFT);
+	const register_t idx = pm->pm_vsid & (NPMAPS - 1);
+
+	return (idx << (VSID_SLB_ESID_BITS + 1)) |
+	    ((esid >> (63 - ADDR_SR_SHFT)) << VSID_SLB_ESID_BITS) |
+	    (((esid * VSID_SLB_ESID_MULT) ^ (idx * VSID_SLB_PMAP_MULT)) &
+	     (VSID_SLB_ESIDS - 1));
+#else
 	return VSID_MAKE(addr >> ADDR_SR_SHFT, pm->pm_vsid) >> SR_VSID_SHFT;
+#endif
 }
 
 static inline register_t
@@ -603,6 +900,23 @@ va_to_pteg(const struct pmap *pm, vaddr_t addr)
 	hash = va_to_vsid(pm, addr) ^ ((addr & ADDR_PIDX) >> ADDR_PIDX_SHFT);
 	return hash & pmap_pteg_mask;
 }
+
+#if defined(PMAP_OEA64_SLB)
+/*
+ * The same hash for a segment mapped with large pages.  Figure 16 feeds
+ * the function VPN 13:51 and the 28-p bits of the page number within the
+ * segment; at p = 24 that second operand is four bits wide instead of
+ * the sixteen a 4KB page gives it.
+ */
+static __inline int
+va_to_pteg_large(const struct pmap *pm, vaddr_t addr)
+{
+	register_t hash;
+
+	hash = va_to_vsid(pm, addr) ^ ((addr & ADDR_LPIDX) >> ADDR_LPIDX_SHFT);
+	return hash & pmap_pteg_mask;
+}
+#endif /* PMAP_OEA64_SLB */
 
 #if defined(DEBUG) || defined(PMAPCHECK) || defined(DDB)
 /*
@@ -743,15 +1057,78 @@ pmap_pte_create(struct pte *pt, const struct pmap *pm, vaddr_t va, register_t pt
 #endif /* PMAP_OEA */
 }
 
+#if defined(PMAP_OEA64_SLB)
+/*
+ * The same PTE for a segment mapped with large pages.  At p = 24 the
+ * AVPN field stops at VPN bit 55, so the four bits under the VSID hold
+ * EA 36:39 and AVPN bit 56 -- the low bit of what a 4KB page uses as
+ * its API -- has to be left zero.
+ *
+ * The caller owes the other half of it: "If p > 12, the low-order p-12
+ * bits of the RPN field must be 0", so pte_lo has to name a 16MB
+ * boundary.
+ */
+static void
+pmap_pte_create_large(struct pte *pt, const struct pmap *pm, vaddr_t va,
+    register_t pte_lo)
+{
+
+	pt->pte_hi = ((u_int64_t)va_to_vsid(pm, va) << PTE_VSID_SHFT)
+	    | (((va & ADDR_LPIDX) >> (ADDR_LPIDX_SHFT - PTE_LAPI_SHFT))
+	       & PTE_LAPI) | PTE_L;
+	pt->pte_lo = (u_int64_t) pte_lo;
+}
+#endif /* PMAP_OEA64_SLB */
+
 static inline void
 pmap_pte_synch(volatile struct pte *pt, struct pte *pvo_pt)
 {
+#if defined(PMAP_OEA64_SLB)
+	if (PMAP_PAPR_P()) {
+		register_t out[8];
+		long rv;
+
+		if ((pt->pte_hi & PTE_VALID) == 0)
+			return;
+		rv = pmap_hcall(H_READ, 0, pmap_ptex(pt), 0, 0, out);
+		if (rv != H_SUCCESS)
+			panic("%s: H_READ %#lx: %ld", __func__,
+			    (u_long)pmap_ptex(pt), rv);
+		pvo_pt->pte_lo |= out[1] & (PTE_REF|PTE_CHG);
+		return;
+	}
+#endif
 	pvo_pt->pte_lo |= pt->pte_lo & (PTE_REF|PTE_CHG);
 }
 
 static inline void
 pmap_pte_clear(volatile struct pte *pt, vaddr_t va, int ptebit)
 {
+#if defined(PMAP_OEA64_SLB)
+	if (PMAP_PAPR_P()) {
+		register_t out[8];
+		long rv;
+
+		/* Only R and C can be cleared this way (14.5.4.1.4, .5) */
+		KASSERT((ptebit & ~(PTE_REF|PTE_CHG)) == 0);
+		pt->pte_lo &= ~ptebit;
+		if (ptebit & PTE_REF) {
+			rv = pmap_hcall(H_CLEAR_REF, 0, pmap_ptex(pt), 0, 0,
+			    out);
+			if (rv != H_SUCCESS)
+				panic("%s: H_CLEAR_REF %#lx: %ld", __func__,
+				    (u_long)pmap_ptex(pt), rv);
+		}
+		if (ptebit & PTE_CHG) {
+			rv = pmap_hcall(H_CLEAR_MOD, 0, pmap_ptex(pt), 0, 0,
+			    out);
+			if (rv != H_SUCCESS)
+				panic("%s: H_CLEAR_MOD %#lx: %ld", __func__,
+				    (u_long)pmap_ptex(pt), rv);
+		}
+		return;
+	}
+#endif
 	/*
 	 * As shown in Section 7.6.3.2.3
 	 */
@@ -774,6 +1151,32 @@ pmap_pte_set(volatile struct pte *pt, struct pte *pvo_pt)
 		panic("pte_set: setting an already valid pte %p", pvo_pt);
 #endif
 	pvo_pt->pte_hi |= PTE_VALID;
+
+#if defined(PMAP_OEA64_SLB)
+	if (PMAP_PAPR_P()) {
+		register_t out[8];
+		long rv;
+
+		/*
+		 * H_ENTER takes system memory only as WIMG 0010 and I/O
+		 * only as 01** (14.5.4.1.2).  A device page mapped
+		 * cacheable -- PMAP_MD_PREFETCHABLE, or anything outside
+		 * mem[] without PMAP_NOCACHE -- would be refused, so it is
+		 * entered cache inhibited.
+		 */
+		if ((pvo_pt->pte_lo & (PTE_M|PTE_I)) == 0)
+			pvo_pt->pte_lo = (pvo_pt->pte_lo & ~PTE_W) | PTE_I;
+		rv = pmap_hcall(H_ENTER, H_EXACT, pmap_ptex(pt),
+		    pvo_pt->pte_hi, pvo_pt->pte_lo, out);
+		if (rv != H_SUCCESS)
+			panic("%s: H_ENTER %#lx: %ld", __func__,
+			    (u_long)pmap_ptex(pt), rv);
+		pt->pte_lo = pvo_pt->pte_lo;
+		pt->pte_hi = pvo_pt->pte_hi;
+		pmap_pte_valid++;
+		return;
+	}
+#endif
 
 	/*
 	 * Update the PTE as defined in section 7.6.3.1
@@ -802,6 +1205,22 @@ pmap_pte_unset(volatile struct pte *pt, struct pte *pvo_pt, vaddr_t va)
 #endif
 
 	pvo_pt->pte_hi &= ~PTE_VALID;
+#if defined(PMAP_OEA64_SLB)
+	if (PMAP_PAPR_P()) {
+		register_t out[8];
+		long rv;
+
+		/* The old entry, R and C included, comes back in r4/r5 */
+		rv = pmap_hcall(H_REMOVE, 0, pmap_ptex(pt), 0, 0, out);
+		if (rv != H_SUCCESS)
+			panic("%s: H_REMOVE %#lx: %ld", __func__,
+			    (u_long)pmap_ptex(pt), rv);
+		pt->pte_hi &= ~PTE_VALID;
+		pvo_pt->pte_lo |= out[1] & (PTE_REF|PTE_CHG);
+		pmap_pte_valid--;
+		return;
+	}
+#endif
 	/*
 	 * Force the ref & chg bits back into the PTEs.
 	 */
@@ -1188,7 +1607,8 @@ extern struct slb cpu_slb[][SLB_NENTRIES];
  * Which entry to take next when none is free.  Unlike the shadow this
  * is not per-CPU, and does not need to be: two processors reaching it
  * at once pick the same number and each writes that entry of its own
- * SLB, which is a worse choice of victim and nothing else.  Which entry
+ * SLB, which is a worse choice of victim -- so long as what each reads
+ * is kept in range, which pmap_slb_fault() sees to.  Which entry
  * to sacrifice is not in the architecture at all -- 4.4.1 says only
  * that the entries exist -- so any answer is allowed to be a poor one.
  */
@@ -1228,9 +1648,33 @@ pmap_slb_set(struct slb *slb, register_t vsid, register_t esid,
 	register_t v;
 
 	v = vsid << SLBV_VSID_SHFT;
+
+	/*
+	 * Kp keeps problem state out of the kernel's segments; where the
+	 * page's PP does grant user access it is 0b10 or 0b11, which 4.10
+	 * reads the same way whichever key applies, so setting it always
+	 * costs the user segments nothing.
+	 *
+	 * Ks is not "the kernel's key" -- it selects which column of the
+	 * 4.10 protection table supervisor accesses are judged by, and the
+	 * restrictive column denies PP=0b00 outright.  pmap_setup_segment0_map
+	 * builds the 1:1 kernel mapping with PP=0b00 ("Supervisor RW, no user
+	 * access"), which is only that with the key clear, so setting Ks here
+	 * made the processor refuse to fetch the kernel's own text.
+	 */
 	v |= SLBV_PRKEY;
-	if (kernel)
-		v |= SLBV_SUKEY;	/* 12.10.1: Ks is the kernel's key */
+
+	/*
+	 * The segments pmap_setup_segment0_map() laid down with 16MB
+	 * pages have to say so here; nothing in the PTE records a size,
+	 * so this bit is the only thing that tells the processor how to
+	 * read them.  pmap_slb_large_esid is zero until those entries
+	 * exist, so this cannot fire early.  Only the kernel's: a user
+	 * segment at the same ESID is mapped in 4KB pages under its own
+	 * VSID, and marking it large made every fetch from it miss.
+	 */
+	if (kernel && esid != 0 && esid <= pmap_slb_large_esid)
+		v |= SLBV_LARGE;
 
 	slb->slb_v = v;
 	slb->slb_e = (esid << SLBE_ESID_SHFT) | SLBE_VALID | index;
@@ -1271,10 +1715,22 @@ pmap_slb_enter(const struct slb *slb, register_t old_e)
 	 */
 	__asm volatile("slbmfee %0,%1" : "=r"(was)
 	    : "r"(slb->slb_e & SLBE_INDEX));
-	if (was != old_e)
+
+	/*
+	 * slbmfee hands back the ESID and V, and nothing else -- not the
+	 * index, which only slbmte's RB carries.  For an invalid entry V
+	 * reads 0 and the ESID bits are undefined (Book III 2.01,
+	 * 4.11.3.1, Figure 27); qemu returns the ESID the entry used to
+	 * hold, so an emptied slot compared whole looks like a live one
+	 * that moved.  V is the only thing that says whether there is an
+	 * entry at all, so reduce both sides to that before comparing.
+	 */
+#define	SLBE_LIVE(e)	((e) & SLBE_VALID ? (e) & (SLBE_ESID | SLBE_VALID) : 0)
+	if (SLBE_LIVE(was) != SLBE_LIVE(old_e))
 		panic("pmap_slb_enter: entry %u holds %#lx, not %#lx",
 		    (unsigned int)(slb->slb_e & SLBE_INDEX),
 		    (unsigned long)was, (unsigned long)old_e);
+#undef	SLBE_LIVE
 #endif
 
 	__asm volatile("isync" ::: "memory");
@@ -1396,10 +1852,16 @@ pmap_slb_fault(struct pmap *pm, vaddr_t va)
 	}
 
 	if (index == SLB_NENTRIES) {
+		/*
+		 * Read once and bound what was read: with more than one
+		 * processor here the shared cursor can be stepped past
+		 * SLB_WINDOW between another's increment and its wrap, and
+		 * an equality test would then never wrap it again.
+		 */
 		index = pmap_slb_next;
-		pmap_slb_next++;
-		if (pmap_slb_next == SLB_WINDOW)
-			pmap_slb_next = SLB_KERNEL + 1;
+		if (index <= SLB_KERNEL || index >= SLB_WINDOW)
+			index = SLB_KERNEL + 1;
+		pmap_slb_next = index + 1;
 	}
 
 	old_e = shadow[index].slb_e;
@@ -1446,6 +1908,58 @@ pmap_setusr(vaddr_t uva)
 	PMAP_UNLOCK();
 
 	return (vaddr_t)USER_ADDR;
+}
+
+/*
+ * Put the window back after something took it down under a copy that is
+ * still using it.  cpu_switchto() and pmap_slb_switch() empty the SLB of
+ * everything but entry 0, and a copyin() or copyout() that sleeps in
+ * uvm_fault(), or is preempted, comes back without it.  Its next access
+ * takes a segment fault, which runs with translation off, cannot see the
+ * pcb, and fills in the ESID as an ordinary kernel segment; the page is
+ * then not found under that VSID, the DSI handler resolves the fault
+ * against the user map, and without this the access retried forever.
+ *
+ * The 32-bit window is a segment register, which cpu_switchto() reloads
+ * from the switchframe; the SLB has nothing equivalent, so the DSI
+ * handler calls this instead.  An entry the segment fault made for the
+ * window's ESID is removed first: 4.4.1 allows no two entries to
+ * translate the same address.
+ */
+void
+pmap_setusr_refresh(void)
+{
+	struct pcb * const pcb = curpcb;
+	struct slb * const shadow = pmap_slb_shadow();
+	const register_t want = USER_WINDOW_ESID << SLBE_ESID_SHFT;
+	register_t msr, old_e;
+	unsigned int i;
+
+	if (pcb->pcb_kmapsr != USER_WINDOW_ESID)
+		return;
+
+	PMAP_LOCK();
+	msr = pmap_interrupts_off();
+
+	for (i = SLB_KERNEL + 1; i < SLB_WINDOW; i++) {
+		if ((shadow[i].slb_e & SLBE_VALID) == 0 ||
+		    (shadow[i].slb_e & SLBE_ESID) != want)
+			continue;
+		__asm volatile("isync" ::: "memory");
+		__asm volatile("slbie %0" :: "r"(shadow[i].slb_e & SLBE_ESID)
+		    : "memory");
+		__asm volatile("isync" ::: "memory");
+		shadow[i].slb_e = 0;
+	}
+
+	old_e = shadow[SLB_WINDOW].slb_e;
+	pmap_slb_set(&shadow[SLB_WINDOW],
+	    va_to_vsid(pcb->pcb_pm, pcb->pcb_umapsr << ADDR_SR_SHFT),
+	    USER_WINDOW_ESID, SLB_WINDOW, false);
+	pmap_slb_enter(&shadow[SLB_WINDOW], old_e);
+
+	pmap_interrupts_restore(msr);
+	PMAP_UNLOCK();
 }
 
 /*
@@ -1498,7 +2012,10 @@ pmap_pte_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 	struct pvo_entry *pvo, *source_pvo, *victim_pvo;
 	volatile struct pteg *pteg;
 	volatile struct pte *pt;
-	register_t msr, vsid, hash;
+	register_t msr, vsid;
+#if !defined(PMAP_OEA64_SLB)
+	register_t hash;
+#endif
 	int ptegidx, hid, i, j;
 	int done = 0;
 
@@ -1590,10 +2107,23 @@ pmap_pte_spill(struct pmap *pm, vaddr_t addr, bool isi_p)
 		if ((pt->pte_hi & PTE_VALID) == 0)
 			break;
 
+#if defined(PMAP_OEA64_SLB)
+		/* The platform's, with no pvo; never a victim */
+		if (pt->pte_hi & PTE_PAPR_BOLTED)
+			continue;
+#endif
+
 		vsid = (pt->pte_hi & PTE_VSID) >> PTE_VSID_SHFT;
+#if defined(PMAP_OEA64_SLB)
+		/* va_to_vsid() puts the pmap above the segment */
+		if ((vsid >> (VSID_SLB_ESID_BITS + 1)) !=
+		    (KERNEL_VSIDBITS & (NPMAPS - 1)))
+			break;
+#else
 		hash = VSID_TO_HASH(vsid);
 		if (hash < PHYSMAP_VSIDBITS)
 			break;
+#endif
 	}
 	if (j == 8) {
 		if (hid != 0)
@@ -1768,6 +2298,10 @@ pmap_pinit(pmap_t pm)
 	register_t entropy = MFTB();
 	register_t mask;
 	int i;
+#if defined(PMAP_OEA64)
+	/* PR_WAITOK can sleep, which the pmap lock does not allow. */
+	void * const steg = pmap_pool_alloc(NULL, PR_WAITOK);
+#endif
 
 	/*
 	 * Allocate some segment registers for this pmap.
@@ -1814,7 +2348,7 @@ pmap_pinit(pmap_t pm)
 		 * freelist, so what it returns is also the real address
 		 * the ASR wants.
 		 */
-		pm->pm_steg_table = pmap_pool_alloc(NULL, PR_WAITOK);
+		pm->pm_steg_table = steg;
 		memset(pm->pm_steg_table, 0, PAGE_SIZE);
 		pmap_steg_bolt(pm);
 #endif
@@ -2831,6 +3365,23 @@ pmap_extract(pmap_t pm, vaddr_t va, paddr_t *pap)
 #endif /* PPC_OEA */
 	}
 #endif /* !PMAP_OEA64 */
+#if defined(PMAP_OEA64_SLB)
+	/*
+	 * pmap_setup_segment0_map() enters the direct map straight into
+	 * the table, with no pvo: all of segment 0 in 4KB pages and the
+	 * segments up to pmap_slb_large_esid in 16MB ones.  Looking for a
+	 * pvo there found none, and bus_dmamap_load() of a pool page
+	 * panicked in pmap_pvo_find_va().
+	 */
+	if (pm == pmap_kernel() &&
+	    ((va >> ADDR_SR_SHFT) == 0 ||
+	     (va >> ADDR_SR_SHFT) <= pmap_slb_large_esid)) {
+		if (pap)
+			*pap = va;
+		PMAP_UNLOCK();
+		return true;
+	}
+#endif
 	
 	msr = pmap_interrupts_off();
 	pvo = pmap_pvo_find_va(pm, va & ~ADDR_POFF, NULL);
@@ -3708,6 +4259,10 @@ pmap_boot_find_memory(psize_t size, psize_t alignment, int at_end)
 		 */
 		if (s < mp->start || e > mp->start + mp->size)
 			continue;
+#if defined(PMAP_OEA64_SLB)
+		if (pmap_boot_rma_end != 0 && e > pmap_boot_rma_end)
+			continue;
+#endif
 
 		DPRINTFN(BOOT, ": %#" _PRIxpa "\n", s);
 		if (s == mp->start) {
@@ -3765,8 +4320,65 @@ pmap_boot_find_memory(psize_t size, psize_t alignment, int at_end)
 	    "%#" _PRIxpa "/%#" _PRIxpa " allocation?", size, alignment);
 }
 
-/* XXXSL: we dont have any BATs to do this, map in Segment 0 1:1 using page tables */
-#if defined (PMAP_OEA64_BRIDGE)
+#if defined(PMAP_OEA64_SLB)
+/*
+ * What this processor's HID registers must say for a 16MB page to be
+ * taken as L=1, LP=0.  HID4 and the others are per core; a processor
+ * started later has its own, so cpu_hatch() calls this as well.
+ */
+void
+pmap_slb_cpu_hid(void)
+{
+	/*
+	 * Cell takes L=1, LP=0 as 16MB only while HID6[LB] 0:1 are 00
+	 * (Programming Handbook v1.11, Table 4-3).  That is their value
+	 * after power-on reset (Cell BE Registers v1.51, 12.1.18), but
+	 * HID6 is the hypervisor's to set and firmware may have.  It is
+	 * not put right here: the sequence for changing LB (Handbook
+	 * 4.2.6.6) needs an slbia issued on thread 1 as well, and only
+	 * thread 0 is running.  In a partition HID6 is out of reach, and
+	 * "ibm,segment-page-sizes" has been checked instead.
+	 */
+	if ((mfpvr() >> 16) == IBMCELL && !PMAP_PAPR_P()) {
+		register_t hid6;
+
+		__asm volatile("mfspr %0,1017" : "=r"(hid6));	/* HID6 */
+		if ((hid6 & (__BIT(63 - 16) | __BIT(63 - 17))) != 0)
+			panic("pmap: HID6 %#lx makes L=1, LP=0 other than"
+			    " 16MB", (unsigned long)hid6);
+	}
+
+	/*
+	 * The 970FX and 970MP force the L bit an SLB entry takes to zero
+	 * while HID4[61], lg_pg_dis, is set (970FX User's Manual v1.7,
+	 * Table 2-9).  After a POR every HID register is zero, which is
+	 * also the preferred state (2.1.3.2; for the 970MP, Power On Reset
+	 * application note v1.0, Table 1-10), but the mode ring and the
+	 * firmware can change it.  Clear the bit with the sequence Table
+	 * 2-5 note 3 gives for HID4; no SLB entry with L exists yet.  In a
+	 * partition "ibm,segment-page-sizes" has been checked instead.
+	 */
+	if (((mfpvr() >> 16) == IBM970FX || (mfpvr() >> 16) == IBM970MP) &&
+	    !PMAP_PAPR_P()) {
+		register_t hid4;
+
+		__asm volatile("mfspr %0,%1" : "=r"(hid4) : "K"(SPR_HID4));
+		if (hid4 & __BIT(63 - 61)) {
+			hid4 &= ~__BIT(63 - 61);
+			__asm volatile("sync; mtspr %1,%0; isync"
+			    :: "r"(hid4), "K"(SPR_HID4) : "memory");
+		}
+	}
+}
+#endif /* PMAP_OEA64_SLB */
+
+/*
+ * With no BATs, the first segment has to be mapped 1:1 in the page
+ * table instead.  The bridge needed this and so does the SLB
+ * generation: neither has BAT registers, and the kernel is inside that
+ * segment, so nothing it fetches translates until these entries exist.
+ */
+#if defined(PMAP_OEA64_BRIDGE) || defined(PMAP_OEA64_SLB)
 int
 pmap_setup_segment0_map(int use_large_pages, ...)
 {
@@ -3789,6 +4401,60 @@ pmap_setup_segment0_map(int use_large_pages, ...)
         pmap_pte_create(&pte, pmap_kernel(), va, va | pte_lo);
         (void)pmap_pte_insert(ptegidx, &pte);
     }
+
+#if defined(PMAP_OEA64_SLB)
+    /*
+     * Everything above that segment is direct-mapped too, because
+     * PMAP_DIRECT_MAPPED_LEN says so and the loader puts things -- the
+     * symbol table among them -- wherever Open Firmware gave it room.
+     * One segment of 4KB entries is 65536 PTEs; doing the same to a
+     * gigabyte would be a quarter of a million more, and to the 4TB the
+     * 970FX can address, unthinkable.  So these use the 16MB pages the
+     * SLB's L bit selects: 64 entries per gigabyte.
+     *
+     * Segment 0 stays as it is above.  The size belongs to the segment,
+     * not the page, so a segment cannot hold both, and the kernel is
+     * already running out of that one on 4KB entries.
+     */
+    {
+	paddr_t top = 0;
+	u_int i;
+
+	for (i = 0; i < mem_cnt; i++)
+		if (mem[i].start + mem[i].size > top)
+			top = mem[i].start + mem[i].size;
+	top &= ~((paddr_t)(1UL << ADDR_LPIDX_SHFT) - 1);
+
+	/*
+	 * PMAP_DIRECT_MAPPED_LEN is the architecture's 62 bits; an
+	 * implementation with only m of them requires RPN bits 0:61-m of
+	 * every PTE to be zero (Book III 2.01, 4.5.1).  The processors
+	 * given OEACPU_SLB have m = 42 (970FX User's Manual v1.7, Table
+	 * 5-1; 970MP User's Manual v2.3, 5.1), so nothing is mapped at or
+	 * past 2^42 whatever the firmware's memory list says.
+	 */
+	pmap_slb_cpu_hid();
+
+	if (top > pmap_slb_real_limit()) {
+		printf("pmap: memory from %#lx up is not direct-mapped\n",
+		    (unsigned long)pmap_slb_real_limit());
+		top = pmap_slb_real_limit();
+	}
+
+	for (va = SEGMENT_LENGTH; va < top; va += 1UL << ADDR_LPIDX_SHFT) {
+		ptegidx = va_to_pteg_large(pmap_kernel(), va);
+		pmap_pte_create_large(&pte, pmap_kernel(), va, va | pte_lo);
+		(void)pmap_pte_insert(ptegidx, &pte);
+	}
+
+	/*
+	 * Only now may an SLB entry for these say L.  Set it earlier and
+	 * an entry claims a page size the table has no entries for.
+	 */
+	if (top > SEGMENT_LENGTH)
+		pmap_slb_large_esid = (top - 1) >> ADDR_SR_SHFT;
+    }
+#endif /* PMAP_OEA64_SLB */
 
     va_start(ap, use_large_pages);
     while (1) {
@@ -3818,7 +4484,7 @@ pmap_setup_segment0_map(int use_large_pages, ...)
     SYNC();
     return (0);
 }
-#endif /* PMAP_OEA64_BRIDGE */
+#endif /* PMAP_OEA64_BRIDGE || PMAP_OEA64_SLB */
 
 /*
  * Set up the bottom level of the data structures necessary for the kernel
@@ -3991,6 +4657,14 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 	    "pmap_bootstrap: avail[%d] start %#" _PRIxpa " size %#" _PRIxpa "\n",
 	    i, mp->start, mp->size);
 
+#if defined(PMAP_OEA64_SLB)
+	if (PMAP_PAPR_P()) {
+		pmap_boot_rma_end = pmap_papr_rma_end();
+		pmap_pteg_cnt = ((paddr_t)1 << pmap_pft_shift) /
+		    sizeof(struct pteg);
+	} else
+#endif
+	{
 #ifdef	PTEGCOUNT
 	pmap_pteg_cnt = PTEGCOUNT;
 #else /* PTEGCOUNT */
@@ -4002,6 +4676,7 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 
 	pmap_pteg_cnt >>= 1;
 #endif /* PTEGCOUNT */
+	}
 
 #ifdef DEBUG
 	DPRINTFN(BOOT, "pmap_pteg_cnt: 0x%x\n", pmap_pteg_cnt);
@@ -4028,6 +4703,46 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 	memset(__UNVOLATILE(pmap_pteg_table), 0,
 		pmap_pteg_cnt * sizeof(struct pteg));
 	pmap_pteg_mask = pmap_pteg_cnt - 1;
+
+#if defined(PMAP_OEA64_SLB)
+	/*
+	 * The copy starts empty, so the real table has to be made so too,
+	 * but for the platform's bolted entries, which are copied instead.
+	 * LoPAPR does not otherwise say what a client program finds in it.
+	 */
+	if (PMAP_PAPR_P()) {
+		register_t out[8], old[8], ptex;
+		long rv;
+		int slot;
+
+		for (ptex = 0; ptex < (register_t)pmap_pteg_cnt * 8;
+		    ptex += 4) {
+			rv = pmap_hcall(H_READ, H_READ_4, ptex, 0, 0, out);
+			if (rv != H_SUCCESS)
+				panic("pmap_bootstrap: H_READ %#lx: %ld",
+				    (u_long)ptex, rv);
+			for (slot = 0; slot < 4; slot++) {
+				if ((out[slot * 2] & PTE_VALID) == 0)
+					continue;
+				if (out[slot * 2] & PTE_PAPR_BOLTED) {
+					/* keep it, and keep it in the copy */
+					volatile struct pte *pt =
+					    &pmap_pteg_table[(ptex + slot) >> 3]
+					    .pt[(ptex + slot) & 7];
+					pt->pte_hi = out[slot * 2];
+					pt->pte_lo = out[slot * 2 + 1];
+					continue;
+				}
+				rv = pmap_hcall(H_REMOVE, 0, ptex + slot, 0, 0,
+				    old);
+				if (rv != H_SUCCESS)
+					panic("pmap_bootstrap: H_REMOVE"
+					    " %#lx: %ld", (u_long)(ptex + slot),
+					    rv);
+			}
+		}
+	}
+#endif
 
 	/*
 	 * We cannot do pmap_steal_memory here since UVM hasn't been loaded
@@ -4096,6 +4811,10 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 	pmap_kernel()->pm_sr[KERNEL2_SR] = KERNEL2_SEGMENT|SR_SUKEY|SR_PRKEY;
 #endif
 #endif /* PMAP_OEA || PMAP_OEA64_BRIDGE */
+#if defined(PMAP_OEA64_SLB)
+	/* Before the first PTE or SLB entry: va_to_vsid() reads it */
+	pmap_kernel()->pm_vsid = KERNEL_VSIDBITS;
+#endif
 
 #if defined(PMAP_OEA) && defined(PPC_OEA601)
 	if ((MFPVR() >> 16) == MPC601) {
@@ -4232,6 +4951,61 @@ pmap_bootstrap1(paddr_t kernelstart, paddr_t kernelend)
 #endif /* PMAP_NEED_MAPKERNEL */
 }
 
+#if defined(PMAP_OEA64_SLB)
+/*
+ * Give this processor its SLB: entry 0 for the kernel, the rest empty.
+ * pmap_bootstrap2() does it for the boot processor and cpu_hatch() for
+ * the others, each with translation still off.
+ */
+void
+pmap_slb_cpu_init(void)
+{
+	struct cpu_info * const ci = curcpu();
+	struct slb *shadow = cpu_slb[cpu_number()];
+
+	register_t old_e;
+
+	/*
+	 * The shadow starts empty, but the SLB does not: what is in
+	 * it is whatever the firmware left.  Ask the processor for
+	 * entry 0 rather than claiming it held nothing -- the answer
+	 * is what pmap_slb_enter() has to invalidate, and its own
+	 * check compares the two.
+	 */
+	__asm volatile("slbmfee %0,%1" : "=r"(old_e)
+	    : "r"((register_t)SLB_KERNEL));
+
+	pmap_slb_make(&shadow[SLB_KERNEL], pmap_kernel(), 0,
+	    SLB_KERNEL);
+	pmap_slb_enter(&shadow[SLB_KERNEL], old_e);
+
+	/*
+	 * Throw away every other entry the firmware left.  The
+	 * shadow is the record of what the SLB holds, and it says
+	 * only entry 0 is valid; leave the firmware's behind and
+	 * the two disagree, so the next allocation reads a free
+	 * slot out of the shadow and slbmte's over a live entry
+	 * without invalidating it.  slbia does not touch entry 0,
+	 * and the instruction after it is in the segment entry 0
+	 * now maps, which is what its Programming Note asks for --
+	 * so here, after entry 0 is the kernel's, is the one place
+	 * it can be issued.
+	 */
+	__asm volatile("slbia; isync" ::: "memory");
+
+	/*
+	 * Only now does this processor own the SLB.  Until entry 0
+	 * is the kernel's, slbia leaves whatever the firmware put
+	 * there -- and the firmware's own text lives in the same
+	 * segment the fault handler would then add a second entry
+	 * for, which 4.4.1 forbids.  ofwinit()'s save path reads
+	 * ci_slb to decide whether to touch the SLB at all, so
+	 * filling these two fields here is what arms it.
+	 */
+	ci->ci_slb = shadow;
+}
+#endif /* PMAP_OEA64_SLB */
+
 /*
  * Using the data structures prepared in pmap_bootstrap1(), program
  * the MMU hardware.
@@ -4254,6 +5028,9 @@ pmap_bootstrap2(void)
 	    : "memory");
 #elif defined(PMAP_OEA64) || defined(PMAP_OEA64_BRIDGE) || \
       defined(PMAP_OEA64_SLB)
+#if defined(PMAP_OEA64_SLB)
+	if (!PMAP_PAPR_P())
+#endif
 	__asm volatile("sync; mtsdr1 %0; isync"
 	    :
 	    : "r"((uintptr_t)pmap_pteg_table |
@@ -4339,13 +5116,7 @@ pmap_bootstrap2(void)
 	 * and DR 0 (Figure 28) and reaches everything by real address,
 	 * so it can fault on nothing.
 	 */
-	{
-		struct slb *shadow = cpu_slb[cpu_number()];
-
-		pmap_slb_make(&shadow[SLB_KERNEL], pmap_kernel(), 0,
-		    SLB_KERNEL);
-		pmap_slb_enter(&shadow[SLB_KERNEL], 0);
-	}
+	pmap_slb_cpu_init();
 #endif
 
 	tlbia();

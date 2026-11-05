@@ -43,6 +43,8 @@ __KERNEL_RCSID(0, "$NetBSD: cpu.c,v 1.17 2023/11/03 20:25:13 andvar Exp $");
 
 #include <dev/ofw/openfirm.h>
 
+#include <uvm/uvm_extern.h>
+
 #include <powerpc/openpic.h>
 #include <powerpc/spr.h>
 #include <powerpc/oea/spr.h>
@@ -249,11 +251,30 @@ md_setup_trampoline(volatile struct cpu_hatch_data *h, struct cpu_info *ci)
 	return 1;
 }
 
+/*
+ * In a partition the platform synchronizes the timebases before the
+ * processors are given to the OS (PAPR 10.60, 7.3.8), and only the
+ * hypervisor may write them (POWER8 User's Manual v1.3, Table 3-8), so
+ * there is nothing to freeze, copy or thaw.  hatch_running goes to 0
+ * as it would once a frozen timebase had been copied, which is what
+ * md_sync_timebase() waits for.
+ */
+#if defined(PPC_OEA64_SLB)
+#define	MD_TIMEBASE_IS_PLATFORMS()	(pmap_pft_shift != 0)
+#else
+#define	MD_TIMEBASE_IS_PLATFORMS()	0
+#endif
+
 void
 md_presync_timebase(volatile struct cpu_hatch_data *h)
 {
 	uint64_t tb;
 	int junk;
+
+	if (MD_TIMEBASE_IS_PLATFORMS()) {
+		h->hatch_running = 0;
+		return;
+	}
 
 	if (machine_has_rtas && rtas_has_func(RTAS_FUNC_FREEZE_TIME_BASE)) {
 		rtas_call(RTAS_FUNC_FREEZE_TIME_BASE, 0, 1, &junk);
@@ -281,6 +302,8 @@ md_start_timebase(volatile struct cpu_hatch_data *h)
 	 * XXX we cannot use delay() here because timebase is not
 	 * running.
 	 */
+	if (MD_TIMEBASE_IS_PLATFORMS())
+		return;
 	for (i = 0; i < 100000; i++)
 		if (h->hatch_running)
 			break;
@@ -301,6 +324,9 @@ md_sync_timebase(volatile struct cpu_hatch_data *h)
 	/* Sync timebase. */
 	u_int tbu = h->hatch_tbu;
 	u_int tbl = h->hatch_tbl;
+
+	if (MD_TIMEBASE_IS_PLATFORMS())
+		return;
 	while (h->hatch_running == -1)
 		;
 	__asm volatile ("sync; isync");
@@ -312,6 +338,14 @@ md_sync_timebase(volatile struct cpu_hatch_data *h)
 void
 md_setup_interrupts(void)
 {
-/* do nothing, this is handled in ofwpci */
+/* the rest is handled in ofwpci */
+#ifdef PIC_XICS
+	if (xics_active)
+		xics_cpu_init();
+#endif
+#ifdef PIC_XIVE
+	if (xive_active)
+		xive_cpu_init();
+#endif
 }
 #endif /* MULTIPROCESSOR */

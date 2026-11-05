@@ -78,6 +78,9 @@
 #define	  IBMPOWER3II		  0x0041
 #define   IBM970MP		  0x0044
 #define   IBM970GX		  0x0045
+#define   IBMPOWER8		  0x004d	/* POWER8 UM v1.3, 3.6.3.1 */
+#define   IBMPOWER9		  0x004e	/* POWER9 UM v2.1, Table 4-6 */
+#define   IBMPOWER10		  0x0080	/* Power10 UM v1.0, 5.7.3.1 */
 #define   IBMCELL		  0x0070
 #define	  MPC8240		  0x0081
 #define   PA6T			  0x0090

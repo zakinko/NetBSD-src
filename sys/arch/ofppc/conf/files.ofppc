@@ -65,6 +65,11 @@ device	rtas
 attach	rtas at mainbus
 file	arch/powerpc/powerpc/rtas.c		rtas needs-flag
 
+# PAPR client virtual terminal
+device	pvty: tty
+attach	pvty at mainbus
+file	arch/powerpc/powerpc/papr_vty.c		pvty needs-flag
+
 include "dev/usb/files.usb"
 include "dev/ieee1394/files.ieee1394"
 

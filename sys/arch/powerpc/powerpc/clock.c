@@ -143,6 +143,7 @@ decr_intr(struct clockframe *cfp)
 	int pri;
 	u_long tb;
 	long ticks;
+	int32_t dec;
 	int nticks;
 
 	/* Check whether we are initialized */
@@ -153,7 +154,15 @@ decr_intr(struct clockframe *cfp)
 	 * Based on the actual time delay since the last decrementer reload,
 	 * we arrange for earlier interrupt next time.
 	 */
-	__asm ("mfdec %0" : "=r"(ticks));
+	/*
+	 * DEC is a 32-bit signed count (Book III 2.01, 6.3; ISA 2.07,
+	 * 7.4), and mfspr of a 32-bit SPR fills the high word of RT with
+	 * zeros rather than the sign (Book III 2.01, 3.4.1).  Read into a long, an expired count
+	 * looked positive, was written back unchanged, and the interrupt
+	 * never stopped; an int is extended as the signed value it is.
+	 */
+	__asm ("mfdec %0" : "=r"(dec));
+	ticks = dec;
 	for (nticks = 0; ticks < 0; nticks++)
 		ticks += ticks_per_intr;
 	__asm volatile ("mtdec %0" :: "r"(ticks));

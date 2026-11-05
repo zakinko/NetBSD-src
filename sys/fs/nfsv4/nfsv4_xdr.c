@@ -27,7 +27,8 @@
  */
 
 /*
- * XDR filters for NFS version 4.0, RFC 7531 s2.  They touch nothing but
+ * XDR filters for NFS version 4, RFC 7531 s2, RFC 7863 s2 and RFC 8276
+ * s7.  They touch nothing but
  * the stream and the structure in hand, so tests/fs/nfsv4 builds this
  * file in userland.  See nfsv4_xdr.h for the form of the structures.
  */
@@ -615,6 +616,109 @@ xdr_args_write(XDR *x, struct nfsv4_args_write *a)
 	return nfsv4_xdr_skip(x, a->len);
 }
 
+static bool
+xdr_args_range(XDR *x, struct nfsv4_args_range *a)
+{
+
+	return nfsv4_xdr_stateid(x, &a->stateid) && U64(x, &a->offset) &&
+	    U64(x, &a->length);
+}
+
+/* netloc4, RFC 7863 s2, which is decoded only to be passed. */
+static bool
+xdr_skip_netloc(XDR *x)
+{
+	uint32_t type;
+
+	if (!U32(x, &type))
+		return false;
+	switch (type) {
+	case NL4_NAME:
+	case NL4_URL:
+		return xdr_skip_opaque(x);
+	case NL4_NETADDR:
+		return xdr_skip_opaque(x) && xdr_skip_opaque(x);
+	default:
+		return false;		/* no default arm in netloc4 */
+	}
+}
+
+static bool
+xdr_args_copy(XDR *x, struct nfsv4_args_copy *a)
+{
+	uint32_t i;
+
+	if (!nfsv4_xdr_stateid(x, &a->src_stateid) ||
+	    !nfsv4_xdr_stateid(x, &a->dst_stateid) ||
+	    !U64(x, &a->src_offset) || !U64(x, &a->dst_offset) ||
+	    !U64(x, &a->count) || !U32(x, &a->consecutive) ||
+	    !U32(x, &a->synchronous) || !U32(x, &a->nsources))
+		return false;
+	if (a->consecutive > 1 || a->synchronous > 1 ||
+	    a->nsources > NFSV4_BITMAP_READ)
+		return false;
+	for (i = 0; i < a->nsources; i++) {
+		if (!xdr_skip_netloc(x))
+			return false;
+	}
+	return true;
+}
+
+static bool
+xdr_args_clone(XDR *x, struct nfsv4_args_copy *a)
+{
+
+	return nfsv4_xdr_stateid(x, &a->src_stateid) &&
+	    nfsv4_xdr_stateid(x, &a->dst_stateid) &&
+	    U64(x, &a->src_offset) && U64(x, &a->dst_offset) &&
+	    U64(x, &a->count);
+}
+
+static bool
+xdr_args_io_advise(XDR *x, struct nfsv4_args_io_advise *a)
+{
+
+	return nfsv4_xdr_stateid(x, &a->stateid) && U64(x, &a->offset) &&
+	    U64(x, &a->count) && nfsv4_xdr_bitmap(x, &a->hints);
+}
+
+static bool
+xdr_args_seek(XDR *x, struct nfsv4_args_seek *a)
+{
+
+	return nfsv4_xdr_stateid(x, &a->stateid) && U64(x, &a->offset) &&
+	    U32(x, &a->what);
+}
+
+static bool
+xdr_args_write_same(XDR *x, struct nfsv4_args_write_same *a)
+{
+
+	if (!nfsv4_xdr_stateid(x, &a->stateid) || !U32(x, &a->stable) ||
+	    !U64(x, &a->offset) || !U64(x, &a->block_size) ||
+	    !U64(x, &a->block_count) || !U64(x, &a->reloff_blocknum) ||
+	    !U32(x, &a->block_num) || !U64(x, &a->reloff_pattern) ||
+	    !U32(x, &a->pattern_len))
+		return false;
+	if (x->x_op == XDR_ENCODE)
+		return true;
+	a->pattern_pos = XDR_GETPOS(x);
+	return nfsv4_xdr_skip(x, a->pattern_len);
+}
+
+static bool
+xdr_args_setxattr(XDR *x, struct nfsv4_args_setxattr *a)
+{
+
+	if (!U32(x, &a->option) || !nfsv4_xdr_name(x, &a->key) ||
+	    !U32(x, &a->len))
+		return false;
+	if (x->x_op == XDR_ENCODE)
+		return true;
+	a->pos = XDR_GETPOS(x);
+	return nfsv4_xdr_skip(x, a->len);
+}
+
 bool
 nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 {
@@ -729,6 +833,32 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		return xdr_args_test_stateid(x, &a->test_stateid);
 	case NFSV4_OP_RECLAIM_COMPLETE:
 		return U32(x, &a->u32.value) && a->u32.value <= 1;
+	case NFSV4_OP_ALLOCATE:
+	case NFSV4_OP_DEALLOCATE:
+		return xdr_args_range(x, &a->range);
+	case NFSV4_OP_COPY:
+		return xdr_args_copy(x, &a->copy);
+	case NFSV4_OP_CLONE:
+		return xdr_args_clone(x, &a->copy);
+	case NFSV4_OP_IO_ADVISE:
+		return xdr_args_io_advise(x, &a->io_advise);
+	case NFSV4_OP_OFFLOAD_CANCEL:
+	case NFSV4_OP_OFFLOAD_STATUS:
+		return nfsv4_xdr_stateid(x, &a->stateid.stateid);
+	case NFSV4_OP_READ_PLUS:
+		return xdr_args_read(x, &a->read);
+	case NFSV4_OP_SEEK:
+		return xdr_args_seek(x, &a->seek);
+	case NFSV4_OP_WRITE_SAME:
+		return xdr_args_write_same(x, &a->write_same);
+	case NFSV4_OP_GETXATTR:
+	case NFSV4_OP_REMOVEXATTR:
+		return nfsv4_xdr_name(x, &a->name.name);
+	case NFSV4_OP_SETXATTR:
+		return xdr_args_setxattr(x, &a->setxattr);
+	case NFSV4_OP_LISTXATTRS:
+		return U64(x, &a->listxattrs.cookie) &&
+		    U32(x, &a->listxattrs.maxcount);
 	default:			/* those with void arguments */
 		return true;
 	}

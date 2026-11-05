@@ -301,6 +301,101 @@ test_trips(void)
 	CHECK(b.release_lockowner.owner.ow_len == 5);
 }
 
+/* The operations of RFC 7862 and RFC 8276. */
+static void
+test_v42(void)
+{
+	static const uint32_t ops[] = {
+		NFSV4_OP_ALLOCATE, NFSV4_OP_COPY, NFSV4_OP_DEALLOCATE,
+		NFSV4_OP_IO_ADVISE, NFSV4_OP_READ_PLUS, NFSV4_OP_SEEK,
+		NFSV4_OP_WRITE_SAME, NFSV4_OP_CLONE, NFSV4_OP_GETXATTR,
+		NFSV4_OP_SETXATTR, NFSV4_OP_LISTXATTRS, NFSV4_OP_REMOVEXATTR
+	};
+	/* One NL4_NETADDR and one NL4_NAME of ca_source_server<>. */
+	static const unsigned char copy[] = {
+		0, 0, 0, 2,
+		0, 0, 0, 3, 0, 0, 0, 3, 't', 'c', 'p', 0,
+		0, 0, 0, 1, 'a', 0, 0, 0,
+		0, 0, 0, 1, 0, 0, 0, 2, 'h', 'i', 0, 0
+	};
+	XDR x;
+	size_t i, hdr;
+
+	memset(&a, 0, sizeof(a));
+	fill_si(&a.range.stateid);
+	a.range.offset = 1;
+	a.range.length = UINT64_MAX;
+	CHECK(trip(NFSV4_OP_ALLOCATE, 0) == 16 + 8 + 8);
+	CHECK(b.range.length == UINT64_MAX);
+	CHECK(trip(NFSV4_OP_DEALLOCATE, 0) == 16 + 8 + 8);
+
+	memset(&a, 0, sizeof(a));
+	fill_si(&a.copy.src_stateid);
+	a.copy.dst_stateid.si_seqid = 9;
+	a.copy.src_offset = 1;
+	a.copy.dst_offset = 2;
+	a.copy.count = 3;
+	a.copy.consecutive = 1;
+	CHECK(trip(NFSV4_OP_COPY, 0) == 16 + 16 + 8 + 8 + 8 + 4 + 4 + 4);
+	CHECK(b.copy.dst_stateid.si_seqid == 9);
+	CHECK(b.copy.count == 3 && b.copy.consecutive == 1);
+	CHECK(trip(NFSV4_OP_CLONE, 0) == 16 + 16 + 8 + 8 + 8);
+	CHECK(b.copy.dst_offset == 2);
+
+	hdr = 16 + 16 + 8 + 8 + 8 + 4 + 4;
+	memset(wire, 0, hdr);
+	memcpy(wire + hdr, copy, sizeof(copy));
+	xdrmem_create(&x, wire, hdr + sizeof(copy), XDR_DECODE);
+	CHECK(nfsv4_xdr_args(&x, NFSV4_OP_COPY, 2, &b));
+	CHECK(b.copy.nsources == 2);
+	CHECK(XDR_GETPOS(&x) == hdr + sizeof(copy));
+	wire[hdr + 7] = 4;		/* no such netloc_type4 */
+	xdrmem_create(&x, wire, hdr + sizeof(copy), XDR_DECODE);
+	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_COPY, 2, &b));
+
+	memset(&a, 0, sizeof(a));
+	fill_si(&a.seek.stateid);
+	a.seek.offset = 77;
+	a.seek.what = NFS4_CONTENT_HOLE;
+	CHECK(trip(NFSV4_OP_SEEK, 0) == 16 + 8 + 4);
+	CHECK(b.seek.what == NFS4_CONTENT_HOLE);
+
+	memset(&a, 0, sizeof(a));
+	fill_si(&a.write_same.stateid);
+	a.write_same.stable = DATA_SYNC4;
+	a.write_same.block_size = 4096;
+	a.write_same.block_count = 100;
+	a.write_same.reloff_blocknum = NFS4_UINT64_MAX;
+	a.write_same.block_num = 5;
+	a.write_same.reloff_pattern = 8;
+	a.write_same.pattern_len = 5;	/* 3 of padding */
+	CHECK(trip(NFSV4_OP_WRITE_SAME, 8) ==
+	    16 + 4 + 8 + 8 + 8 + 8 + 4 + 8 + 4 + 8);
+	CHECK(b.write_same.pattern_pos == 16 + 4 + 8 + 8 + 8 + 8 + 4 + 8 + 4);
+	CHECK(b.write_same.reloff_blocknum == NFS4_UINT64_MAX);
+
+	memset(&a, 0, sizeof(a));
+	a.setxattr.option = SETXATTR4_REPLACE;
+	fill_name(&a.setxattr.key, "user");
+	a.setxattr.len = 2;
+	CHECK(trip(NFSV4_OP_SETXATTR, 4) == 4 + 4 + 4 + 4 + 4);
+	CHECK(b.setxattr.pos == 4 + 4 + 4 + 4);
+	CHECK(b.setxattr.len == 2);
+
+	memset(&a, 0, sizeof(a));
+	a.listxattrs.cookie = 3;
+	a.listxattrs.maxcount = 4096;
+	CHECK(trip(NFSV4_OP_LISTXATTRS, 0) == 8 + 4);
+	CHECK(b.listxattrs.cookie == 3);
+
+	/* Every one of them runs off the end of a short stream. */
+	for (i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+		memset(wire, 0, 3);
+		xdrmem_create(&x, wire, 3, XDR_DECODE);
+		CHECK(!nfsv4_xdr_args(&x, ops[i], 2, &b));
+	}
+}
+
 /* The bytes on the wire, worked out by hand from RFC 4506. */
 static void
 test_wire(void)
@@ -480,6 +575,7 @@ main(void)
 {
 
 	test_trips();
+	test_v42();
 	test_wire();
 	test_limits();
 	test_noise();

@@ -404,6 +404,68 @@ struct nfsv4_args_want_delegation {
 	uint32_t	claim;		/* deleg_claim4 */
 };
 
+/* ALLOCATE and DEALLOCATE, RFC 7862 s15.1.1, s15.4.1 */
+struct nfsv4_args_range {
+	struct nfsv4_stateid stateid;
+	uint64_t	offset;
+	uint64_t	length;
+};
+
+/* COPY, RFC 7862 s15.2.1, and CLONE, s15.13.1 */
+struct nfsv4_args_copy {
+	struct nfsv4_stateid src_stateid;
+	struct nfsv4_stateid dst_stateid;
+	uint64_t	src_offset;
+	uint64_t	dst_offset;
+	uint64_t	count;
+	uint32_t	consecutive;
+	uint32_t	synchronous;
+	uint32_t	nsources;	/* of ca_source_server<>, not kept */
+};
+
+/* RFC 7862 s15.5.1 */
+struct nfsv4_args_io_advise {
+	struct nfsv4_stateid stateid;
+	uint64_t	offset;
+	uint64_t	count;
+	struct nfsv4_bitmap hints;
+};
+
+/* RFC 7862 s15.11.1 */
+struct nfsv4_args_seek {
+	struct nfsv4_stateid stateid;
+	uint64_t	offset;
+	uint32_t	what;
+};
+
+/* RFC 7862 s15.12.1, with adb_pattern left in the stream */
+struct nfsv4_args_write_same {
+	struct nfsv4_stateid stateid;
+	uint32_t	stable;
+	uint64_t	offset;
+	uint64_t	block_size;
+	uint64_t	block_count;
+	uint64_t	reloff_blocknum;
+	uint32_t	block_num;
+	uint64_t	reloff_pattern;
+	uint32_t	pattern_len;
+	u_int		pattern_pos;
+};
+
+/* RFC 8276 s8.4.2.1, with sxa_value left in the stream */
+struct nfsv4_args_setxattr {
+	uint32_t	option;
+	struct nfsv4_name key;
+	uint32_t	len;
+	u_int		pos;
+};
+
+/* RFC 8276 s8.4.3.1 */
+struct nfsv4_args_listxattrs {
+	uint64_t	cookie;
+	uint32_t	maxcount;
+};
+
 union nfsv4_args {
 	struct nfsv4_args_want_delegation want_delegation;
 	struct nfsv4_args_get_dir_delegation get_dir_delegation;
@@ -440,6 +502,13 @@ union nfsv4_args {
 	struct nfsv4_args_setclientid_confirm setclientid_confirm;
 	struct nfsv4_args_write		write;
 	struct nfsv4_args_release_lockowner release_lockowner;
+	struct nfsv4_args_range		range;
+	struct nfsv4_args_copy		copy;
+	struct nfsv4_args_io_advise	io_advise;
+	struct nfsv4_args_seek		seek;
+	struct nfsv4_args_write_same	write_same;
+	struct nfsv4_args_setxattr	setxattr;
+	struct nfsv4_args_listxattrs	listxattrs;
 };
 
 /* Pieces shared by several operations, or by the results. */

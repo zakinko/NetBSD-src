@@ -29,10 +29,10 @@
 /*
  * Record marking on a byte stream, RFC 5531 s11, in the manner of
  * nfsrv_getstream().  The RFC allows a record of any size in any number
- * of fragments; rm_max and ONCRPC_RM_MAXFRAG are what one peer may make
- * this host hold on to.  Going over either is treated as a broken
- * stream, as there is no way to find the next record but to read past
- * this one.
+ * of fragments; rm_max is what one peer may make this host hold on to,
+ * and counts the headers of the fragments as well as their data.  Going
+ * over it is treated as a broken stream, as there is no way to find the
+ * next record but to read past this one.
  */
 
 #include <sys/cdefs.h>
@@ -44,15 +44,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/systm.h>
 
 #include <oncrpc/oncrpc_var.h>
-
-/*
- * Not from the RFC.  NFS_MAX_FRAG, 64, was tried first and is too few:
- * pynfs cuts every record into fragments of 2048 bytes, so anything past
- * 128 KB lost the connection.  This many of 1 KB make a record of
- * ONCRPC_MAXMSG, so the mbufs of tiny fragments cost about what a record
- * of that size does.
- */
-#define	ONCRPC_RM_MAXFRAG	1024
 
 void
 oncrpc_rm_init(struct oncrpc_rm *rm, u_int max)
@@ -96,7 +87,7 @@ oncrpc_rm_input(struct oncrpc_rm *rm, struct mbuf *m, u_int cc)
 int
 oncrpc_rm_next(struct oncrpc_rm *rm, struct mbuf **recp)
 {
-	struct mbuf *m, *rec, **mp;
+	struct mbuf *m, *rec;
 	uint32_t hdr;
 
 	for (;;) {
@@ -110,13 +101,17 @@ oncrpc_rm_next(struct oncrpc_rm *rm, struct mbuf **recp)
 			rm->rm_last = (hdr & ONCRPC_RM_LAST) != 0;
 			rm->rm_need = hdr & ONCRPC_RM_LENMASK;
 
-			/* rm_total never passes rm_max: no overflow. */
-			if (rm->rm_need > rm->rm_max - rm->rm_total)
+			/*
+			 * A count of fragments would refuse a short record
+			 * cut finely, which the RFC allows and which cost
+			 * nothing: m_cat() below packs small ones.  Charging
+			 * the header bounds them, and empty fragments too.
+			 * rm_total passes rm_max by a header at most.
+			 */
+			if (rm->rm_total > rm->rm_max ||
+			    rm->rm_need > rm->rm_max - rm->rm_total)
 				return EMSGSIZE;
-			if (!rm->rm_last &&
-			    ++rm->rm_nfrag > ONCRPC_RM_MAXFRAG)
-				return EMSGSIZE;
-			rm->rm_total += rm->rm_need;
+			rm->rm_total += rm->rm_need + ONCRPC_RM_HDRSIZE;
 			rm->rm_inframe = true;
 		}
 
@@ -140,9 +135,10 @@ oncrpc_rm_next(struct oncrpc_rm *rm, struct mbuf **recp)
 		} else
 			rec = NULL;
 
-		for (mp = &rm->rm_frag; *mp != NULL; mp = &(*mp)->m_next)
-			continue;
-		*mp = rec;
+		if (rm->rm_frag == NULL)
+			rm->rm_frag = rec;
+		else if (rec != NULL)
+			m_cat(rm->rm_frag, rec);
 		rm->rm_inframe = false;
 
 		if (!rm->rm_last)
@@ -150,7 +146,6 @@ oncrpc_rm_next(struct oncrpc_rm *rm, struct mbuf **recp)
 		rec = rm->rm_frag;
 		rm->rm_frag = NULL;
 		rm->rm_total = 0;
-		rm->rm_nfrag = 0;
 		if (rec != NULL) {
 			*recp = rec;
 			return 0;

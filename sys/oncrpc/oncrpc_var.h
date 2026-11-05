@@ -89,7 +89,6 @@ struct oncrpc_rm {
 	struct mbuf	*rm_frag;	/* fragments of this record */
 	u_int		rm_need;	/* rest of this fragment */
 	u_int		rm_total;	/* of this record, for the limit */
-	u_int		rm_nfrag;	/* of this record, for the limit */
 	u_int		rm_max;		/* limit on a record */
 	bool		rm_inframe;	/* header seen, rm_need is good */
 	bool		rm_last;	/* this fragment ends the record */

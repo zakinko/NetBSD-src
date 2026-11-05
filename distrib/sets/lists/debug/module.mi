@@ -313,6 +313,8 @@
 ./usr/libdata/debug/@MODULEDIR@/null/null.kmod.debug			modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/nvmm				modules-base-kernel	kmod,nvmm,debug
 ./usr/libdata/debug/@MODULEDIR@/nvmm/nvmm.kmod.debug			modules-base-kernel	kmod,nvmm,debug
+./usr/libdata/debug/@MODULEDIR@/oncrpc				modules-base-kernel	kmod,debug
+./usr/libdata/debug/@MODULEDIR@/oncrpc/oncrpc.kmod.debug		modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/onewire				modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/onewire/onewire.kmod.debug		modules-base-kernel	kmod,debug
 ./usr/libdata/debug/@MODULEDIR@/opencrypto			modules-base-kernel	kmod,debug

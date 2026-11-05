@@ -436,6 +436,7 @@ SUBDIR+=	dtrace
 .endif
 
 SUBDIR+=        sodium
+SUBDIR+=	oncrpc
 SUBDIR+=	xdr
 
 # we need solaris for the dtrace and zfs modules

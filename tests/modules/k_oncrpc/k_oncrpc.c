@@ -36,6 +36,10 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/errno.h>
+#include <sys/file.h>
+#include <sys/filedesc.h>
+#include <sys/kauth.h>
 #include <sys/kernel.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
@@ -43,9 +47,20 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
-#include <oncrpc/oncrpc_xdr.h>
+#include <oncrpc/oncrpc_var.h>
 
-MODULE(MODULE_CLASS_MISC, k_oncrpc, "xdr");
+MODULE(MODULE_CLASS_MISC, k_oncrpc, "xdr,oncrpc");
+
+/* RFC 5531 s8.3: 0x20000000 - 0x3fffffff is the local administrator's. */
+#define	PING_PROG	0x20000f00
+#define	PING_VERS_LOW	2
+#define	PING_VERS_HIGH	3
+#define	PING_NULL	0	/* RFC 5531 s12.1 */
+#define	PING_ECHO	1	/* opaque<PING_MAXECHO> back */
+#define	PING_WHOAMI	2	/* flavor, then uid, gid, ngroups if known */
+#define	PING_SUM	3	/* u_int, u_int: their sum */
+#define	PING_NPROCS	4
+#define	PING_MAXECHO	(256 * 1024)
 
 #define	CHECK(e)	do { if (!(e)) return __LINE__; } while (0)
 
@@ -402,6 +417,179 @@ t_inline(void)
 	return 0;
 }
 
+static void
+rm_feed(struct oncrpc_rm *rm, const void *data, u_int len, u_int a, u_int b)
+{
+	struct mbuf *m;
+
+	m = mkchain(data, len, a, b);
+	oncrpc_rm_input(rm, m, len);
+}
+
+/* RFC 5531 s11, with the stream cut at each place in turn. */
+static int
+t_rm_frag(void)
+{
+	static const u_char wire[] = {
+		0x00, 0x00, 0x00, 0x03, 'a', 'b', 'c',		/* more */
+		0x00, 0x00, 0x00, 0x00,				/* more, empty */
+		0x80, 0x00, 0x00, 0x02, 'd', 'e',		/* last */
+		0x80, 0x00, 0x00, 0x00,				/* empty record */
+		0x80, 0x00, 0x00, 0x01, 'f',			/* last */
+	};
+	u_int cut;
+
+	for (cut = 1; cut < sizeof(wire); cut++) {
+		struct oncrpc_rm rm;
+		struct mbuf *rec;
+		char out[6];
+		int error;
+
+		oncrpc_rm_init(&rm, 1024);
+		rm_feed(&rm, wire, cut, cut / 2, cut / 2);
+		error = oncrpc_rm_next(&rm, &rec);
+		if (cut < 17) {
+			CHECK(error == EAGAIN);
+			rm_feed(&rm, wire + cut, sizeof(wire) - cut, 0, 0);
+			error = oncrpc_rm_next(&rm, &rec);
+		}
+		CHECK(error == 0);
+		CHECK(m_length(rec) == 5);
+		m_copydata(rec, 0, 5, out);
+		CHECK(memcmp(out, "abcde", 5) == 0);
+		m_freem(rec);
+
+		error = oncrpc_rm_next(&rm, &rec);
+		if (cut < sizeof(wire) && error == EAGAIN) {
+			rm_feed(&rm, wire + cut, sizeof(wire) - cut, 0, 0);
+			error = oncrpc_rm_next(&rm, &rec);
+		}
+		CHECK(error == 0);
+		CHECK(m_length(rec) == 1);
+		m_freem(rec);
+		CHECK(oncrpc_rm_next(&rm, &rec) == EAGAIN);
+		oncrpc_rm_fini(&rm);
+	}
+	return 0;
+}
+
+/* Our limits on what the RFC would allow. */
+static int
+t_rm_limit(void)
+{
+	static const u_char huge[] = { 0xff, 0xff, 0xff, 0xff };
+	static const u_char over[] = { 0x80, 0x00, 0x00, 0x11 };
+	static const u_char first[] = { 0, 0, 0, 0x10, 0, 0, 0, 0,
+	    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	static const u_char sum[] = { 0x80, 0x00, 0x00, 0x01 };
+	static const u_char empty[] = { 0, 0, 0, 0 };
+	struct oncrpc_rm rm;
+	struct mbuf *rec;
+	u_int i;
+
+	oncrpc_rm_init(&rm, 16);
+	rm_feed(&rm, huge, sizeof(huge), 1, 2);
+	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
+	oncrpc_rm_fini(&rm);
+
+	oncrpc_rm_init(&rm, 16);
+	rm_feed(&rm, over, sizeof(over), 0, 0);
+	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
+	oncrpc_rm_fini(&rm);
+
+	/* The limit is on the record, not on each fragment. */
+	oncrpc_rm_init(&rm, 16);
+	rm_feed(&rm, first, sizeof(first), 0, 0);
+	rm_feed(&rm, sum, sizeof(sum), 0, 0);
+	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
+	oncrpc_rm_fini(&rm);
+
+	/* Fragments of nothing still cost something. */
+	oncrpc_rm_init(&rm, 16);
+	for (i = 0; i < 65; i++)
+		rm_feed(&rm, empty, sizeof(empty), 0, 0);
+	CHECK(oncrpc_rm_next(&rm, &rec) == EMSGSIZE);
+	oncrpc_rm_fini(&rm);
+	return 0;
+}
+
+static enum oncrpc_dispatch
+ping_dispatch(struct oncrpc_req *rq)
+{
+	uint32_t a, b, n, zero = 0;
+	char *buf;
+	bool ok;
+
+	switch (rq->rq_proc) {
+	case PING_NULL:
+		return ONCRPC_DONE;
+	case PING_ECHO:
+		if (!xdr_u_int32_t(rq->rq_args, &n) || n > PING_MAXECHO)
+			return ONCRPC_ERR_ARGS;
+		buf = kmem_alloc(MAX(n, 1), KM_SLEEP);
+		ok = xdr_opaque(rq->rq_args, buf, n);
+		if (ok)
+			ok = xdr_u_int32_t(rq->rq_res, &n) &&
+			    xdr_opaque(rq->rq_res, buf, n);
+		kmem_free(buf, MAX(n, 1));
+		return ok ? ONCRPC_DONE : ONCRPC_ERR_ARGS;
+	case PING_WHOAMI:
+		a = rq->rq_flavor;
+		if (!xdr_u_int32_t(rq->rq_res, &a))
+			return ONCRPC_ERR_SYSTEM;
+		if (rq->rq_cred == NULL)
+			return xdr_u_int32_t(rq->rq_res, &zero) ?
+			    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+		a = kauth_cred_geteuid(rq->rq_cred);
+		b = kauth_cred_getegid(rq->rq_cred);
+		n = kauth_cred_ngroups(rq->rq_cred);
+		return xdr_u_int32_t(rq->rq_res, &a) &&
+		    xdr_u_int32_t(rq->rq_res, &b) &&
+		    xdr_u_int32_t(rq->rq_res, &n) ?
+		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+	case PING_SUM:
+		if (!xdr_u_int32_t(rq->rq_args, &a) ||
+		    !xdr_u_int32_t(rq->rq_args, &b))
+			return ONCRPC_ERR_ARGS;
+		a += b;
+		return xdr_u_int32_t(rq->rq_res, &a) ?
+		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+	default:
+		return ONCRPC_ERR_PROC;
+	}
+}
+
+static struct oncrpc_svc *ping_svc;
+
+static const struct oncrpc_program ping_program = {
+	.op_prog = PING_PROG,
+	.op_vers_low = PING_VERS_LOW,
+	.op_vers_high = PING_VERS_HIGH,
+	.op_nprocs = PING_NPROCS,
+	.op_dispatch = ping_dispatch,
+};
+
+/* What register takes and refuses. */
+static int
+t_register(void)
+{
+	struct oncrpc_program p = ping_program;
+
+	p.op_vers_low = 0;		/* RFC 5531 s8.1 */
+	CHECK(oncrpc_svc_register(ping_svc, &p) == EINVAL);
+	p.op_vers_low = 5;
+	p.op_vers_high = 4;
+	CHECK(oncrpc_svc_register(ping_svc, &p) == EINVAL);
+	p.op_vers_low = 3;
+	p.op_vers_high = 4;
+	CHECK(oncrpc_svc_register(ping_svc, &p) == EEXIST);
+	p.op_vers_low = 1;
+	p.op_vers_high = 1;
+	CHECK(oncrpc_svc_register(ping_svc, &p) == 0);
+	oncrpc_svc_unregister(ping_svc, &p);
+	return 0;
+}
+
 static const struct {
 	const char	*name;
 	int		(*func)(void);
@@ -415,6 +603,9 @@ static const struct {
 	{ "encode_chain",	t_encode_chain },
 	{ "encode_limit",	t_encode_limit },
 	{ "inline",		t_inline },
+	{ "rm_frag",		t_rm_frag },
+	{ "rm_limit",		t_rm_limit },
+	{ "register",		t_register },
 };
 
 static int
@@ -426,6 +617,36 @@ sysctl_runtest(SYSCTLFN_ARGS)
 
 	result = (*func)();
 	node.sysctl_data = &result;
+	return sysctl_lookup(SYSCTLFN_CALL(&node));
+}
+
+/* Writing a descriptor to this hands the socket to the server. */
+static int
+sysctl_addsock(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	file_t *fp;
+	int fd = -1, error;
+
+	node.sysctl_data = &fd;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error != 0 || newp == NULL)
+		return error;
+	if ((fp = fd_getfile(fd)) == NULL)
+		return EBADF;
+	error = oncrpc_svc_addsock(ping_svc, fp, NULL);
+	fd_putfile(fd);
+	return error;
+}
+
+static int
+sysctl_nxprt(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	int n;
+
+	n = oncrpc_svc_nxprt(ping_svc);
+	node.sysctl_data = &n;
 	return sysctl_lookup(SYSCTLFN_CALL(&node));
 }
 
@@ -447,9 +668,38 @@ k_oncrpc_init(void)
 		    sysctl_runtest, 0, (void *)(uintptr_t)tests[i].func, 0,
 		    CTL_CREATE, CTL_EOL);
 	}
+	if (error == 0)
+		error = sysctl_createv(&k_oncrpc_log, 0, &rnode, NULL,
+		    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT,
+		    "addsock", NULL, sysctl_addsock, 0, NULL, 0,
+		    CTL_CREATE, CTL_EOL);
+	if (error == 0)
+		error = sysctl_createv(&k_oncrpc_log, 0, &rnode, NULL,
+		    CTLFLAG_PERMANENT, CTLTYPE_INT,
+		    "nxprt", NULL, sysctl_nxprt, 0, NULL, 0,
+		    CTL_CREATE, CTL_EOL);
+	if (error == 0)
+		error = oncrpc_svc_create("kping", 4, &ping_svc);
+	if (error == 0) {
+		error = oncrpc_svc_register(ping_svc, &ping_program);
+		if (error != 0) {
+			oncrpc_svc_destroy(ping_svc);
+			ping_svc = NULL;
+		}
+	}
 	if (error)
 		sysctl_teardown(&k_oncrpc_log);
 	return error;
+}
+
+static void
+k_oncrpc_fini(void)
+{
+
+	sysctl_teardown(&k_oncrpc_log);
+	oncrpc_svc_unregister(ping_svc, &ping_program);
+	oncrpc_svc_destroy(ping_svc);
+	ping_svc = NULL;
 }
 
 static int
@@ -460,7 +710,7 @@ k_oncrpc_modcmd(modcmd_t cmd, void *arg)
 	case MODULE_CMD_INIT:
 		return k_oncrpc_init();
 	case MODULE_CMD_FINI:
-		sysctl_teardown(&k_oncrpc_log);
+		k_oncrpc_fini();
 		return 0;
 	default:
 		return ENOTTY;

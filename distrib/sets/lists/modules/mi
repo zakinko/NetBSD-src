@@ -373,6 +373,8 @@
 ./@MODULEDIR@/null/null.kmod			modules-base-kernel	kmod
 ./@MODULEDIR@/nvmm				modules-base-kernel	kmod,nvmm
 ./@MODULEDIR@/nvmm/nvmm.kmod			modules-base-kernel	kmod,nvmm
+./@MODULEDIR@/oncrpc				modules-base-kernel	kmod
+./@MODULEDIR@/oncrpc/oncrpc.kmod		modules-base-kernel	kmod
 ./@MODULEDIR@/onewire				modules-base-kernel	kmod
 ./@MODULEDIR@/onewire/onewire.kmod		modules-base-kernel	kmod
 ./@MODULEDIR@/opencrypto			modules-base-kernel	kmod

@@ -16,6 +16,8 @@
 ./usr/tests/modules/k_helper2/k_helper2.kmod	tests-sys-tests		atf,rump
 ./usr/tests/modules/k_helper3			tests-sys-tests		atf,rump
 ./usr/tests/modules/k_helper3/k_helper3		tests-obsolete		obsolete,rump
+./usr/tests/modules/k_oncrpc			tests-sys-tests		atf,rump
+./usr/tests/modules/k_oncrpc/k_oncrpc.kmod	tests-sys-tests		atf,rump
 ./usr/tests/modules/k_uvm			tests-sys-tests		atf,rump
 ./usr/tests/modules/k_uvm/k_uvm.kmod		tests-sys-tests		atf,rump
 ./usr/tests/modules/t_abi_uvm			tests-sys-tests		atf,rump
@@ -24,6 +26,7 @@
 ./usr/tests/modules/t_klua_pr_52864 		tests-sys-tests		atf,rump
 ./usr/tests/modules/t_modctl			tests-sys-tests		atf,rump
 ./usr/tests/modules/t_modload			tests-sys-tests		atf,rump
+./usr/tests/modules/t_oncrpc			tests-sys-tests		atf,rump
 ./usr/tests/modules/t_threadpool		tests-sys-tests		atf,rump
 ./usr/tests/modules/t_ufetchstore		tests-sys-tests		atf,rump
 ./usr/tests/modules/threadpool_tester		tests-sys-tests		atf,rump

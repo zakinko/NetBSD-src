@@ -22,6 +22,13 @@ if [ -f "$D/t_oncrpc.c" ]; then
 	cc -g -Wall -o t_oncrpc t_oncrpc.c -latf-c
 	mkdir -p k_oncrpc
 	cp modules/k_oncrpc.kmod k_oncrpc/
-	atf-run t_oncrpc | atf-report
-	atf-run t_oncrpc >/dev/null 2>&1 # status
+	rc=0
+	atf-run t_oncrpc >t.tps || rc=$?
+	atf-report <t.tps
+	# Nothing may be left holding them.
+	modunload k_oncrpc || rc=1
+	modunload oncrpc || rc=1
+	modunload xdr || rc=1
+	dmesg | grep -E 'panic|LOCKDEBUG|Mutex error' && rc=1
+	exit $rc
 fi

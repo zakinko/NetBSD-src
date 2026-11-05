@@ -1,6 +1,7 @@
 #	$NetBSD$
 
 define	xdr
+file	oncrpc/xdr_mbuf.c		xdr
 file	oncrpc/xdr_module.c		xdr
 
 prefix	../common/lib/libc/rpc

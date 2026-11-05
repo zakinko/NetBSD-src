@@ -13,6 +13,7 @@ CPPFLAGS+=	-D_KERNTYPES
 TESTS_C=	t_modctl
 TESTS_C+=	t_builtin
 TESTS_C+=	t_kcov
+TESTS_C+=	t_oncrpc
 TESTS_C+=	t_ufetchstore
 CPPFLAGS.t_ufetchstore.c+=-I${.CURDIR}/ufetchstore
 .for i in t_modctl t_builtin t_kcov
@@ -32,6 +33,7 @@ TESTS_SH+=	t_threadpool
 SUBDIR=		k_helper
 SUBDIR+=	k_helper2
 SUBDIR+=	k_helper3
+SUBDIR+=	k_oncrpc
 SUBDIR+=	k_uvm
 SUBDIR+=	threadpool_tester
 SUBDIR+=	ufetchstore

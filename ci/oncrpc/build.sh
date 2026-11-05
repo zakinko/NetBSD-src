@@ -14,9 +14,8 @@ printf 'options 	ONCRPC\n' >>sys/arch/amd64/conf/ONCRPCS
 [ -x "$T/bin/nbmake-amd64" ] || log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" tools
 log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" -u kernel=ONCRPCT kernel=ONCRPCS
 cp "$O/sys/arch/amd64/compile/ONCRPCT/netbsd" "$OUT/netbsd"
-grep -c ' xdr_\| oncrpc_' /dev/null || :
-"$T/bin/nbnm" "$O/sys/arch/amd64/compile/ONCRPCS/netbsd" 2>/dev/null |
-    grep -cE ' T (xdr_u_int|oncrpc_svc_create)$' || :
+"$T/bin/x86_64--netbsd-nm" "$O/sys/arch/amd64/compile/ONCRPCS/netbsd" |
+    grep -E ' T (oncrpc_svc_create|oncrpc_xdrmbuf_create|xdr_u_int)$' || :
 for d in sys/modules/xdr sys/modules/oncrpc sys/modules/solaris \
     tests/modules/k_oncrpc; do
 	[ -d "$d" ] || continue

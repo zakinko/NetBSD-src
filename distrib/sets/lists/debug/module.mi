@@ -464,7 +464,10 @@
 ./usr/libdata/debug/usr/tests/modules/k_uvm/k_uvm.kmod.debug		tests-sys-debug	atf,debug,rump
 ./usr/libdata/debug/usr/tests/modules/t_builtin.debug			tests-sys-debug	debug,atf,rump
 ./usr/libdata/debug/usr/tests/modules/t_kcov.debug			tests-sys-debug	debug,atf,rump
+./usr/libdata/debug/usr/tests/modules/k_oncrpc				tests-sys-debug	atf,debug,rump
+./usr/libdata/debug/usr/tests/modules/k_oncrpc/k_oncrpc.kmod.debug		tests-sys-debug	atf,debug,rump
 ./usr/libdata/debug/usr/tests/modules/t_modctl.debug			tests-sys-debug	debug,atf,rump
+./usr/libdata/debug/usr/tests/modules/t_oncrpc.debug			tests-sys-debug	debug,atf,rump
 ./usr/libdata/debug/usr/tests/modules/t_ufetchstore.debug		tests-sys-debug	debug,atf,rump
 ./usr/libdata/debug/usr/tests/modules/threadpool_tester			tests-sys-debug	atf,debug,rump
 ./usr/libdata/debug/usr/tests/modules/threadpool_tester/threadpool_tester.kmod.debug	tests-sys-debug	atf,debug,rump

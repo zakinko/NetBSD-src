@@ -1,0 +1,50 @@
+From 9a41dc3eabe59fb1859d5b0b2c4577441712fd59 Mon Sep 17 00:00:00 2001
+From: Showta Ishizaki <zakinko@snowrabbit.org>
+Date: Fri, 6 Nov 2026 02:48:15 +0900
+Subject: [PATCH] Give device and fifo vnodes their ACLs and extended
+ attributes
+
+The tables of the vnode ops of device nodes and fifos on NetBSD lacked
+the ACL and extended attribute entries, so VOP_GETACL on one fell to
+vn_default_error and EOPNOTSUPP.  An NFSv4 GETATTR of all attributes on
+such a node failed with NFS4ERR_NOTSUPP.  FFS has these entries in all
+three of its tables.
+---
+ module/os/bsd/zfs/zfs_vnops_os.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/module/os/bsd/zfs/zfs_vnops_os.c b/module/os/bsd/zfs/zfs_vnops_os.c
+index d8f53665e..abb5e4b4b 100644
+--- a/module/os/bsd/zfs/zfs_vnops_os.c
++++ b/module/os/bsd/zfs/zfs_vnops_os.c
+@@ -5434,6 +5434,13 @@ const struct vnodeopv_entry_desc zfs_specop_entries[] = {
+ 	{ &vop_print_desc,		zfs_netbsd_print },
+ 	{ &vop_islocked_desc,		genfs_islocked },
+ 	{ &vop_bwrite_desc,		vn_bwrite },
++	{ &vop_getacl_desc,		zfs_netbsd_getacl },
++	{ &vop_setacl_desc,		zfs_netbsd_setacl },
++	{ &vop_aclcheck_desc,		zfs_netbsd_aclcheck },
++	{ &vop_getextattr_desc,		zfs_netbsd_getextattr },
++	{ &vop_setextattr_desc,		zfs_netbsd_setextattr },
++	{ &vop_listextattr_desc,		zfs_netbsd_listextattr },
++	{ &vop_deleteextattr_desc,	zfs_netbsd_deleteextattr },
+ 	{ NULL, NULL }
+ };
+ 
+@@ -5460,6 +5467,13 @@ const struct vnodeopv_entry_desc zfs_fifoop_entries[] = {
+ 	{ &vop_print_desc,		zfs_netbsd_print },
+ 	{ &vop_islocked_desc,		genfs_islocked },
+ 	{ &vop_bwrite_desc,		genfs_nullop },
++	{ &vop_getacl_desc,		zfs_netbsd_getacl },
++	{ &vop_setacl_desc,		zfs_netbsd_setacl },
++	{ &vop_aclcheck_desc,		zfs_netbsd_aclcheck },
++	{ &vop_getextattr_desc,		zfs_netbsd_getextattr },
++	{ &vop_setextattr_desc,		zfs_netbsd_setextattr },
++	{ &vop_listextattr_desc,		zfs_netbsd_listextattr },
++	{ &vop_deleteextattr_desc,	zfs_netbsd_deleteextattr },
+ 	{ NULL, NULL }
+ };
+ 
+-- 
+2.54.0 (Apple Git-157)
+

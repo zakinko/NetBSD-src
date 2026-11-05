@@ -5,9 +5,12 @@
 set -eu
 SHA=$1; W=$2; OUT=$3
 S=$PWD/sys
+P=$PWD/ci/nfsv4/zfs-patches
 git init -q "$W/zfs"; cd "$W/zfs"
 git fetch -q --depth 1 https://github.com/zakinko/zfs "$SHA"
 git checkout -q FETCH_HEAD
+# What the port needs that is not at SHA yet.
+for p in "$P"/*.patch; do git apply "$p"; done
 python3 - <<'P'
 import re
 # Current has no struct uvm to look into; 11.0, which the port follows, has.

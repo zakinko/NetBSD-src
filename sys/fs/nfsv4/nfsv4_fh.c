@@ -72,6 +72,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfs_var.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
+#include <fs/nfsv4/nfsv4_state.h>
 
 #define	NFSV4_FHT_PSEUDO	1
 #define	NFSV4_FHT_REAL		2
@@ -470,10 +471,14 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 	    &anon) != 0)
 		return NFS4ERR_STALE;
 	error = VFS_FHTOVP(mp, __UNCONST(&fhp->fh_fid), LK_SHARED, &vp);
-	if (error != 0)
-		return error == ESTALE || error == ENOENT ? NFS4ERR_STALE :
-		    nfsv4_errno(error);
-	VOP_UNLOCK(vp);
+	if (error == ESTALE || error == ENOENT) {
+		if (fh->fh_data[0] != NFSV4_FHT_REAL ||
+		    (vp = nfsv4_file_vp_byfh(fh)) == NULL)
+			return NFS4ERR_STALE;	/* s4.2.2 */
+	} else if (error != 0)
+		return nfsv4_errno(error);
+	else
+		VOP_UNLOCK(vp);
 	st = nfsv4_cfh_setvp(c, &c->c_cur, vp);
 	if (st != NFS4_OK) {
 		vrele(vp);

@@ -357,6 +357,36 @@ nfsv4_file_find_attr(struct vnode *vp, const char *aname)
 	return NULL;
 }
 
+/*
+ * A reference to the vnode of an open file with this handle.  This is
+ * for a file that has lost its last link, which a file system's
+ * VFS_FHTOVP may no longer find: RFC 7530 s16.26.5 lets access go on until
+ * the last CLOSE, and without it the CLOSE itself cannot name the file.
+ * A linear search, as that is rare.
+ */
+struct vnode *
+nfsv4_file_vp_byfh(const struct nfsv4_fh *fh)
+{
+	struct nfsv4_file *f;
+	struct vnode *vp = NULL;
+	u_int i;
+
+	mutex_enter(&nfsv4_state_lock);
+	for (i = 0; i < NFSV4_FILE_HASH && vp == NULL; i++) {
+		LIST_FOREACH(f, &nfsv4_file_hash[i], f_list) {
+			if (!f->f_isattr && f->f_fh.fh_len == fh->fh_len &&
+			    memcmp(f->f_fh.fh_data, fh->fh_data,
+			    fh->fh_len) == 0) {
+				vp = f->f_vp;
+				vref(vp);
+				break;
+			}
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return vp;
+}
+
 struct nfsv4_file *
 nfsv4_file_find(struct vnode *vp)
 {

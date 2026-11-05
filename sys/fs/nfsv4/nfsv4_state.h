@@ -113,7 +113,7 @@ struct nfsv4_file {
 	LIST_ENTRY(nfsv4_file) f_list;
 	LIST_HEAD(, nfsv4_state) f_states;
 	struct vnode	*f_vp;		/* a reference */
-	struct nfsv4_fh	f_fh;		/* if delegated, for CB_RECALL */
+	struct nfsv4_fh	f_fh;		/* unless f_isattr, of an open file */
 	bool		f_isattr;	/* opens of a named attribute */
 	char		f_aname[NFSV4_ANAME_MAX + 1];
 };
@@ -254,6 +254,7 @@ void	nfsv4_deleg_scan(struct nfsv4_reap *);
 bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 
 /* These do not. */
+struct vnode *nfsv4_file_vp_byfh(const struct nfsv4_fh *);
 uint32_t nfsv4_seq_stateid(const struct nfsv4_stateid *, uint32_t, uint32_t,
 	    struct nfsv4_state **, enum nfsv4_seq *);
 uint32_t nfsv4_seq_reply(struct nfsv4_compound *, struct nfsv4_owner_s *,

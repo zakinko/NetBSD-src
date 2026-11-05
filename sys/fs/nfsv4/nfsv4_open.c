@@ -320,6 +320,8 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, const char *aname,
 	mine->st_deny |= deny;
 	mine->st_accbits |= 1U << access;
 	mine->st_denybits |= 1U << deny;
+	if (aname == NULL)
+		mine->st_file->f_fh = cf->cf_fh;
 	nfsv4_stateid_out(mine, si);
 	if (ds != NULL)
 		nfsv4_deleg_offer(sw, vp, &cf->cf_fh, access, ds, od);
@@ -470,7 +472,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
     struct nfsv4_owner_s *sw, struct nfsv4_state **spare,
     struct nfsv4_file **sparef, struct nfsv4_deleg_spare *ds, u_int *rlen)
 {
-	struct nfsv4_cfh *cf = &c->c_cur;
+	struct nfsv4_cfh *cf = &c->c_cur, fc;
 	struct nfsv4_change_info ci;
 	struct nfsv4_stateid si;
 	struct vnode *vp = NULL;
@@ -483,6 +485,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 	memset(&ci, 0, sizeof(ci));
 	memset(&od, 0, sizeof(od));
+	memset(&fc, 0, sizeof(fc));
 
 	/*
 	 * s16.16.5.  A delegation is the one claim to go by name in the
@@ -538,8 +541,18 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	}
 	if (st != NFS4_OK)
 		goto bad;
+	/*
+	 * The handle goes to the state before the current handle changes:
+	 * CB_RECALL and a PUTFH of a file now unlinked want the file's.
+	 */
+	vref(vp);
+	st = nfsv4_cfh_setvp(c, &fc, vp);
+	if (st != NFS4_OK) {
+		vrele(vp);
+		goto bad;
+	}
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
-	    sparef, &si, cf, ds, &od);
+	    sparef, &si, &fc, ds, &od);
 	if (st != NFS4_OK)
 		goto bad;
 
@@ -555,12 +568,12 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		}
 	}
 
-	st = nfsv4_cfh_setvp(c, cf, vp);
-	if (st != NFS4_OK)
-		goto bad;
-	vp = NULL;
+	nfsv4_cfh_copy(cf, &fc);
+	nfsv4_cfh_clear(&fc);
+	vrele(vp);
 	return open_reply(c, sw, &si, &ci, set, &od, rlen);
 bad:
+	nfsv4_cfh_clear(&fc);
 	if (vp != NULL)
 		vrele(vp);
 	return st;

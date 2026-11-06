@@ -147,6 +147,8 @@ jobs:
       - continue-on-error: true
         run: SUITE=nfs4.1 V42FS=zfs PYNFS_ARGS='--minorversion 2 v42 v42x sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
       - name: What failed at 4.2, in the log in case the job does not end
+        run: |
+          grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
         run: grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
         run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
       - name: The 4.1 suite, with the write delegations the client test turned off

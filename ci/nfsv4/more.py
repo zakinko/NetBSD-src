@@ -93,6 +93,115 @@ elif what == 'prev':
     want('DELEGPURGE', r.status, NFS4_OK)
     r = prev(c, b'o3', path)
     want('after DELEGPURGE, s16.16.5', r.status, NFS4ERR_INVAL)
+elif what == 'damage':
+    # s9.6.3.4.3: a damaged record means NFS4ERR_NO_GRACE for all.
+    c = client(b'dmg', export)
+    path = export + [b'dm%d' % os.getpid()]
+    fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
+                               deny=OPEN4_SHARE_DENY_NONE)
+    subprocess.check_call(['ssh', 'netbsd', 'sh /var/tmp/nfsv4/restart.sh damage'])
+    print(subprocess.run(['ssh', 'netbsd', 'dmesg | grep -c "stable storage damaged"'],
+                         capture_output=True, text=True).stdout)
+    c = client(b'dmg', export)
+    r = c.open_file(b'o9', fh, claim_type=CLAIM_PREVIOUS, deleg_type=OPEN_DELEGATE_NONE)
+    want('reclaim after damage', r.status, NFS4ERR_NO_GRACE)
+    r = c.open_file(b'o8', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE)
+    want('no grace period', r.status, NFS4_OK)
+elif what == 'movedtime':
+    # s9.14.3: normal handling after two leases, for a client that never probes.
+    c = client(b'mt', export)
+    path = export + [b'mt%d' % os.getpid()]
+    fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
+                               deny=OPEN4_SHARE_DENY_NONE)
+    subprocess.check_call(['ssh', 'netbsd', 'sysctl', '-w',
+        "'vfs.nfsv4.moved=%s srv9:/moved'" % arg])
+    t0 = time.time()
+    r = c.compound([op.renew(c.clientid)])
+    want('RENEW', r.status, NFS4ERR_LEASE_MOVED)
+    r = c.compound(c.use_obj([]) + [op.getattr(nfs4lib.list2bitmap([FATTR4_TYPE]))])
+    want('GETATTR elsewhere does not say it, s13.1.11.1', r.status, NFS4_OK)
+    while time.time() - t0 < 195:
+        time.sleep(30)
+        r = c.compound([op.renew(c.clientid)])
+        print(int(time.time() - t0), r.status)
+    want('RENEW past two leases', r.status, NFS4_OK)
+elif what == 'indirect':
+    # COMMIT from an offset to the end must get the indirect block out.
+    c = client(b'ind', export)
+    path = export + [b'in%d' % os.getpid()]
+    fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
+                               deny=OPEN4_SHARE_DENY_NONE)
+    ino = c.do_getattr(FATTR4_FILEID, path)
+    def fib():
+        o = subprocess.run(['ssh', 'netbsd', '/var/tmp/nfsv4/fib /dev/rvnd2d %d' % ino],
+                           capture_output=True, text=True).stdout
+        print(o.strip())
+        return int(o.split()[-1])
+    r = c.compound([op.putfh(fh), op.write(sid, 4 << 20, UNSTABLE4, b'x' * 4096)])
+    want('WRITE', r.status, NFS4_OK)
+    want('not on disk yet, or the test proves nothing', fib(), 0)
+    r = c.compound([op.putfh(fh), op.commit(4 << 20, 0)])
+    want('COMMIT', r.status, NFS4_OK)
+    want('on disk', fib() > 0, True)
+elif what == 'utf8':
+    c = client(b'u8', export)
+    r = c.compound(c.use_obj(export) + [c.open(b'o', b'bad\xff\xfename', OPEN4_CREATE,
+                                              UNCHECKED4, {}, None,
+                                              OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE)])
+    want('invalid UTF-8 on utf8only=on, s12.7', r.status, NFS4ERR_INVAL)
+elif what == 'aclmode':
+    from xdrdef.nfs4_type import nfsace4, stateid4
+    c = client(b'am', export)
+    path = export + [b'am%d' % os.getpid()]
+    fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
+                               deny=OPEN4_SHARE_DENY_NONE)
+    A = ACE4_ACCESS_ALLOWED_ACE_TYPE
+    base = [nfsace4(A, 0, ACE4_READ_DATA | ACE4_WRITE_DATA | ACE4_READ_ACL | ACE4_WRITE_ACL |
+                    ACE4_READ_ATTRIBUTES | ACE4_WRITE_ATTRIBUTES, b'OWNER@'),
+            nfsace4(A, 0, ACE4_READ_ATTRIBUTES, b'GROUP@')]
+    # s6.2.1.3.1: EXECUTE does not bring READ_DATA with it.
+    acl = base + [nfsace4(A, 0, ACE4_EXECUTE | ACE4_READ_ATTRIBUTES, b'EVERYONE@')]
+    r = c.compound([op.putfh(fh), op.setattr(sid, {FATTR4_ACL: acl})])
+    want('SETATTR acl', r.status, NFS4_OK)
+    got = c.do_getattr(FATTR4_ACL, path)
+    e = [x for x in got if x.who == b'EVERYONE@' and x.type == A]
+    print(got)
+    want('EXECUTE alone stays alone', bool(e) and all(not x.access_mask & ACE4_READ_DATA for x in e), True)
+    # s6.2.1.4.1: the group flag on a special who is ignored.
+    acl = base + [nfsace4(A, ACE4_IDENTIFIER_GROUP, ACE4_READ_ATTRIBUTES, b'EVERYONE@')]
+    r = c.compound([op.putfh(fh), op.setattr(sid, {FATTR4_ACL: acl})])
+    want('group flag on EVERYONE@', r.status, NFS4_OK)
+    got = c.do_getattr(FATTR4_ACL, path)
+    want('not kept, s6.2.1.5', any(x.who == b'EVERYONE@' and x.flag & ACE4_IDENTIFIER_GROUP for x in got), False)
+    # s6.4.1.3: mode, then ACL.
+    r = c.compound([op.putfh(fh), op.setattr(sid, {FATTR4_MODE: 0o600, FATTR4_ACL: base})])
+    want('mode and acl together', r.status, NFS4_OK)
+    got = c.do_getattr(FATTR4_ACL, path)
+    want('the ACL as given is what stands', any(x.who == b'OWNER@' and x.access_mask & ACE4_WRITE_DATA for x in got), True)
+    # s6.4.2, s6.4.1.2: mode follows from the ACL.
+    m = c.do_getattr(FATTR4_MODE, path)
+    want('mode from the ACL', m & 0o777, 0o600)
+    r = c.compound([op.putfh(fh), op.setattr(sid, {FATTR4_MODE: 0o640})])
+    want('SETATTR mode', r.status, NFS4_OK)
+    want('mode reads back, s6.4.1.1', c.do_getattr(FATTR4_MODE, path) & 0o777, 0o640)
+    # s6.4.3: a create with a mode under an inheritable ACE.
+    d = export + [b'ad%d' % os.getpid()]
+    r = c.create_obj(d)
+    want('mkdir', r.status, NFS4_OK)
+    dr = c.compound(c.use_obj(d) + [op.setattr(b'\0' * 0 and None or c.stateid0 if hasattr(c, 'stateid0') else nfs4lib.stateid4(0, b'\0' * 12),
+        {FATTR4_ACL: base + [nfsace4(A, ACE4_FILE_INHERIT_ACE, ACE4_READ_DATA, b'EVERYONE@')]})])
+    want('inheritable ACE', dr.status, NFS4_OK)
+    r = c.create_file(b'o2', d + [b'f'], attrs={FATTR4_MODE: 0o640}, access=OPEN4_SHARE_ACCESS_BOTH,
+                      deny=OPEN4_SHARE_DENY_NONE)
+    want('create under it', r.status, NFS4_OK)
+    want('mode wins, s6.4.3', c.do_getattr(FATTR4_MODE, d + [b'f']) & 0o777, 0o640)
+    # s6.4.3.1: a directory gets a file-inherit ACE as inherit-only.
+    dr = c.create_obj(d + [b'sub'])
+    want('mkdir under it', dr.status, NFS4_OK)
+    got = c.do_getattr(FATTR4_ACL, d + [b'sub'])
+    print(got)
+    x = [a for a in got if a.flag & ACE4_FILE_INHERIT_ACE]
+    want('inherit-only on a directory', bool(x) and all(a.flag & ACE4_INHERIT_ONLY_ACE for a in x), True)
 elif what == 'fair':
     c1, c2, c3 = client(b'f1', export), client(b'f2', export), client(b'f3', export)
     path = export + [b'fair%d' % os.getpid()]
@@ -141,12 +250,17 @@ elif what == 'cbgetattr':
     path = export
     c = client(b'cg', export[:-1])
     c.homedir = export[:-1]
-    r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE]))])
-    print('status', r.status)
-    while r.status == NFS4ERR_DELAY:
-        time.sleep(1)
-        r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE]))])
-    want('GETATTR', r.status, NFS4_OK)
-    want('size the holder has', r.resarray[-1].switch.switch.obj_attributes[FATTR4_SIZE], size)
+    def get():
+        r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE, FATTR4_CHANGE]))])
+        while r.status == NFS4ERR_DELAY:
+            time.sleep(1)
+            r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE, FATTR4_CHANGE]))])
+        want('GETATTR', r.status, NFS4_OK)
+        return r.resarray[-1].switch.switch.obj_attributes
+    a = get()
+    want('size the holder has', a[FATTR4_SIZE], size)
+    b = get()
+    print(a, b)
+    want('change goes on, s10.4.3', b[FATTR4_CHANGE] > a[FATTR4_CHANGE], True)
 print('failures: %d' % fails)
 sys.exit(1 if fails else 0)

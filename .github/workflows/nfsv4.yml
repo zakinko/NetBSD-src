@@ -110,7 +110,7 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/fib.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
@@ -158,8 +158,14 @@ jobs:
             python3 ./more.py quota /export/quota
             python3 ./more.py fair /export/pynfs
             python3 ./more.py prev /export/pynfs
+            python3 ./more.py indirect /export/quota
+            python3 ./more.py utf8 /tank/u
+            python3 ./more.py aclmode /export/acl
+            python3 ./more.py aclmode /tank/x
+            python3 ./more.py movedtime /export/mig2
             python3 ./more.py moved /export/mig
             sh "$c/cbgetattr.sh"
+            python3 ./more.py damage /export/pynfs
           } 2>&1 | tee "$o/more.txt" || true
       - name: Named attributes and fs_locations
         run: |

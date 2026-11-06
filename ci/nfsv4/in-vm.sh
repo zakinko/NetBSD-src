@@ -45,6 +45,10 @@ mount /dev/vnd2d /export/quota
 chmod 1777 /export/quota
 edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
 repquota -u /export/quota || :
+# The second to be migrated, for the end of the waiting.
+mkdir -p /export/mig2
+mount_tmpfs -s 8m tmpfs /export/mig2
+chmod 1777 /export/mig2
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
 modload zfs
 # The port installs its libraries in /lib, outside the default search.
@@ -53,6 +57,8 @@ dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
 zpool create -f tank /var/tmp/tank.img
 zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
 chmod 1777 /tank/x
+zfs create -o utf8only=on tank/u
+chmod 1777 /tank/u
 zfs list
 mount | grep /export/
 # pynfs comes from a high port through the tunnel.
@@ -62,6 +68,8 @@ cat >/etc/exports <<EOF
 /export/acl -maproot=root -noresvport
 /export/ref -maproot=root -noresvport
 /export/mig -maproot=root -noresvport
+/export/mig2 -maproot=root -noresvport
+/tank/u -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
@@ -72,6 +80,7 @@ sleep 2
 
 cd "$D"
 cc -g -Wall -o nfsv4d nfsv4d.c
+cc -g -Wall -o fib fib.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1

@@ -3,7 +3,9 @@
 /*
  * RPCSEC_GSS with the tokens of RFC 1964, which no Linux client has any
  * more: libgssapi of the base system against the server, NULLPROC under
- * each service.  KRB5_CONFIG chooses the enctype.  desprobe host
+ * each service.  KRB5_CONFIG chooses the enctype.  With -u it is version 3
+ * over UDP, which the tunnel of the CI does not carry.
+ * desprobe [-u] host
  */
 
 #include <sys/types.h>
@@ -23,6 +25,7 @@
 static uint8_t buf[65536];
 static size_t len;
 static int s;
+static int udp, vers = 4;
 
 static void p32(uint32_t v) { v = htonl(v); memcpy(buf + len, &v, 4); len += 4; }
 static void popq(const void *p, uint32_t n)
@@ -41,6 +44,13 @@ xfer(void)
 	size_t got = 0;
 	ssize_t r;
 
+	if (udp) {
+		if (send(s, buf, len, 0) != (ssize_t)len ||
+		    (r = recv(s, buf, sizeof(buf), 0)) <= 0)
+			err(1, "udp");
+		len = r;
+		return;
+	}
 	if (write(s, &m, 4) != 4 || write(s, buf, len) != (ssize_t)len)
 		err(1, "write");
 	if (read(s, &m, 4) != 4)
@@ -67,6 +77,11 @@ main(int argc, char **argv)
 	size_t h, c, o;
 	char name[256];
 
+	if (argc > 2 && strcmp(argv[1], "-u") == 0) {
+		udp = 1;
+		vers = 3;
+		argv++;
+	}
 	(void)snprintf(name, sizeof(name), "nfs@%s", argv[1]);
 	nm.value = name;
 	nm.length = strlen(name);
@@ -76,7 +91,7 @@ main(int argc, char **argv)
 	    GSS_C_CONF_FLAG, 0, NULL, &in, NULL, &out, NULL, NULL);
 	if (GSS_ERROR(maj))
 		errx(1, "init %x %x", maj, min);
-	s = socket(AF_INET, SOCK_STREAM, 0);
+	s = socket(AF_INET, udp ? SOCK_DGRAM : SOCK_STREAM, 0);
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_port = htons(2049);
@@ -84,7 +99,7 @@ main(int argc, char **argv)
 	if (connect(s, (void *)&sin, sizeof(sin)) == -1)
 		err(1, "connect");
 	len = 0;
-	p32(1); p32(0); p32(2); p32(100003); p32(4); p32(0);
+	p32(1); p32(0); p32(2); p32(100003); p32(vers); p32(0);
 	p32(6); p32(20); p32(1); p32(1); p32(0); p32(1); p32(0);
 	p32(0); p32(0);
 	popq(out.value, out.length);
@@ -114,13 +129,13 @@ main(int argc, char **argv)
 
 		seq++;
 		len = 0;
-		p32(1); p32(1); p32(seq); p32(svc); p32(hlen);
+		p32(1); p32(0); p32(seq); p32(svc); p32(hlen);
 		memcpy(buf + len, handle, hlen);
 		len += hlen;
 		c = len;
 		memcpy(cred, buf, c);
 		len = 0;
-		p32(100 + seq); p32(0); p32(2); p32(100003); p32(4); p32(0);
+		p32(100 + seq); p32(0); p32(2); p32(100003); p32(vers); p32(0);
 		p32(6); popq(cred, c);
 		h = len;
 		memcpy(hdr, buf, h);

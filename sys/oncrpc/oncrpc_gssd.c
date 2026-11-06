@@ -90,6 +90,9 @@ gssd_accept_dec(XDR *x, void *arg)
 	    !xdr_u_int32_t(x, &ar->ar_lifetime) ||
 	    !xdr_u_int32_t(x, &ar->ar_uid) ||
 	    !xdr_u_int32_t(x, &ar->ar_gid) ||
+	    !xdr_u_int32_t(x, &ar->ar_namelen) ||
+	    ar->ar_namelen >= sizeof(ar->ar_name) ||
+	    !xdr_opaque(x, ar->ar_name, ar->ar_namelen) ||
 	    !xdr_u_int32_t(x, &ar->ar_ngroups) ||
 	    ar->ar_ngroups > ONCRPC_GSSD_MAXGROUPS)
 		return false;
@@ -101,6 +104,28 @@ gssd_accept_dec(XDR *x, void *arg)
 		if (!xdr_u_int32_t(x, &ar->ar_groups[i]))
 			return false;
 	return true;
+}
+
+struct gssd_init_arg {
+	uint64_t	ia_dh;
+	const char	*ia_name;
+	uint32_t	ia_namelen;
+	const void	*ia_token;
+	uint32_t	ia_len;
+};
+
+static bool
+gssd_init_enc(XDR *x, void *arg)
+{
+	struct gssd_init_arg *ia = arg;
+	uint32_t hi = ia->ia_dh >> 32, lo = (uint32_t)ia->ia_dh;
+
+	return xdr_u_int32_t(x, &hi) && xdr_u_int32_t(x, &lo) &&
+	    xdr_u_int32_t(x, &ia->ia_namelen) &&
+	    xdr_opaque(x, __UNCONST(ia->ia_name), ia->ia_namelen) &&
+	    xdr_u_int32_t(x, &ia->ia_len) &&
+	    (ia->ia_len == 0 ||
+	    xdr_opaque(x, __UNCONST(ia->ia_token), ia->ia_len));
 }
 
 static int
@@ -119,6 +144,18 @@ gssd_call(uint32_t proc, bool (*enc)(XDR *, void *), void *arg,
 	cc.cc_decode = dec;
 	cc.cc_res = res;
 	return oncrpc_clnt_call_unix(ONCRPC_GSSD_PATH, &cc, GSSD_TIMEO);
+}
+
+/* The initiator's part, with the server's keytab, to principal. */
+int
+oncrpc_gssd_init(uint64_t dh, const char *principal, const void *token,
+    uint32_t len, struct oncrpc_gssd_accept_res *ar)
+{
+	struct gssd_init_arg ia = { dh, principal, strlen(principal), token,
+	    len };
+
+	return gssd_call(ONCRPC_GSSD_INIT, gssd_init_enc, &ia,
+	    gssd_accept_dec, ar);
 }
 
 int

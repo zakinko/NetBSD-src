@@ -41,6 +41,7 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/kmem.h>
 #include <sys/cprng.h>
 #include <sys/errno.h>
 #include <sys/mbuf.h>
@@ -54,6 +55,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <netinet/in.h>
 
+#include <oncrpc/gss_krb5.h>
+#include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_var.h>
 
 /* Not from the RFC: the largest reply taken, and the size of a call. */
@@ -157,24 +160,61 @@ int
 oncrpc_clnt_call(const struct sockaddr *to,
     const struct oncrpc_clnt_call *cc, int timeo)
 {
-	struct oncrpc_xdrmbuf ax, rx;
+	struct oncrpc_opaque_auth *oa;
+	struct oncrpc_clnt_call gcc;
+	struct oncrpc_xdrmbuf ax, rx, bx;
 	struct socket *so = NULL;
-	struct mbuf *m = NULL;
-	uint32_t xid;
+	struct mbuf *m = NULL, *b, *open = NULL;
+	uint8_t cred[128], verf[GSS_KRB5_MAXMIC];
+	uint32_t xid, seq = 0, vlen = 0;
 	time_t end;
 	int error;
 
 	end = time_uptime + timeo;
 	xid = cprng_fast32();
 
+	if (cc->cc_gss != NULL) {
+		gcc = *cc;
+		gcc.cc_flavor = RPCSEC_GSS;
+		gcc.cc_cred = cred;
+		gcc.cc_verf = verf;
+		if (!oncrpc_gssc_header(cc->cc_gss, xid, cc->cc_prog,
+		    cc->cc_vers, cc->cc_proc, cred, &gcc.cc_credlen, verf,
+		    &vlen, &seq))
+			return EAUTH;
+		gcc.cc_verflen = vlen;
+		cc = &gcc;
+	}
 	oncrpc_xdrmbuf_create(&ax, NULL, CLNT_MAXCALL, XDR_ENCODE);
-	if (!oncrpc_msg_encode_call(&ax.xm_xdr, xid, cc) ||
-	    (cc->cc_encode != NULL &&
-	    !(*cc->cc_encode)(&ax.xm_xdr, cc->cc_arg))) {
+	if (!oncrpc_msg_encode_call(&ax.xm_xdr, xid, cc)) {
 		XDR_DESTROY(&ax.xm_xdr);
 		return EMSGSIZE;
 	}
-	m = oncrpc_xdrmbuf_detach(&ax);
+	if (cc->cc_gss == NULL) {
+		if (cc->cc_encode != NULL &&
+		    !(*cc->cc_encode)(&ax.xm_xdr, cc->cc_arg)) {
+			XDR_DESTROY(&ax.xm_xdr);
+			return EMSGSIZE;
+		}
+		m = oncrpc_xdrmbuf_detach(&ax);
+	} else {
+		/* Apart, as they are sealed. */
+		oncrpc_xdrmbuf_create(&bx, NULL, CLNT_MAXCALL, XDR_ENCODE);
+		if (cc->cc_encode != NULL &&
+		    !(*cc->cc_encode)(&bx.xm_xdr, cc->cc_arg)) {
+			XDR_DESTROY(&bx.xm_xdr);
+			XDR_DESTROY(&ax.xm_xdr);
+			return EMSGSIZE;
+		}
+		b = oncrpc_gssc_seal(cc->cc_gss, seq,
+		    oncrpc_xdrmbuf_detach(&bx));
+		m = oncrpc_xdrmbuf_detach(&ax);
+		if (b != NULL) {
+			m->m_pkthdr.len += b->m_pkthdr.len;
+			m_remove_pkthdr(b);
+			m_cat(m, b);
+		}
+	}
 
 	error = clnt_connect(to, &so, end);
 	if (error != 0) {
@@ -186,11 +226,22 @@ oncrpc_clnt_call(const struct sockaddr *to,
 	if (error == 0)
 		error = clnt_recv(so, &m, end);
 	if (error == 0) {
+		oa = kmem_alloc(sizeof(*oa), KM_SLEEP);
 		oncrpc_xdrmbuf_create(&rx, m, 0, XDR_DECODE);
-		error = oncrpc_msg_decode_reply(&rx.xm_xdr, xid);
+		error = oncrpc_msg_decode_reply(&rx.xm_xdr, xid, oa);
+		if (error == 0 && cc->cc_gss != NULL) {
+			error = oncrpc_gssc_open(cc->cc_gss, seq, oa, m,
+			    XDR_GETPOS(&rx.xm_xdr), &open);
+			if (error == 0 && open != NULL)
+				oncrpc_xdrmbuf_create(&rx, open, 0, XDR_DECODE);
+		}
+		if (error == 0 && cc->cc_verfout != NULL)
+			memcpy(cc->cc_verfout, oa, sizeof(*oa));
 		if (error == 0 && cc->cc_decode != NULL &&
 		    !(*cc->cc_decode)(&rx.xm_xdr, cc->cc_res))
 			error = EBADRPC;
+		kmem_free(oa, sizeof(*oa));
+		m_freem(open);
 		m_freem(m);
 	}
 	solock(so);

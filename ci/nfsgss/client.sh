@@ -6,19 +6,24 @@ OUT=$1
 LOG=$OUT/gss-client.txt
 S=nfsgss-server.test
 CC=/var/tmp/krb5cc
-sudo apt-get install -y -q nfs-common krb5-user tcpdump python3-gssapi >/dev/null 2>&1
+sudo apt-get install -y -q nfs-common nfs-kernel-server krb5-user tcpdump python3-gssapi >/dev/null 2>&1
+# Installed for rpc.svcgssd alone; it must not take the port.
+sudo systemctl stop nfs-server nfs-kernel-server rpcbind 2>/dev/null
+sudo rpc.nfsd 0 2>/dev/null
 sudo modprobe nfs || {
 	sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" >/dev/null 2>&1
 	sudo modprobe nfs
 }
 sudo modprobe nfsv4
+# The server calls back through the tunnel, to a port it can be told.
+echo 40100 | sudo tee /sys/module/nfs/parameters/callback_tcpport >/dev/null
 sudo modprobe rpcsec_gss_krb5
 sudo ip link add gss0 type dummy
 sudo ip addr add 10.99.0.1/32 dev gss0
 sudo ip link set gss0 up
 ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
     -L 10.99.0.1:2049:127.0.0.1:2049 -L 10.99.0.1:8888:127.0.0.1:8888 \
-    -L 10.99.0.1:4002:127.0.0.1:4002 netbsd
+    -L 10.99.0.1:4002:127.0.0.1:4002 -R 40100:127.0.0.1:40100 netbsd
 sudo sh -c 'cat >>/etc/hosts' <<EOF
 10.99.0.1 $S
 127.0.0.1 nfsgss-client.test
@@ -54,9 +59,10 @@ sudo useradd -m -u 2097 alice
 sudo useradd -m -u 2098 bob
 sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
 sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
+cc -shared -fPIC -o /var/tmp/noenctypes.so "$(dirname "$0")/noenctypes.c"
 gssd_start() {
 	sudo pkill -x rpc.gssd
-	sudo rpc.gssd -v -v -f -d /var/tmp >>"$OUT/rpc.gssd.log" 2>&1 &
+	sudo env LD_PRELOAD=/var/tmp/noenctypes.so rpc.gssd -v -v -f -d /var/tmp >>"$OUT/rpc.gssd.log" 2>&1 &
 	sleep 2
 }
 gssd_start
@@ -99,6 +105,30 @@ oneflavor() {	# export sec vers options
 	echo "--- mountstats $sec v$v"; grep -E 'sec=' /proc/self/mountstats | grep "$m" | tail -1
 	t sudo -u alice rm -rf "$d"
 	t sudo umount "$m"
+}
+# RFC 7530 s3.3.3.  The server starts a context with the principal that
+# made the client, and recalls a delegation for a writer on the server.
+callback() {	# sec
+	sec=$1
+	m=/mnt/gsscb
+	sudo mkdir -p "$m"
+	o=$(ssh netbsd 'sysctl -n vfs.nfsv4.delegations')
+	ssh netbsd 'sysctl -w vfs.nfsv4.delegations=1'
+	sudo mount -t nfs -o "vers=4.0,proto=tcp,port=2049,sec=$sec,clientaddr=127.0.0.1" "$S:/export/krb5all" "$m"
+	sleep 4
+	sudo -u alice sh -c "echo one >$m/cb-$sec"
+	sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'
+	sudo -u alice sh -c "exec 3<$m/cb-$sec; cat <&3 >/dev/null; sleep 12" &
+	sleep 4
+	ssh netbsd "echo two >>/export/krb5all/cb-$sec"
+	wait $!
+	r=$(awk '/DELEGRETURN:/ {print $2}' /proc/self/mountstats | sort -n | tail -1)
+	echo "callback $sec: DELEGRETURN $r"
+	case ${r:-0} in 0) echo 'FAILED: no recall'; fails=$((fails + 1));; esac
+	t sh -c "ssh netbsd 'tail -40 /var/tmp/nfsv4/gssd.log' | grep -q 'callback context to'"
+	sudo rm -f "$m/cb-$sec"
+	sudo umount "$m"
+	ssh netbsd "sysctl -w vfs.nfsv4.delegations=$o"
 }
 wire() {	# sec: is the text on the wire?
 	sec=$1
@@ -145,8 +175,8 @@ oneenctype() {	# name number
 	sudo -u alice env KRB5_CONFIG="$c" KRB5CCNAME=FILE:${CC}-$2 \
 	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
 	    fails=$((fails + 1))
-	ssh netbsd "tail -3 /var/tmp/nfsv4/gssd.log" | grep "alice.*enctype" | tail -1
-	ssh netbsd "tail -6 /var/tmp/nfsv4/gssd.log" | grep -q "alice.*enctype $2," ||
+	ssh netbsd "tail -5 /var/tmp/nfsv4/gssd.log" | grep "alice.*enctype" | tail -1
+	ssh netbsd "tail -5 /var/tmp/nfsv4/gssd.log" | grep -q "alice.*enctype $2," ||
 	    { echo "FAILED: enctype $2 not used"; fails=$((fails + 1)); }
 }
 {
@@ -158,12 +188,13 @@ oneenctype() {	# name number
 	    'aes256-cts-hmac-sha1-96 18' 'aes128-cts-hmac-sha1-96 17'; do
 		set -- $pair
 		echo "=== Linux, enctype $1"
+		sudo sed -i -E "/^\t(permitted|default_tgs|default_tkt)_enctypes/d; s/^\[libdefaults\]/[libdefaults]\n\tpermitted_enctypes = $1\n\tdefault_tgs_enctypes = $1\n\tdefault_tkt_enctypes = $1/" /etc/krb5.conf
 		linux
 		ssh netbsd "tail -12 /var/tmp/nfsv4/gssd.log" | grep -q "alice.*enctype $2," ||
 		    { echo "FAILED: enctype $2 not used"; fails=$((fails + 1)); }
-		# Strongest first: the KDC can then give only what is left.
-		[ "$2" = 17 ] || ssh netbsd "kadmin -l del_enctype nfs/nfsgss-server.test $1"
 	done
+	sudo sed -i -E "/^\t(permitted|default_tgs|default_tkt)_enctypes/d" /etc/krb5.conf
+	sudo rm -f /tmp/krb5cc* /var/tmp/krb5ccmachine* ${CC}_*; gssd_start; ticket alice; ticket bob
 	echo '=== version 3'
 	for s in krb5 krb5i krb5p; do
 		oneflavor /export/krb5all "$s" 3 ",mountport=4002,mountproto=tcp,nolock"
@@ -186,6 +217,11 @@ oneenctype() {	# name number
 	oneenctype aes128-cts-hmac-sha256-128 19
 	oneenctype aes256-cts-hmac-sha1-96 18
 	oneenctype aes128-cts-hmac-sha1-96 17
+	echo '=== callbacks'
+	sudo rpc.svcgssd -f -v >"$OUT/svcgssd.log" 2>&1 &
+	sleep 2
+	for s in krb5 krb5i krb5p; do callback $s; done
+	sudo pkill -x rpc.svcgssd
 	echo '=== refused principals'
 	c=/var/tmp/krb5cc-ghost
 	sudo -u alice sh -c "echo ghost-pw | KRB5CCNAME=FILE:$c kinit ghost >/dev/null"
@@ -199,7 +235,6 @@ oneenctype() {	# name number
 	echo '=== RFC 1964'
 	ssh netbsd 'sh /var/tmp/nfsv4/vm-des.sh'
 	echo "failures: $fails"
-	ssh netbsd 'dmesg | tail -5'
 	ssh netbsd "tail -20 /var/tmp/nfsv4/gssd.log"
 	sudo dmesg | grep -iE 'rpc|nfs|gss' | grep -iE 'fail|err|bad|gss_' | sort -k3 | uniq -c -f2 | tail -30
 } >"$LOG" 2>&1

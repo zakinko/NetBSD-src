@@ -654,7 +654,13 @@ gk1_verify_mic(struct gss_krb5_ctx *ctx, const void *msg, size_t msglen,
 	if (msglen > GK1_MAXINNER)
 		return GSS_S_FAILURE;
 	p = gk1_unframe(tok, toklen, &inner);
-	if (p == NULL || inner != GK1_HDRLEN + GK1_SEQLEN + maclen)
+	/*
+	 * Heimdal frames a DES3 MIC for 2 bytes more than it fills, measured
+	 * with the base system's libgssapi, so the rest is let be there.
+	 */
+	if (p == NULL || inner < GK1_HDRLEN + GK1_SEQLEN + maclen ||
+	    inner > GK1_HDRLEN + GK1_SEQLEN + maclen +
+	    (gk_is_des(ctx->gc_et) ? 0 : 2))
 		return GSS_S_DEFECTIVE_TOKEN;
 	if (p[0] != GK1_TOK_MIC0 || p[1] != GK1_TOK_MIC1 ||
 	    p[2] != gk1_sgn_alg(ctx) || p[3] != 0 ||

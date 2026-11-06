@@ -42,9 +42,11 @@ done
 kadmin -l add --password=ghost-pw --use-defaults ghost
 kadmin -l add --random-key --use-defaults nfs/nfsgss-server.test
 kadmin -l add --random-key --use-defaults host/nfsgss-client.test
+kadmin -l add --random-key --use-defaults nfs/nfsgss-client.test
 rm -f /etc/krb5.keytab "$D/client.keytab"
 kadmin -l ext_keytab -k /etc/krb5.keytab nfs/nfsgss-server.test
 kadmin -l ext_keytab -k "$D/client.keytab" host/nfsgss-client.test
+kadmin -l ext_keytab -k "$D/client.keytab" nfs/nfsgss-client.test
 chmod 644 "$D/client.keytab"
 kdc --detach --addresses=127.0.0.1 --ports=8888/tcp
 sleep 2

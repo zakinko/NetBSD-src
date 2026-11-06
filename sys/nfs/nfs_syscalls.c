@@ -603,7 +603,8 @@ nfssvc_addsock(file_t *fp, struct mbuf *mynam)
 /*
  * An nfsd lends its thread to the RPC layer.  As in nfssvc_nfsd(), the
  * last one out takes the sockets with it, or a new nfsd could not bind
- * the UDP port.  The request cache stays, unlike there: threads of the
+ * the UDP port, but for connections that version 4 is using, which has
+ * threads of its own.  The request cache stays, unlike there: threads of the
  * layer may still be in it, and a retransmission across a restart of
  * nfsd is one the cache should catch.
  */

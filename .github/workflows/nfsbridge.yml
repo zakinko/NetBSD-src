@@ -31,6 +31,8 @@ jobs:
           sudo apt-get install -y -q unifdef >/dev/null
           sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsbridge/base)"
       - run: sh ci/nfsbridge/build.sh "$PWD/nb" "$PWD/out"
+      - name: Every commit on its own
+        run: cp ci/nfsbridge/each-commit.sh nb/ && sh nb/each-commit.sh "$(cat ci/nfsbridge/base)" "$PWD/nb"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -112,7 +114,15 @@ jobs:
         with:
           path: nb/tools
           key: nfsbridge-tools-${{ hashFiles('ci/nfsv4/base') }}
-      - run: sh ci/nfsbridge/atf-build.sh "$PWD/nb" "$PWD/out"
+      - uses: actions/cache@v4
+        id: dest
+        with:
+          path: out-dest
+          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'ci/nfsbridge/atf-build.sh') }}
+      - if: steps.dest.outputs.cache-hit != 'true'
+        run: |
+          sh ci/nfsbridge/atf-build.sh "$PWD/nb" "$PWD/out-dest"
+          rm -f out-dest/atf-build.log
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'
@@ -121,16 +131,16 @@ jobs:
           sync: rsync
           copyback: false
           run: uname -a
-      - run: sh ci/oncrpc/swap.sh out/netbsd.atf NFSBRON ssh netbsd
+      - run: sh ci/oncrpc/swap.sh out-dest/netbsd.atf NFSBRON ssh netbsd
       - shell: bash
         run: |
-          zstd -dc out/dest.tar.zst | ssh netbsd 'mkdir -p /var/tmp/dest && tar -C /var/tmp/dest -xf -'
-          scp ci/nfsbridge/atf-run.sh netbsd:/var/tmp/
-          ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/atf-run.sh' | tee out/atf.txt
+          zstd -dc out-dest/dest.tar.zst | ssh netbsd 'mkdir -p /var/tmp/dest && tar -C /var/tmp/dest -xf -'
+          scp ci/nfsbridge/atf-run.sh ci/nfsbridge/atf-chroot.sh netbsd:/var/tmp/
+          ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/atf-run.sh' | tee atf.txt
           test "${PIPESTATUS[0]}" = 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results-atf
-          path: out/atf.txt
+          path: atf.txt
           retention-days: 30

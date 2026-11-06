@@ -343,17 +343,6 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 		nd->nd_flag |= (rq->rq_secflavor == RPCSEC_GSS_KRB5 ?
 		    NFS_EXSEC_KRB5 : rq->rq_secflavor == RPCSEC_GSS_KRB5I ?
 		    NFS_EXSEC_KRB5I : NFS_EXSEC_KRB5P) << ND_SECSHIFT;
-		/*
-		 * A principal with no user.  Not root, whom -maproot=root
-		 * would keep; the old anonymous user of NFS, nobody.
-		 */
-		if (nd->nd_cr == NULL) {
-			nd->nd_cr = kauth_cred_alloc();
-			kauth_cred_seteuid(nd->nd_cr, (uid_t)32767);
-			kauth_cred_setuid(nd->nd_cr, (uid_t)32767);
-			kauth_cred_setegid(nd->nd_cr, (gid_t)32767);
-			kauth_cred_setgid(nd->nd_cr, (gid_t)32767);
-		}
 	} else if (nd->nd_procnum != NFSPROC_NULL &&
 	    rq->rq_flavor != RPCAUTH_UNIX) {
 		/* AUTH_NONE passes the layer; as in nfs_getreq(). */

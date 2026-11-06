@@ -154,7 +154,16 @@ oneenctype() {	# name number
 	ss -ltn | grep -E '8888|2049'
 	ssh netbsd 'netstat -an -f inet | grep -E "8888|2049"; tail -5 /var/tmp/nfsv4/kdc.log'
 	KRB5_TRACE=/dev/stdout sh -c 'echo alice-pw | kinit alice' | tail -8
-	linux
+	for pair in 'aes256-cts-hmac-sha384-192 20' 'aes128-cts-hmac-sha256-128 19' \
+	    'aes256-cts-hmac-sha1-96 18' 'aes128-cts-hmac-sha1-96 17'; do
+		set -- $pair
+		echo "=== Linux, enctype $1"
+		linux
+		ssh netbsd "tail -12 /var/tmp/nfsv4/gssd.log" | grep -q "alice.*enctype $2," ||
+		    { echo "FAILED: enctype $2 not used"; fails=$((fails + 1)); }
+		# Strongest first: the KDC can then give only what is left.
+		[ "$2" = 17 ] || ssh netbsd "kadmin -l del_enctype nfs/nfsgss-server.test $1"
+	done
 	echo '=== version 3'
 	for s in krb5 krb5i krb5p; do
 		oneflavor /export/krb5all "$s" 3 ",mountport=4002,mountproto=tcp,nolock"
@@ -177,6 +186,18 @@ oneenctype() {	# name number
 	oneenctype aes128-cts-hmac-sha256-128 19
 	oneenctype aes256-cts-hmac-sha1-96 18
 	oneenctype aes128-cts-hmac-sha1-96 17
+	echo '=== refused principals'
+	c=/var/tmp/krb5cc-ghost
+	sudo -u alice sh -c "echo ghost-pw | KRB5CCNAME=FILE:$c kinit ghost >/dev/null"
+	sudo -u alice env KRB5CCNAME=FILE:$c PROBE=refused python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	echo '=== expiry of a context'
+	c=/var/tmp/krb5cc-short
+	sudo -u alice sh -c "echo alice-pw | KRB5CCNAME=FILE:$c kinit -l 2m alice >/dev/null"
+	sudo -u alice env KRB5CCNAME=FILE:$c PROBE=expiry python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	echo '=== RFC 1964'
+	ssh netbsd 'sh /var/tmp/nfsv4/vm-des.sh'
 	echo "failures: $fails"
 	ssh netbsd 'dmesg | tail -5'
 	ssh netbsd "tail -20 /var/tmp/nfsv4/gssd.log"

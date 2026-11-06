@@ -53,6 +53,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -805,7 +807,7 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
  * a string that is not one has no translation here.
  */
 static uint32_t
-attr_parse_id(XDR *x, bool group, uint32_t *idp)
+attr_parse_id(const struct oncrpc_req *rq, XDR *x, bool group, uint32_t *idp)
 {
 	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len;
@@ -820,11 +822,12 @@ attr_parse_id(XDR *x, bool group, uint32_t *idp)
 	}
 	if (!xdr_opaque(x, buf, len))
 		return NFS4ERR_BADXDR;
-	return nfsv4_attr_strid(group, buf, len, idp);
+	return nfsv4_attr_strid(rq, group, buf, len, idp);
 }
 
 uint32_t
-nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t *idp)
+nfsv4_attr_strid(const struct oncrpc_req *rq, bool group, const char *buf,
+    u_int len, uint32_t *idp)
 {
 	const char *at;
 	uint64_t v;
@@ -832,6 +835,9 @@ nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t *idp)
 
 	if ((at = memchr(buf, '@', len)) != NULL)
 		return nfsv4_idmap_in(group, buf, len, (u_int)(at - buf), idp);
+	/* s5.9: numbers are for those outside Kerberos. */
+	if (rq->rq_flavor == RPCSEC_GSS)
+		return NFS4ERR_BADOWNER;
 	if (buf[0] == '0' && len > 1)		/* "no leading zeros" */
 		return NFS4ERR_BADOWNER;
 	v = 0;
@@ -941,7 +947,7 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				st = NFS4ERR_FBIG;
 			break;
 		case FATTR4_ACL:
-			st = nfsv4_acl_parse(x, &c->c_setacl);
+			st = nfsv4_acl_parse(c->c_rq, x, &c->c_setacl);
 			break;
 		case FATTR4_ARCHIVE:
 		case FATTR4_HIDDEN:
@@ -984,12 +990,12 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				va->va_mode = v;
 			break;
 		case FATTR4_OWNER:
-			st = attr_parse_id(x, false, &id);
+			st = attr_parse_id(c->c_rq, x, false, &id);
 			if (st == NFS4_OK)
 				va->va_uid = id;
 			break;
 		case FATTR4_OWNER_GROUP:
-			st = attr_parse_id(x, true, &id);
+			st = attr_parse_id(c->c_rq, x, true, &id);
 			if (st == NFS4_OK)
 				va->va_gid = id;
 			break;

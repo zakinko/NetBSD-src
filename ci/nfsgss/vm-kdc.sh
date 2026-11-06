@@ -9,6 +9,7 @@ cat >/etc/krb5.conf <<EOF
 [libdefaults]
 	default_realm = $R
 	dns_lookup_kdc = false
+	allow_weak_crypto = true
 	dns_canonicalize_hostname = false
 	rdns = false
 [realms]
@@ -21,8 +22,11 @@ cat >/etc/krb5.conf <<EOF
 [kdc]
 	ports = 8888/tcp
 	logging = FILE:/var/tmp/nfsv4/kdc.log
+	svc-use-strongest-session-key = true
+	tgt-use-strongest-session-key = true
+	preauth-use-strongest-session-key = true
 [kadmin]
-	default_keys = aes256-cts-hmac-sha384-192:pw-salt aes128-cts-hmac-sha256-128:pw-salt aes256-cts-hmac-sha1-96:pw-salt aes128-cts-hmac-sha1-96:pw-salt
+	default_keys = aes256-cts-hmac-sha384-192:pw-salt aes128-cts-hmac-sha256-128:pw-salt aes256-cts-hmac-sha1-96:pw-salt aes128-cts-hmac-sha1-96:pw-salt des3-cbc-sha1:pw-salt des-cbc-md5:pw-salt
 EOF
 mkdir -p /var/heimdal
 chmod 700 /var/heimdal
@@ -34,6 +38,8 @@ for u in alice bob; do
 	id=$((id + 1))
 	kadmin -l add --password="$u-pw" --use-defaults "$u"
 done
+# Has a ticket and no account here.
+kadmin -l add --password=ghost-pw --use-defaults ghost
 kadmin -l add --random-key --use-defaults nfs/nfsgss-server.test
 kadmin -l add --random-key --use-defaults host/nfsgss-client.test
 rm -f /etc/krb5.keytab "$D/client.keytab"
@@ -58,6 +64,7 @@ EOF
 mkdir -p "$D/inc/nfs"
 cp "$D/src/sys/nfs/nfs.h" "$D/inc/nfs/"
 (cd "$D/src/usr.sbin/mountd" && cc -g -I"$D/inc" -o "$D/mountd" mountd.c get_net.c -lutil)
+cc -g -o "$D/desprobe" "$D/desprobe.c" -lgssapi -lkrb5
 (cd "$D/src/usr.sbin/gssd" && cc -g -Wall -I/usr/include/krb5 -o "$D/gssd" gssd.c -lgssapi -lkrb5 -lutil)
 kill "$(cat /var/run/mountd.pid)" 2>/dev/null || pkill -x mountd || :
 sleep 1

@@ -188,7 +188,8 @@ nfsv4_acl_put(XDR *x, const struct acl *acl)
 }
 
 static uint32_t
-acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
+acl_parse_who(const struct oncrpc_req *rq, XDR *x, struct acl_entry *ae,
+    bool group)
 {
 	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len, id, st;
@@ -216,7 +217,7 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 	if (buf[len - 1] == '@')
 		return NFS4ERR_ATTRNOTSUPP;
 
-	st = nfsv4_attr_strid(group, buf, len, &id);
+	st = nfsv4_attr_strid(rq, group, buf, len, &id);
 	if (st != NFS4_OK)
 		return st;
 	ae->ae_tag = group ? ACL_GROUP : ACL_USER;
@@ -226,7 +227,7 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 
 /* An fattr4_acl to *aclp, which the compound frees if nothing else does. */
 uint32_t
-nfsv4_acl_parse(XDR *x, struct acl **aclp)
+nfsv4_acl_parse(const struct oncrpc_req *rq, XDR *x, struct acl **aclp)
 {
 	struct acl *acl;
 	struct acl_entry *ae;
@@ -257,7 +258,7 @@ nfsv4_acl_parse(XDR *x, struct acl **aclp)
 		default:
 			return NFS4ERR_ATTRNOTSUPP;
 		}
-		st = acl_parse_who(x, ae,
+		st = acl_parse_who(rq, x, ae,
 		    (flag & ACE4_IDENTIFIER_GROUP) != 0);
 		if (st != NFS4_OK)
 			return st;

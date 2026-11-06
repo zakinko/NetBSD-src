@@ -37,6 +37,10 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: nfs_syscalls.c,v 1.170 2026/08/26 13:28:37 riastradh Exp $");
 
+#ifdef _KERNEL_OPT
+#include "opt_nfs_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/types.h>
 
@@ -517,6 +521,9 @@ nfssvc_addsock(file_t *fp, struct mbuf *mynam)
 	int error;
 	int val;
 
+#ifdef NFSSERVER_ONCRPC
+	return nfs_oncrpc_addsock(fp, mynam);
+#endif
 	so = fp->f_socket;
 	tslp = (struct nfssvc_sock *)0;
 	/*
@@ -592,6 +599,44 @@ nfssvc_addsock(file_t *fp, struct mbuf *mynam)
 	return (0);
 }
 
+#ifdef NFSSERVER_ONCRPC
+/*
+ * An nfsd lends its thread to the RPC layer.  As in nfssvc_nfsd(), the
+ * last one out takes the sockets with it, or a new nfsd could not bind
+ * the UDP port.  The request cache stays, unlike there: threads of the
+ * layer may still be in it, and a retransmission across a restart of
+ * nfsd is one the cache should catch.
+ */
+static int
+nfssvc_oncrpc(void)
+{
+	int error;
+	bool last;
+
+	mutex_enter(&nfsd_lock);
+	while ((nfssvc_sockhead_flag & SLP_INIT) != 0)
+		cv_wait(&nfsd_initcv, &nfsd_lock);
+	nfs_numnfsd++;
+	mutex_exit(&nfsd_lock);
+
+	error = nfs_oncrpc_run();
+
+	mutex_enter(&nfsd_lock);
+	last = --nfs_numnfsd == 0;
+	if (last)
+		nfssvc_sockhead_flag |= SLP_INIT;
+	mutex_exit(&nfsd_lock);
+	if (last) {
+		nfs_oncrpc_closesocks();
+		mutex_enter(&nfsd_lock);
+		nfssvc_sockhead_flag &= ~SLP_INIT;
+		cv_broadcast(&nfsd_initcv);
+		mutex_exit(&nfsd_lock);
+	}
+	return error;
+}
+#endif /* NFSSERVER_ONCRPC */
+
 /*
  * Called by nfssvc() for nfsds. Just loops around servicing rpc requests
  * until it is killed by a signal.
@@ -611,6 +656,9 @@ nfssvc_nfsd(struct nfssvc_copy_ops *ops, struct nfsd_srvargs *nsd,
 	struct proc *p = l->l_proc;
 	bool doreinit;
 
+#ifdef NFSSERVER_ONCRPC
+	return nfssvc_oncrpc();
+#endif
 #ifndef nolint
 	cacherep = RC_DOIT;
 	writes_todo = 0;

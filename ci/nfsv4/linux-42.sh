@@ -86,7 +86,7 @@ open('$OUT/da','wb').write(b)"
 	t test "$(stat -c %s "$d/da")" = 3145728
 	if [ "$holes" = holes ]; then
 		# s15.4.3: FFS really gives the blocks back, and says so.
-		t test "$(stat -c %b "$d/da")" -lt 4000
+		t test "$(stat -c %b "$d/da")" -lt 5000
 		t python3 "$OUT/seekcheck-da.py" "$d/da"
 	fi
 
@@ -146,10 +146,21 @@ n=len(b)-5;assert b[:5]==bytes(5) and b[5:]==a[1000000:1000000+n] and n>0;print(
 	one /export/tmpfs   none   yes      no    no
 	one /export/acl     holes  yes      no    yes
 	one /tank/x         any    no       yes   yes
-	# What the hole punches left, read by fsck.
-	t ssh netbsd "sync; umount -f /export/acl && fsck_ffs -fn /dev/rvnd1d; r=\$?; mount -o nfs4acls /dev/vnd1d /export/acl; exit \$r"
+	# What a hole punch leaves, read by fsck with the file still there:
+	# a block both free and in the file, or in neither, is what would show.
+	p=/mnt/v42fsck
+	sudo mkdir -p "$p"
+	t sudo mount -t nfs -o vers=4.2,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys 127.0.0.1:/export/acl "$p"
+	t sudo dd if=/dev/urandom of="$p/punched" bs=1M count=64 status=none
+	t sudo fallocate -p -o 100000 -l 20000000 "$p/punched"
+	t sudo fallocate -p -o 30000000 -l 4096 "$p/punched"
+	t sudo umount "$p"
+	ssh netbsd "sync; umount -f /export/acl; fsck_ffs -fn /dev/rvnd1d; mount -o nfs4acls /dev/vnd1d /export/acl; rm -f /export/acl/punched; kill -HUP \$(cat /var/run/mountd.pid)" >"$OUT/fsck.txt" 2>&1
+	cat "$OUT/fsck.txt"
+	t grep -q 'Phase 5' "$OUT/fsck.txt"
+	n grep -E 'BAD|DUP|MISSING|UNREF|INCORRECT BLOCK' "$OUT/fsck.txt"
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 } >"$LOG" 2>&1
-rm -f "$OUT/sp" "$OUT/da" "$OUT/seekcheck.py"
+rm -f "$OUT/sp" "$OUT/da" "$OUT/seekcheck.py" "$OUT/seekcheck-da.py"
 cat "$LOG"

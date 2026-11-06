@@ -63,6 +63,8 @@ enum oncrpc_decoded
 	oncrpc_msg_decode_call(XDR *, struct oncrpc_call *);
 bool	oncrpc_msg_encode_accepted(XDR *, uint32_t, uint32_t, uint32_t,
 	    uint32_t);
+bool	oncrpc_msg_encode_accepted_verf(XDR *, uint32_t, uint32_t, const void *,
+	    uint32_t, uint32_t, uint32_t, uint32_t);
 bool	oncrpc_msg_encode_denied_vers(XDR *, uint32_t);
 bool	oncrpc_msg_encode_denied_auth(XDR *, uint32_t, uint32_t);
 bool	oncrpc_msg_encode_call(XDR *, uint32_t,

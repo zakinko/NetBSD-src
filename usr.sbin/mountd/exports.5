@@ -220,6 +220,20 @@ write semantics is client-side anyway
 Synonym for
 .Fl ro
 for compatibility with older export file formats.
+.It Fl sec Ns = Ns Ar flavor Ns Op : Ns Ar flavor ...
+Accept only these security flavors for the filesystem, from
+.Cm sys ,
+.Cm none ,
+.Cm krb5 ,
+.Cm krb5i
+and
+.Cm krb5p .
+The Kerberos flavors need
+.Xr gssd 8 .
+Without the option a filesystem takes
+.Cm sys
+and
+.Cm none .
 .It Fl noresvport
 Allow NFS RPC calls for the filesystem to come from non-reserved
 ports.

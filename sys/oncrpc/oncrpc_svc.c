@@ -441,6 +441,57 @@ req_setraw(struct oncrpc_ireq *ir, struct mbuf *raw)
 	ir->ir_reply = raw;
 }
 
+/*
+ * A reply a program made whole, header and all, for a request under
+ * RPCSEC_GSS, which must have the header's verifier and the results
+ * sealed.  The program's header is an accepted one with an empty
+ * verifier, six words, or else a denial, which goes as it is.  Replies
+ * from a cache come this way too, and so are sealed for this request,
+ * whose sequence number is its own: RFC 2203 s5.3.3.1.
+ */
+static bool
+svc_gss_raw(struct oncrpc_ireq *ir, struct mbuf **rawp)
+{
+	struct oncrpc_xdrmbuf hdr;
+	struct oncrpc_gss_call *gg = &ir->ir_gss;
+	struct mbuf *res = *rawp, *m;
+	uint32_t w[6], stat;
+
+	/* A denial is shorter than the words looked for. */
+	if (res->m_pkthdr.len < 3 * (int)sizeof(w[0])) {
+		m_freem(res);
+		return false;
+	}
+	m_copydata(res, 0, 3 * sizeof(w[0]), w);
+	if (ntohl(w[2]) != ONCRPC_MSG_ACCEPTED)
+		return true;
+	if (res->m_pkthdr.len < (int)sizeof(w)) {
+		m_freem(res);
+		return false;
+	}
+	m_copydata(res, 0, sizeof(w), w);
+	stat = ntohl(w[5]);
+	m_adj(res, sizeof(w));
+	if (stat == ONCRPC_SUCCESS && !oncrpc_gss_wrap_results(gg, &res))
+		return false;
+	oncrpc_xdrmbuf_create(&hdr, NULL, UINT_MAX, XDR_ENCODE);
+	if (!oncrpc_gss_verifier(gg) ||
+	    !oncrpc_msg_encode_accepted_verf(&hdr.xm_xdr, ir->ir_call.c_xid,
+	    gg->gg_verf, gg->gg_verfbody, gg->gg_verflen, stat, 0, 0)) {
+		XDR_DESTROY(&hdr.xm_xdr);
+		m_freem(res);
+		return false;
+	}
+	m = oncrpc_xdrmbuf_detach(&hdr);
+	if (res != NULL) {
+		m->m_pkthdr.len += res->m_pkthdr.len;
+		m_remove_pkthdr(res);
+		m_cat(m, res);
+	}
+	*rawp = m;
+	return true;
+}
+
 static struct oncrpc_prog *
 svc_prog_hold(struct oncrpc_svc *svc, const struct oncrpc_call *c,
     uint32_t *lowp, uint32_t *highp, bool *known)
@@ -611,6 +662,13 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 		XDR_DESTROY(&hdr.xm_xdr);
 		req_setraw(ir, rq->rq_raw);
 		rq->rq_raw = NULL;
+		if (gss) {
+			if (!svc_gss_raw(ir, &ir->ir_reply)) {
+				ir->ir_reply = NULL;
+				req_free(ir);
+				return;
+			}
+		}
 		xprt_send(ir);
 		return;
 	case ONCRPC_DEFERRED:
@@ -1165,6 +1223,12 @@ oncrpc_req_finish(struct oncrpc_req *rq, struct mbuf *raw)
 		return;
 	}
 	req_setraw(ir, raw);
+	if (ir->ir_call.c_cred.oa_flavor == RPCSEC_GSS &&
+	    !svc_gss_raw(ir, &ir->ir_reply)) {
+		ir->ir_reply = NULL;
+		req_free(ir);
+		return;
+	}
 	xprt_send(ir);
 }
 

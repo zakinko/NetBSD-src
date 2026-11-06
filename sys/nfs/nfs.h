@@ -566,7 +566,13 @@ struct nfsrv_descript {
 #define ND_NFSV3	0x08
 #define ND_KERBNICK	0x20
 #define ND_KERBFULL	0x40
-#define ND_KERBAUTH	(ND_KERBNICK | ND_KERBFULL)
+/*
+ * The pseudo flavor of a request under RPCSEC_GSS, as NFS_EXSEC_* moved
+ * up.  In ND_KERBAUTH, so that it gets to nfsrv_fhtovp() with the rest.
+ */
+#define	ND_SECSHIFT	8
+#define	ND_SECGSS	(NFS_EXSEC_MASK << ND_SECSHIFT)
+#define ND_KERBAUTH	(ND_KERBNICK | ND_KERBFULL | ND_SECGSS)
 
 extern kmutex_t nfsd_lock;
 extern kcondvar_t nfsd_initcv;

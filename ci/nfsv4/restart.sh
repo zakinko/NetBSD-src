@@ -11,6 +11,3 @@ cd "$D"
 ./nfsv4d "$D/stable" </dev/null >>nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1
-sysctl -w vfs.nfsv4.domain=example.org
-sysctl -w 'vfs.nfsv4.idmap=u 1234 alice'
-sysctl -w 'vfs.nfsv4.idmap=g 5678 staff'

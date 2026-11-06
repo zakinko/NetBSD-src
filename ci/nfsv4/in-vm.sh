@@ -66,7 +66,4 @@ cc -g -Wall -o nfsv4d nfsv4d.c
 echo $! >nfsv4d.pid
 sleep 1
 sysctl -w 'vfs.nfsv4.referral=/export/ref/there srv1,srv2:/x/y;srv3:/z'
-sysctl -w vfs.nfsv4.domain=example.org
-sysctl -w 'vfs.nfsv4.idmap=u 1234 alice'
-sysctl -w 'vfs.nfsv4.idmap=g 5678 staff'
 netstat -an -f inet | grep '\.2049 '

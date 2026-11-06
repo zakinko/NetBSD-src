@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'lib'))
 import nfs4lib, nfs_ops
 from xdrdef.nfs4_const import *
 op = nfs_ops.NFS4ops()
+nfs4lib.SHOW_TRAFFIC = 0
 
 export = sys.argv[1].strip('/').encode().split(b'/')
 fails = 0

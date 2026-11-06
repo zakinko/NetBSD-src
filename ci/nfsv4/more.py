@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.getcwd(), 'lib'))
 import nfs4lib, nfs_ops, rpc.rpc as rpc
 from xdrdef.nfs4_const import *
 op = nfs_ops.NFS4ops()
+nfs4lib.SHOW_TRAFFIC = 0
 
 fails = 0
 def want(name, got, *ok):

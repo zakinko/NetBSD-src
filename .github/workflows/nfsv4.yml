@@ -146,6 +146,7 @@ jobs:
       - run: SUITE=nfs4.1 V42FS=acl PYNFS_ARGS='--minorversion 2 v42 v42x xattr sparse' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
       - continue-on-error: true
         run: SUITE=nfs4.1 V42FS=zfs PYNFS_ARGS='--minorversion 2 v42 v42x sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
+      - run: SUITE=nfs4.1 V42FS=tmpfs PYNFS_ARGS='--minorversion 2 v42' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs42-tmpfs
       - name: What failed at 4.2, in the log in case the job does not end
         run: |
           grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
@@ -219,7 +220,7 @@ jobs:
         if: always()
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs41-zfs.json out/pynfs41-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
-          for n in pynfs42 pynfs42-xattr pynfs42-zfs; do
+          for n in pynfs42 pynfs42-xattr pynfs42-zfs pynfs42-tmpfs; do
             python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           done
           python3 ci/nfsv4/pynfs-summary.py out/pynfs41.json out/pynfs41.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true

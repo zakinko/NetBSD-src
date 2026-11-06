@@ -138,27 +138,35 @@ n=len(b)-5;assert b[:5]==bytes(5) and b[5:]==a[1000000:1000000+n] and n>0;print(
 	t sudo rm -rf "$d"
 	t sudo umount "$m"
 }
+# What a hole punch leaves, read by fsck with the file still there: a
+# block both free and in the file, or in neither, is what would show.
+# The control is fsck of the same image fresh from newfs.
+punchfsck() {
+	x=$1 v=$2 o=$3
+	p=/mnt/v42fsck
+	sudo mkdir -p "$p"
+	t sudo mount -t nfs -o vers=4.2,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys "127.0.0.1:$x" "$p"
+	t sudo dd if=/dev/urandom of="$p/punched" bs=1M count=64 status=none
+	t sudo fallocate -p -o 100000 -l 20000000 "$p/punched"
+	t sudo fallocate -p -o 30000000 -l 4096 "$p/punched"
+	t sudo umount "$p"
+	ssh netbsd "sync; umount -f $x; fsck_ffs -fn /dev/r${v}d; mount $o /dev/${v}d $x; rm -f $x/punched; kill -HUP \\$(cat /var/run/mountd.pid)" >"$OUT/fsck-$v.txt" 2>&1
+	cat "$OUT/fsck-$v.txt"
+	t grep -q 'Phase 5' "$OUT/fsck-$v.txt"
+	n grep -E 'BAD|DUP|MISSING|UNREF|INCORRECT BLOCK' "$OUT/fsck-$v.txt"
+}
 {
 	uname -a
+	echo '$ fsck of FFSv1 fresh from newfs, the control'
+	ssh netbsd cat /var/tmp/nfsv4/fsck-control.txt
 	grep -E 'READ_PLUS' "/boot/config-$(uname -r)" || :
 	#   export          holes  allocate clone xattr
 	one /export/pynfs   holes  yes      no    no
 	one /export/tmpfs   none   yes      no    no
 	one /export/acl     holes  yes      no    yes
 	one /tank/x         any    no       yes   yes
-	# What a hole punch leaves, read by fsck with the file still there:
-	# a block both free and in the file, or in neither, is what would show.
-	p=/mnt/v42fsck
-	sudo mkdir -p "$p"
-	t sudo mount -t nfs -o vers=4.2,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys 127.0.0.1:/export/acl "$p"
-	t sudo dd if=/dev/urandom of="$p/punched" bs=1M count=64 status=none
-	t sudo fallocate -p -o 100000 -l 20000000 "$p/punched"
-	t sudo fallocate -p -o 30000000 -l 4096 "$p/punched"
-	t sudo umount "$p"
-	ssh netbsd "sync; umount -f /export/acl; fsck_ffs -fn /dev/rvnd1d; mount -o nfs4acls /dev/vnd1d /export/acl; rm -f /export/acl/punched; kill -HUP \$(cat /var/run/mountd.pid)" >"$OUT/fsck.txt" 2>&1
-	cat "$OUT/fsck.txt"
-	t grep -q 'Phase 5' "$OUT/fsck.txt"
-	n grep -E 'BAD|DUP|MISSING|UNREF|INCORRECT BLOCK' "$OUT/fsck.txt"
+	punchfsck /export/acl vnd1 -o\ nfs4acls
+	punchfsck /export/ffs1 vnd3 ""
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 } >"$LOG" 2>&1

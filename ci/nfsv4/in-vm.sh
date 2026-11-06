@@ -48,6 +48,15 @@ mount /dev/vnd2d /export/quota
 chmod 1777 /export/quota
 edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
 repquota -u /export/quota || :
+# FFSv1, for the hole punch: fsck of it fresh is the control for what
+# fsck says after, the alternate superblocks in particular.
+mkdir -p /export/ffs1
+dd if=/dev/zero of=/var/tmp/ffs1.img bs=1m count=128
+newfs -O 1 -F -s 128m /var/tmp/ffs1.img | tail -1
+vnconfig vnd3 /var/tmp/ffs1.img
+fsck_ffs -fn /dev/rvnd3d >/var/tmp/nfsv4/fsck-control.txt 2>&1 || :
+mount /dev/vnd3d /export/ffs1
+chmod 1777 /export/ffs1
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
 # Without the module or its tools the other exports are still served.
 if [ -f "$D/modules/zfs.kmod" ] && command -v zpool >/dev/null; then
@@ -70,6 +79,7 @@ cat >/etc/exports <<EOF
 /export/ref -maproot=root -noresvport
 /export/mig -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
+/export/ffs1 -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf

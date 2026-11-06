@@ -4,6 +4,7 @@
 import os
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import app_data_block4, netloc4, stateid4
+from xdrdef.nfs4_type import locker4, open_to_lock_owner4, lock_owner4
 from .environment import check, fail, create_file, write_file, read_file, create_obj
 from .environment import use_obj, do_getattrdict
 import nfs_ops
@@ -361,3 +362,27 @@ def test_s12_label(t, env):
     res = sess.compound([op.putrootfh(), op.getattr(1 << FATTR4_SEC_LABEL)])
     check(res)
     print(res.resarray[-1].obj_attributes)
+
+def test_s15_10_lock_range(t, env):
+    """s15.10.3 a hole read under a lock does not go past the range
+    FLAGS: v42
+    CODE: V4220
+    VERS: 2-
+    """
+    sess, fh, st = mk(t, env, b"x")
+    check(write_file(sess, fh, b"y", 1 << 20, st))
+    bs = 4096 * 16
+    lk = locker4(TRUE, open_owner=open_to_lock_owner4(0, st, 0,
+                 lock_owner4(0, b"v42")))
+    res = sess.compound([op.putfh(fh), op.lock(WRITE_LT, FALSE, bs, bs, lk)])
+    check(res)
+    res = sess.compound([op.putfh(fh), op.read_plus(st, bs, bs)])
+    check(res)
+    for c in res.resarray[-1].rpr_contents:
+        if c.rpc_content == NFS4_CONTENT_HOLE and \
+           c.rpc_hole.di_offset + c.rpc_hole.di_length > 2 * bs:
+            fail("hole %d+%d past the lock" % (c.rpc_hole.di_offset, c.rpc_hole.di_length))
+    # And with no lock on the file it does reach the end of the hole.
+    sess2, fh2, st2 = mk(t, env, b"x", b"_n")
+    check(write_file(sess2, fh2, b"y", 1 << 20, st2))
+    print(sess2.compound([op.putfh(fh2), op.read_plus(st2, bs, bs)]).resarray[-1].rpr_eof)

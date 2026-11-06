@@ -7,6 +7,8 @@ sudo mount -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.
 sudo sh -c ": >$m/cg; chmod 666 $m/cg"
 python3 -c "
 import os,time
+# An open owner gets a delegation from its second OPEN.
+os.close(os.open('$m/cg',os.O_RDWR))
 f=os.open('$m/cg',os.O_RDWR)
 time.sleep(1)
 os.write(f,b'x'*5000)

@@ -18,6 +18,10 @@ on:
       - 'ci/nfsv4/**'
       - '.github/workflows/nfsv4.yml'
   workflow_dispatch:
+    inputs:
+      quick:
+        description: leave out the runs of all of pynfs
+        default: 'false'
 concurrency:
   group: nfsv4-${{ github.ref }}
   cancel-in-progress: true
@@ -127,7 +131,11 @@ jobs:
           done 2>&1 | tee "$OLDPWD/out/edge.txt"
       - name: The Linux client
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - name: The pynfs tree, when all of it was left out
+        if: inputs.quick == 'true'
+        run: PYNFS_ARGS=INIT LIMIT=120 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-init || true
       - name: Delegations, which are not in all
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
       - name: Restarts, which are not in all
@@ -160,9 +168,12 @@ jobs:
             echo "=== $e"
             python3 ./named-attr.py "$e" ssh netbsd getextattr user one || echo "named-attr $e: $?"
           done 2>&1 | tee "$OLDPWD/out/named-attr.txt"
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
       - name: What the kernel said
         if: always()
         run: |

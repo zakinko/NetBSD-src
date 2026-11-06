@@ -11,3 +11,4 @@ cd "$D"
 ./nfsv4d "$D/stable" </dev/null >>nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1
+sysctl -w 'vfs.nfsv4.referral=/export/ref/there srv1,srv2:/x/y;srv3:/z'

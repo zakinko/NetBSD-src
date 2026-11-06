@@ -70,32 +70,4 @@ sub('''	{ &vop_fdiscard_desc,		genfs_eopnotsupp },
 ''', '''	{ &vop_fdiscard_desc,		zfs_netbsd_fdiscard },
 	{ &vop_clonerange_desc,		zfs_netbsd_clonerange },
 ''')
-# RFC 8276 s8.1: a key is not to be interpreted, so "user.x" has to work.
-# Under zfs_xattr_compat the plain form of it on disk would be the
-# alternate form of the key "x", which is why the port refuses it.  The
-# alternate form of "user.x" itself is unambiguous, and is what Linux
-# writes for that name without compat, so such a key always goes there.
-sub('''zfs_check_attrname(const char *name)
-{
-''', '''zfs_check_attrname(int attrnamespace, const char *name)
-{
-''')
-sub('''	if (ZFS_XA_NS_PREFIX_FORBIDDEN(name))
-		return (SET_ERROR(EINVAL));
-	return (0);
-''', '''	if (attrnamespace != EXTATTR_NAMESPACE_USER &&
-	    ZFS_XA_NS_PREFIX_FORBIDDEN(name))
-		return (SET_ERROR(EINVAL));
-	return (0);
-''')
-t = t.replace('error = zfs_check_attrname(ap->a_name);',
-    'error = zfs_check_attrname(ap->a_attrnamespace, ap->a_name);')
-sub('''		if ((zfs_xattr_compat != 0) != alt) {
-''', '''		if ((zfs_xattr_compat != 0) != alt &&
-		    !ZFS_XA_NS_PREFIX_FORBIDDEN(name)) {
-''')
-sub('''		zfs_deleteextattr_impl(&vda, !alt);
-''', '''		if (!ZFS_XA_NS_PREFIX_FORBIDDEN(ap->a_name))
-			zfs_deleteextattr_impl(&vda, !alt);
-''')
 open(P, 'w').write(t)

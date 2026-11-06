@@ -15,6 +15,14 @@
 #include <string.h>
 #include <unistd.h>
 
+/* RFC 8267 s9 has the port of NFS on RDMA; see ci/nfsrdma/in-vm.sh. */
+#ifndef PORT
+#define	PORT	2049
+#endif
+#ifndef NODE
+#define	NODE	"vfs.nfsv4.addsock"
+#endif
+
 int
 main(int argc, char **argv)
 {
@@ -32,7 +40,7 @@ main(int argc, char **argv)
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_len = sizeof(sin);
 	sin.sin_family = AF_INET;
-	sin.sin_port = htons(2049);
+	sin.sin_port = htons(PORT);
 	sin.sin_addr.s_addr = htonl(INADDR_ANY);
 	if (bind(ls, (void *)&sin, sizeof(sin)) == -1)
 		err(1, "bind");
@@ -41,7 +49,7 @@ main(int argc, char **argv)
 	for (;;) {
 		if ((s = accept(ls, NULL, NULL)) == -1)
 			err(1, "accept");
-		if (sysctlbyname("vfs.nfsv4.addsock", NULL, NULL, &s,
+		if (sysctlbyname(NODE, NULL, NULL, &s,
 		    sizeof(s)) == -1)
 			warn("addsock");
 		(void)close(s);

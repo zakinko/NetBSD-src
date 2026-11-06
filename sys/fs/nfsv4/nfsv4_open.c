@@ -1246,8 +1246,12 @@ nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	n = count - uio.uio_resid;
 	eof = ra->offset + n >= va.va_size;	/* s16.23.4 */
-	if (!xdr_u_int32_t(c->c_rx, &eof) || !xdr_u_int32_t(c->c_rx, &n) ||
-	    (n != 0 && !xdr_opaque(c->c_rx, buf, n)))
+	if (!xdr_u_int32_t(c->c_rx, &eof) || !xdr_u_int32_t(c->c_rx, &n)) {
+		st = NFS4ERR_RESOURCE;
+		goto out;
+	}
+	oncrpc_req_ddp_result(c->c_rq, XDR_GETPOS(c->c_rx), n);	/* RFC 8267 */
+	if (n != 0 && !xdr_opaque(c->c_rx, buf, n))
 		st = NFS4ERR_RESOURCE;
 out:
 	if (buf != NULL)

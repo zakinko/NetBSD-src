@@ -707,6 +707,7 @@ nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_cfh *cf = &c->c_cur;
 	struct vnode *vp;
 	const char *cur, *p;
+	char path[NFS4_FHSIZE];
 	size_t len;
 	uint32_t st;
 	int error;
@@ -717,8 +718,13 @@ nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
 			return NFS4ERR_NOENT;
 		for (p = cur + len - 1; *p != '/'; p--)
 			continue;
-		return cfh_setpath(c, cf, cur, p == cur ? 1 :
-		    (size_t)(p - cur));
+		/*
+		 * Setting the handle clears cf, which cur points into: the
+		 * root came out as a NUL in place of its slash.
+		 */
+		len = p == cur ? 1 : (size_t)(p - cur);
+		memcpy(path, cur, len);
+		return cfh_setpath(c, cf, path, len);
 	}
 
 	if (cf->cf_vp->v_type != VDIR)

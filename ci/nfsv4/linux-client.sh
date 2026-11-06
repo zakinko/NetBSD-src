@@ -5,6 +5,7 @@
 OUT=$1
 VERS=${VERS:-4.0}
 LOG=$OUT/linux-client-$VERS.txt
+CONFLICT=$(cd "$(dirname "$0")" && pwd)/conflict41.py
 BIN=$OUT/lc.bin
 sudo apt-get install -y -q nfs-common nfs4-acl-tools >/dev/null 2>&1
 sudo modprobe nfs || {
@@ -126,11 +127,16 @@ acl() {
 	t sudo rm -rf "$m/f" "$m/d"
 	t sudo umount "$m"
 }
+# How many DELEGRETURNs the mount at $1 has sent.
+dreturns() {
+	awk -v m=" $1 " 'index($0, "device ") == 1 { on = index($0, m) != 0 }
+	    on && $1 == "DELEGRETURN:" { print $2; exit }' /proc/self/mountstats
+}
 # With delegations in mind.  How many came back is the measurement.
 deleg() {
 	m=/mnt/nfsv4deleg
 	sudo mkdir -p "$m"
-	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
+	t sudo mount -v -t nfs -o vers=$VERS,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
 	    127.0.0.1:/export/pynfs "$m"
 	sleep 3
 	t sudo mkdir "$m/dg"
@@ -144,6 +150,30 @@ import fcntl
 f=open('$m/dg/a','r+')
 fcntl.lockf(f,fcntl.LOCK_EX,10,0)
 fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
+	if [ "$VERS" = 4.1 ]; then
+		# A delegation held, recalled by another client, RFC 8881 s10.4.
+		r0=$(dreturns "$m")
+		exec 3<"$m/dg/a"
+		sleep 1
+		echo '$ conflict, with the file held open'
+		t sh -c "cd $HOME/pynfs/nfs4.1 && cp $CONFLICT . && python3 ./conflict41.py /export/pynfs dg/a"
+		exec 3<&-
+		echo "DELEGRETURN before $r0 after $(dreturns "$m")"
+		t test "$(dreturns "$m")" -gt "$r0"
+		# The connection goes, and with it the backchannel, s2.10.13.1.2.
+		t sudo ss -K dst 127.0.0.1 dport = 2049
+		sleep 5
+		t cat "$m/dg/a"
+		sleep 2
+		r0=$(dreturns "$m")
+		exec 3<"$m/dg/a"
+		sleep 1
+		echo '$ conflict, after the connection was lost'
+		t sh -c "cd $HOME/pynfs/nfs4.1 && cp $CONFLICT . && python3 ./conflict41.py /export/pynfs dg/a"
+		exec 3<&-
+		echo "DELEGRETURN before $r0 after $(dreturns "$m")"
+		t test "$(dreturns "$m")" -gt "$r0"
+	fi
 	t mv "$m/dg/a" "$m/dg/b"
 	t sudo rm -rf "$m/dg"
 	grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -4

@@ -392,7 +392,13 @@ struct nfsv4_args_u32 {			/* RECLAIM_COMPLETE, SECINFO_NO_NAME */
 	uint32_t	value;
 };
 
+struct nfsv4_args_want_delegation {
+	uint32_t	want;
+	uint32_t	claim;		/* deleg_claim4 */
+};
+
 union nfsv4_args {
+	struct nfsv4_args_want_delegation want_delegation;
 	struct nfsv4_args_exchange_id	exchange_id;
 	struct nfsv4_args_create_session create_session;
 	struct nfsv4_args_backchannel_ctl backchannel_ctl;

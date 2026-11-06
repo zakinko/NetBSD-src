@@ -669,6 +669,8 @@ nfsv4_stateid_check(const struct nfsv4_stateid *si,
 
 	if (st->st_closed)
 		return NFS4ERR_BAD_STATEID;
+	if (st->st_revoked)
+		return NFS4ERR_DELEG_REVOKED;
 	if (cl->cl_expired || st->st_file == NULL)
 		return NFS4ERR_EXPIRED;
 	if (st->st_file->f_vp != vp)

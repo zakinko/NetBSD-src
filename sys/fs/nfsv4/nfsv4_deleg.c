@@ -367,7 +367,13 @@ nfsv4_deleg_scan(struct nfsv4_reap *reap)
 		if (time_uptime >= st->st_recall_end) {
 			/* s10.2.1 and the boolean of s9.6.3.4.3 */
 			st->st_owner->sw_client->cl_revoked = true;
-			nfsv4_state_unlink(st, reap, false);
+			/* RFC 8881 s8.2.4: 4.1 keeps it for FREE_STATEID. */
+			if (st->st_owner->sw_client->cl_minor != 0) {
+				st->st_revoked = true;
+				st->st_owner->sw_client->cl_nrevoked++;
+				nfsv4_state_unlink(st, reap, true);
+			} else
+				nfsv4_state_unlink(st, reap, false);
 		}
 		else if (st->st_cbnext != 0 && time_uptime >= st->st_cbnext)
 			nfsv4_cb_recall(st);
@@ -564,4 +570,31 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_exit(&nfsv4_state_lock);
 	nfsv4_reap_finish(&reap);
 	return status;
+}
+
+/*
+ * RFC 8881 s18.49.  Nothing obliges a server to give one, and with no
+ * open behind it nothing here would.  ond_server_will_signal_avail is
+ * false, so no callback is promised.
+ */
+uint32_t
+nfsv4_op_want_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	struct nfsv4_open_deleg od;
+	uint32_t want = a->want_delegation.want;
+
+	if ((want & ~(OPEN4_SHARE_ACCESS_WANT_DELEG_MASK |
+	    OPEN4_SHARE_ACCESS_WANT_SIGNAL_DELEG_WHEN_RESRC_AVAIL |
+	    OPEN4_SHARE_ACCESS_WANT_PUSH_DELEG_WHEN_UNCONTENDED)) != 0)
+		return NFS4ERR_INVAL;
+	want &= OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+	if (want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
+		return NFS4ERR_INVAL;
+	memset(&od, 0, sizeof(od));
+	od.od_type = OPEN_DELEGATE_NONE_EXT;
+	od.od_why = want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ?
+	    WND4_NOT_WANTED : want == OPEN4_SHARE_ACCESS_WANT_CANCEL ?
+	    WND4_CANCELLED : c->c_cur.cf_vp == NULL ||
+	    c->c_cur.cf_vp->v_type == VDIR ? WND4_IS_DIR : WND4_RESOURCE;
+	return nfsv4_xdr_open_deleg(c->c_rx, &od) ? NFS4_OK : NFS4ERR_RESOURCE;
 }

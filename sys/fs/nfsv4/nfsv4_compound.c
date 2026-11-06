@@ -157,6 +157,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	[NFSV4_OP_SEQUENCE]	= { nfsv4_op_sequence,	NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_SET_SSV]	= { nfsv4_op_set_ssv,	0 },
 	[NFSV4_OP_TEST_STATEID]	= { nfsv4_op_test_stateid, 0 },
+	[NFSV4_OP_WANT_DELEGATION] = { nfsv4_op_want_delegation, NFSV4_OPF_FH },
 	[NFSV4_OP_DESTROY_CLIENTID] =
 				  { nfsv4_op_destroy_clientid, NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },

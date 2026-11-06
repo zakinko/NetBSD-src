@@ -120,6 +120,7 @@ struct nfsv4_client {
 	u_int		cl_refs;	/* COMPOUNDs; the lease scan waits */
 	bool		cl_retired;	/* being forgotten; no name finds it */
 	bool		cl_reclaimed;	/* RECLAIM_COMPLETE was done, s18.51 */
+	u_int		cl_nrevoked;	/* of st_revoked */
 	uint32_t	cl_csseq;	/* the CREATE_SESSION slot, s18.36.4 */
 	uint32_t	cl_csstatus;
 	u_int		cl_cslen;
@@ -222,6 +223,7 @@ struct nfsv4_state {
 	struct vnode	*st_reapvp;	/* a reference, while reaping */
 	bool		st_free;	/* reaping ends it */
 	bool		st_closed;	/* kept for a resent CLOSE */
+	bool		st_revoked;	/* RFC 8881 s8.2.4: until FREE_STATEID */
 	/* delegation */
 	TAILQ_ENTRY(nfsv4_state) st_cbq;	/* to be called back */
 	LIST_ENTRY(nfsv4_state) st_rlist;	/* recalled */

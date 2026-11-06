@@ -396,6 +396,8 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 		session_conn_add(se, c->c_rq->rq_connid, CDFS4_FORE);
 	c->c_seqflags = session_lease(se->se_client);
 	/* s18.46.3 */
+	if (se->se_client->cl_nrevoked != 0)
+		c->c_seqflags |= SEQ4_STATUS_RECALLABLE_STATE_REVOKED;
 	if (session_cbconn(se) == 0)
 		c->c_seqflags |= SEQ4_STATUS_CB_PATH_DOWN_SESSION;
 	if (!nfsv4_session_cbany(se->se_client))
@@ -937,6 +939,8 @@ nfsv4_op_free_stateid(struct nfsv4_compound *c, union nfsv4_args *a)
 		vrele(vp);
 		mutex_enter(&nfsv4_state_lock);
 	} else {
+		if (st->st_revoked)
+			cl->cl_nrevoked--;
 		/* The locks under an open have stateids of their own. */
 		while ((ls = LIST_FIRST(&st->st_locks)) != NULL) {
 			LIST_REMOVE(ls, st_plist);
@@ -968,6 +972,8 @@ stateid_test(struct nfsv4_compound *c, const struct nfsv4_stateid *si)
 	if (status == NFS4_OK) {
 		if (st->st_closed)
 			status = NFS4ERR_BAD_STATEID;
+		else if (st->st_revoked)
+			status = NFS4ERR_DELEG_REVOKED;
 		else if (st->st_file == NULL)
 			status = NFS4ERR_EXPIRED;
 		else

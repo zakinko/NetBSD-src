@@ -12,32 +12,42 @@ op = nfs_ops.NFS4ops()
 FS = os.environ.get("V42FS", "ffs")
 NOVAL = 0xffffffffffffffff
 
+# The session of pynfs has 8192 bytes each way.
+def wr(sess, fh, st, data, off=0):
+    for i in range(0, len(data), 4096):
+        check(write_file(sess, fh, data[i:i + 4096], off + i, st))
+
 def mk(t, env, data=b"", suffix=b""):
     sess = env.c1.new_client_session(env.testname(t) + suffix)
     res = create_file(sess, env.testname(t) + suffix)
     check(res)
     fh, st = res.resarray[-1].object, res.resarray[-2].stateid
-    if data:
-        check(write_file(sess, fh, data, 0, st))
+    wr(sess, fh, st, data)
     return sess, fh, st
 
 def mk2(sess, env, t, data=b""):
     res = create_file(sess, env.testname(t) + b"_2")
     check(res)
     fh, st = res.resarray[-1].object, res.resarray[-2].stateid
-    if data:
-        check(write_file(sess, fh, data, 0, st))
+    wr(sess, fh, st, data)
     return fh, st
 
 def adir(sess, env, t):
-    res = create_obj(sess, sess.c.homedir + [env.testname(t) + b"_d"])
+    path = sess.c.homedir + [env.testname(t) + b"_d"]
+    check(create_obj(sess, path))
+    res = sess.compound(use_obj(path) + [op.getfh()])
     check(res)
     return res.resarray[-1].object
 
 def rd(sess, fh, st, off, n):
-    res = read_file(sess, fh, off, n, st)
-    check(res)
-    return res.data
+    out = b""
+    while len(out) < n:
+        res = read_file(sess, fh, off + len(out), min(n - len(out), 4096), st)
+        check(res)
+        if not res.data:
+            break
+        out += res.data
+    return out
 
 def test_s15_1_wrong_type(t, env):
     """s15.1.3 ALLOCATE on a directory is WRONG_TYPE
@@ -65,7 +75,7 @@ def test_s15_1_extends(t, env):
     a = do_getattrdict(sess, fh, [FATTR4_SIZE])
     if a[FATTR4_SIZE] != 105000:
         fail("size %d" % a[FATTR4_SIZE])
-    if rd(sess, fh, st, 0, 8192)[:5] != b"abc\0\0":
+    if rd(sess, fh, st, 0, 4096)[:5] != b"abc\0\0":
         fail("old data changed")
 
 def test_s15_1_bad_stateid(t, env):
@@ -92,13 +102,7 @@ def test_s15_4_zeros(t, env):
     sess, fh, st = mk(t, env, data)
     check(sess.compound([op.putfh(fh), op.deallocate(st, 1234, 50000)]))
     want = data[:1234] + bytes(50000) + data[51234:]
-    got = b""
-    while len(got) < len(want):
-        b = rd(sess, fh, st, len(got), 32768)
-        if not b:
-            break
-        got += b
-    if got != want:
+    if rd(sess, fh, st, 0, len(want)) != want:
         fail("not zeros")
 
 def test_s15_2_copy(t, env):
@@ -147,7 +151,7 @@ def test_s15_5_contradictory(t, env):
     VERS: 2-
     """
     sess, fh, st = mk(t, env)
-    res = sess.compound([op.putfh(fh), op.io_advise(st, 0, 0, [(1 << 1) | (1 << 3)])])
+    res = sess.compound([op.putfh(fh), op.io_advise(st, 0, 0, (1 << 1) | (1 << 3))])
     check(res)
     print(res.resarray[-1].ior_hints)
 
@@ -171,7 +175,7 @@ def test_s15_10_read_plus(t, env):
     check(write_file(sess, fh, b"tail", 1 << 20, st))
     pos, out, eof = 0, 0, False
     while not eof:
-        res = sess.compound([op.putfh(fh), op.read_plus(st, pos, 65536)])
+        res = sess.compound([op.putfh(fh), op.read_plus(st, pos, 4096)])
         check(res)
         r = res.resarray[-1]
         eof = r.rpr_eof

@@ -181,8 +181,8 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 	[NFSV4_OP_COPY]		= { nfsv4_op_copy,	NFSV4_OPF_FH },
 	[NFSV4_OP_DEALLOCATE]	= { nfsv4_op_deallocate, NFSV4_OPF_FH },
 	[NFSV4_OP_IO_ADVISE]	= { nfsv4_op_io_advise,	NFSV4_OPF_FH },
-	[NFSV4_OP_OFFLOAD_CANCEL] = { nfsv4_op_offload,	NFSV4_OPF_FH },
-	[NFSV4_OP_OFFLOAD_STATUS] = { nfsv4_op_offload,	NFSV4_OPF_FH },
+	[NFSV4_OP_OFFLOAD_CANCEL] = { nfsv4_op_offload_cancel, NFSV4_OPF_FH },
+	[NFSV4_OP_OFFLOAD_STATUS] = { nfsv4_op_offload_status, NFSV4_OPF_FH },
 	[NFSV4_OP_READ_PLUS]	= { nfsv4_op_read_plus,	NFSV4_OPF_FH },
 	[NFSV4_OP_SEEK]		= { nfsv4_op_seek,	NFSV4_OPF_FH },
 	[NFSV4_OP_WRITE_SAME]	= { nfsv4_op_write_same, NFSV4_OPF_FH },
@@ -957,6 +957,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_sysctl_init();
 		return 0;
 	case MODULE_CMD_FINI:
+		nfsv4_offload_drain();
 		nfsv4_deleg_fini();
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);

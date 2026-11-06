@@ -357,6 +357,9 @@ struct nfsv4_state *
 void	nfsv4_cb_probe(struct nfsv4_client *);
 void	nfsv4_cb_reset(struct nfsv4_client *);
 void	nfsv4_cb_recall(struct nfsv4_state *);
+int	nfsv4_cb_offload(uint64_t, const struct nfsv4_fh *,
+	    const struct nfsv4_stateid *, uint32_t, uint64_t, uint32_t,
+	    const struct nfsv4_verifier *);
 void	nfsv4_cb_forget_client(struct nfsv4_client *);
 void	nfsv4_cb_forget_state(struct nfsv4_state *);
 uint32_t nfsv4_deleg_conflict(struct vnode *, const struct nfsv4_client *,

@@ -29,10 +29,12 @@
 /*
  * The operations of NFS version 4.2 on the data of a file, RFC 7862.
  *
- * COPY is synchronous and nothing else is asynchronous either, as there
- * is no way yet to send CB_OFFLOAD on a backchannel; s4.1.2 asks for
- * that only of a server whose COPY returns a stateid.  One COPY or
- * WRITE_SAME holds a thread for NFSV4_COPY_MAX bytes at most.
+ * What is past NFSV4_COPY_MAX of a COPY or a WRITE_SAME runs in a thread
+ * of its own and ends in CB_OFFLOAD, s15.2.3 and s15.12.3.1, where the
+ * client has a backchannel and, for COPY, did not ask for a synchronous
+ * copy.  Otherwise COPY gives a short result, and WRITE_SAME, for which
+ * s15.12.3 has no such thing, does all of it in place.  What is running
+ * is struct nfsv4_offload, under nfsv4_state_lock.
  */
 
 #include <sys/cdefs.h>
@@ -44,6 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/filio.h>
 #include <sys/kauth.h>
 #include <sys/kmem.h>
+#include <sys/kthread.h>
 #include <sys/mount.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
@@ -63,6 +66,40 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	NFSV4_COPY_MAX		(64 * 1024 * 1024)
 #define	NFSV4_ADB_MAX		(1024 * 1024)
 #define	NFSV4_SEEK_SCAN		65536
+#define	NFSV4_OFFLOAD_MAX	16	/* running at once */
+#define	NFSV4_OFFLOAD_TRIES	6	/* of CB_OFFLOAD, RETRY seconds apart */
+#define	NFSV4_OFFLOAD_RETRY	5
+
+/* What is left of a COPY or WRITE_SAME once it no longer has a reply. */
+struct nfsv4_offload {
+	LIST_ENTRY(nfsv4_offload) of_list;
+	uint64_t	of_clientid;
+	uid_t		of_uid;		/* s4.1.2: whose it is to cancel */
+	struct nfsv4_fh	of_fh;		/* the destination, s15.8.3 */
+	struct nfsv4_stateid of_stateid; /* seqid not 0, s4.8 */
+	struct vnode	*of_src;	/* a reference; NULL for WRITE_SAME */
+	struct vnode	*of_dst;	/* a reference */
+	kauth_cred_t	of_srccred;
+	kauth_cred_t	of_dstcred;
+	uint64_t	of_srcoff;
+	uint64_t	of_dstoff;
+	uint64_t	of_total;	/* COPY: bytes; WRITE_SAME: blocks */
+	uint64_t	of_done;	/* bytes */
+	char		*of_block;	/* WRITE_SAME: one ADB */
+	uint64_t	of_bs;
+	bool		of_num;
+	uint64_t	of_numoff;
+	uint32_t	of_firstnum;
+	uint32_t	of_stable;
+	uint32_t	of_status;
+	bool		of_finished;
+	bool		of_cancel;
+};
+
+static LIST_HEAD(, nfsv4_offload) offloads =
+    LIST_HEAD_INITIALIZER(offloads);
+static u_int offload_count;
+static uint64_t offload_next;
 
 /* The size of a locked file. */
 static int
@@ -607,6 +644,188 @@ copy_count(const struct nfsv4_cfh *src, const struct nfsv4_args_copy *ca,
 	return NFS4_OK;
 }
 
+/* Copy n bytes at most, one buffer's worth; *gotp is 0 at the source's end. */
+static int
+copy_some(struct vnode *src, kauth_cred_t srccred, uint64_t srcoff,
+    struct vnode *dst, kauth_cred_t dstcred, uint64_t dstoff, char *buf,
+    u_int n, u_int *gotp)
+{
+	size_t resid;
+	int error;
+
+	*gotp = 0;
+	vn_lock(src, LK_SHARED | LK_RETRY);
+	error = vn_rdwr(UIO_READ, src, buf, n, srcoff, UIO_SYSSPACE,
+	    IO_NODELOCKED, srccred, &resid, NULL);
+	VOP_UNLOCK(src);
+	if (error != 0 || n == resid)
+		return error;
+	n -= resid;
+	vn_lock(dst, LK_EXCLUSIVE | LK_RETRY);
+	error = vn_rdwr(UIO_WRITE, dst, buf, n, dstoff, UIO_SYSSPACE,
+	    IO_NODELOCKED, dstcred, NULL, NULL);
+	VOP_UNLOCK(dst);
+	if (error == 0)
+		*gotp = n;
+	return error;
+}
+
+static void
+offload_free(struct nfsv4_offload *of)
+{
+
+	if (of->of_src != NULL)
+		vrele(of->of_src);
+	vrele(of->of_dst);
+	if (of->of_srccred != NULL)
+		kauth_cred_free(of->of_srccred);
+	kauth_cred_free(of->of_dstcred);
+	if (of->of_block != NULL)
+		kmem_free(of->of_block, of->of_bs);
+	kmem_free(of, sizeof(*of));
+}
+
+/* The work of a thread; of_done moves as it goes, for OFFLOAD_STATUS. */
+static void
+offload_run(struct nfsv4_offload *of)
+{
+	char *buf = NULL;
+	uint64_t i;
+	u_int got;
+	int error = 0;
+
+	if (of->of_src != NULL) {
+		buf = kmem_alloc(NFSV4_MAXIO, KM_SLEEP);
+		while (of->of_done < of->of_total && error == 0 &&
+		    !of->of_cancel) {
+			error = copy_some(of->of_src, of->of_srccred,
+			    of->of_srcoff + of->of_done, of->of_dst,
+			    of->of_dstcred, of->of_dstoff + of->of_done, buf,
+			    MIN(of->of_total - of->of_done, NFSV4_MAXIO),
+			    &got);
+			if (got == 0)
+				break;
+			mutex_enter(&nfsv4_state_lock);
+			of->of_done += got;
+			mutex_exit(&nfsv4_state_lock);
+		}
+		kmem_free(buf, NFSV4_MAXIO);
+	} else {
+		for (i = 0; i < of->of_total && error == 0 &&
+		    !of->of_cancel; i++) {
+			if (of->of_num)
+				be32enc(of->of_block + of->of_numoff,
+				    of->of_firstnum + (uint32_t)i);
+			vn_lock(of->of_dst, LK_EXCLUSIVE | LK_RETRY);
+			error = vn_rdwr(UIO_WRITE, of->of_dst, of->of_block,
+			    of->of_bs, of->of_dstoff + i * of->of_bs,
+			    UIO_SYSSPACE, IO_NODELOCKED, of->of_dstcred, NULL,
+			    NULL);
+			VOP_UNLOCK(of->of_dst);
+			if (error == 0) {
+				mutex_enter(&nfsv4_state_lock);
+				of->of_done += of->of_bs;
+				mutex_exit(&nfsv4_state_lock);
+			}
+		}
+	}
+	if (error == 0 && of->of_stable != UNSTABLE4 && of->of_done != 0) {
+		vn_lock(of->of_dst, LK_EXCLUSIVE | LK_RETRY);
+		error = VOP_FSYNC(of->of_dst, of->of_dstcred, FSYNC_WAIT,
+		    of->of_dstoff, of->of_dstoff + of->of_done);
+		VOP_UNLOCK(of->of_dst);
+	}
+	of->of_status = nfsv4_errno(error);
+}
+
+/*
+ * Finished, say so; the stateid stays good until the client has heard,
+ * s4.8.  A cancelled one needs no word, draft-cel-nfsv4-copy-
+ * implementation-experience-03 s6.  A client that never answers is
+ * left to OFFLOAD_STATUS only for as long as the tries last.
+ */
+static void
+offload_thread(void *arg)
+{
+	struct nfsv4_offload *of = arg;
+	struct nfsv4_verifier verf;
+	bool cancelled;
+	int i;
+
+	offload_run(of);
+	nfsv4_write_verf(&verf);
+	mutex_enter(&nfsv4_state_lock);
+	of->of_finished = true;
+	cancelled = of->of_cancel;
+	mutex_exit(&nfsv4_state_lock);
+	for (i = 0; i < NFSV4_OFFLOAD_TRIES && !cancelled; i++) {
+		if (nfsv4_cb_offload(of->of_clientid, &of->of_fh,
+		    &of->of_stateid, of->of_status, of->of_done,
+		    of->of_stable, &verf) == 0)
+			break;
+		kpause("nfsv4off", false, NFSV4_OFFLOAD_RETRY * hz, NULL);
+		mutex_enter(&nfsv4_state_lock);
+		cancelled = of->of_cancel;
+		mutex_exit(&nfsv4_state_lock);
+	}
+	mutex_enter(&nfsv4_state_lock);
+	LIST_REMOVE(of, of_list);
+	offload_count--;
+	cv_broadcast(&nfsv4_state_cv);
+	mutex_exit(&nfsv4_state_lock);
+	offload_free(of);
+	kthread_exit(0);
+}
+
+/* Set of going; it is in the list, or on failure was freed, and *sip says. */
+static bool
+offload_start(struct nfsv4_compound *c, struct nfsv4_offload *of,
+    struct nfsv4_stateid *sip)
+{
+	uint64_t id;
+
+	of->of_clientid = c->c_client->cl_id;
+	of->of_uid = nfsv4_client_principal(c);
+	of->of_fh = c->c_cur.cf_fh;
+	mutex_enter(&nfsv4_state_lock);
+	if (offload_count >= NFSV4_OFFLOAD_MAX ||
+	    !nfsv4_session_cbany(c->c_client)) {
+		mutex_exit(&nfsv4_state_lock);
+		return false;
+	}
+	id = ++offload_next;
+	be32enc(of->of_stateid.si_other, nfsv4_boot);
+	be64enc(of->of_stateid.si_other + 4, id | (1ULL << 63));
+	of->of_stateid.si_seqid = 1;	/* s4.8 */
+	LIST_INSERT_HEAD(&offloads, of, of_list);
+	offload_count++;
+	mutex_exit(&nfsv4_state_lock);
+	*sip = of->of_stateid;
+	if (kthread_create(PRI_NONE, KTHREAD_MPSAFE, NULL, offload_thread, of,
+	    NULL, "nfsv4off") != 0) {
+		mutex_enter(&nfsv4_state_lock);
+		LIST_REMOVE(of, of_list);
+		offload_count--;
+		mutex_exit(&nfsv4_state_lock);
+		return false;
+	}
+	return true;
+}
+
+/* Wait for what is running; the module is going. */
+void
+nfsv4_offload_drain(void)
+{
+	struct nfsv4_offload *of;
+
+	mutex_enter(&nfsv4_state_lock);
+	LIST_FOREACH(of, &offloads, of_list)
+		of->of_cancel = true;
+	while (offload_count != 0)
+		cv_wait(&nfsv4_state_cv, &nfsv4_state_lock);
+	mutex_exit(&nfsv4_state_lock);
+}
+
 /*
  * s15.2.  ca_consecutive and ca_synchronous are met whichever is asked
  * for, so NFS4ERR_OFFLOAD_NO_REQS does not arise.  An error after some
@@ -620,10 +839,11 @@ nfsv4_op_copy(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_copy *ca = &a->copy;
 	const struct nfsv4_cfh *src = &c->c_saved, *dst = &c->c_cur;
 	struct nfsv4_verifier verf;
+	struct nfsv4_offload *of;
+	struct nfsv4_stateid si;
 	char *buf;
 	uint64_t total, done;
-	uint32_t st, none = 0, committed = UNSTABLE4, met = 1;
-	size_t resid;
+	uint32_t st, none = 0, committed = UNSTABLE4, met = 1, one;
 	u_int n, got;
 	int error;
 
@@ -638,27 +858,46 @@ nfsv4_op_copy(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = copy_count(src, ca, &total);
 	if (st != NFS4_OK)
 		return st;
+	/* Past what is worth a thread here, if it may go elsewhere. */
+	if (!ca->synchronous && total > NFSV4_COPY_MAX && c->c_client != NULL) {
+		of = kmem_zalloc(sizeof(*of), KM_SLEEP);
+		of->of_src = src->cf_vp;
+		of->of_dst = dst->cf_vp;
+		vref(of->of_src);
+		vref(of->of_dst);
+		of->of_srccred = kauth_cred_hold(src->cf_cred);
+		of->of_dstcred = kauth_cred_hold(dst->cf_cred);
+		of->of_srcoff = ca->src_offset;
+		of->of_dstoff = ca->dst_offset;
+		of->of_total = total;
+		of->of_stable = FILE_SYNC4;
+		if (offload_start(c, of, &si)) {
+			one = 1;
+			done = 0;
+			met = 0;
+			nfsv4_write_verf(&verf);
+			return xdr_u_int32_t(c->c_rx, &one) &&
+			    nfsv4_xdr_stateid(c->c_rx, &si) &&
+			    xdr_u_int64_t(c->c_rx, &done) &&
+			    xdr_u_int32_t(c->c_rx, &committed) &&
+			    nfsv4_xdr_verifier(c->c_rx, &verf) &&
+			    xdr_u_int32_t(c->c_rx, &one) &&
+			    xdr_u_int32_t(c->c_rx, &met) ? NFS4_OK :
+			    NFS4ERR_RESOURCE;
+		}
+		offload_free(of);
+	}
 	total = MIN(total, NFSV4_COPY_MAX);
 
 	buf = kmem_alloc(NFSV4_MAXIO, KM_SLEEP);
 	error = 0;
 	for (done = 0; done < total && error == 0; done += got) {
 		n = MIN(total - done, NFSV4_MAXIO);
-		vn_lock(src->cf_vp, LK_SHARED | LK_RETRY);
-		error = vn_rdwr(UIO_READ, src->cf_vp, buf, n,
-		    ca->src_offset + done, UIO_SYSSPACE, IO_NODELOCKED,
-		    src->cf_cred, &resid, NULL);
-		VOP_UNLOCK(src->cf_vp);
-		got = error == 0 ? n - resid : 0;
+		error = copy_some(src->cf_vp, src->cf_cred,
+		    ca->src_offset + done, dst->cf_vp, dst->cf_cred,
+		    ca->dst_offset + done, buf, n, &got);
 		if (got == 0)
 			break;		/* the source has become shorter */
-		vn_lock(dst->cf_vp, LK_EXCLUSIVE | LK_RETRY);
-		error = vn_rdwr(UIO_WRITE, dst->cf_vp, buf, got,
-		    ca->dst_offset + done, UIO_SYSSPACE, IO_NODELOCKED,
-		    dst->cf_cred, NULL, NULL);
-		VOP_UNLOCK(dst->cf_vp);
-		if (error != 0)
-			got = 0;
 	}
 	kmem_free(buf, NFSV4_MAXIO);
 	if (error != 0 && done == 0)
@@ -674,15 +913,72 @@ nfsv4_op_copy(struct nfsv4_compound *c, union nfsv4_args *a)
 	    xdr_u_int32_t(c->c_rx, &met) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
+/* Find what a stateid names, for this client and file, s15.8.3. */
+static struct nfsv4_offload *
+offload_find(struct nfsv4_compound *c, const struct nfsv4_stateid *si)
+{
+	struct nfsv4_offload *of;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (c->c_client == NULL)
+		return NULL;
+	LIST_FOREACH(of, &offloads, of_list) {
+		if (memcmp(of->of_stateid.si_other, si->si_other,
+		    NFS4_OTHER_SIZE) == 0 &&
+		    of->of_clientid == c->c_client->cl_id &&
+		    of->of_fh.fh_len == c->c_cur.cf_fh.fh_len &&
+		    memcmp(of->of_fh.fh_data, c->c_cur.cf_fh.fh_data,
+		    of->of_fh.fh_len) == 0)
+			return of;
+	}
+	return NULL;
+}
+
+/* s15.8, and s4.1.2 for whose it is. */
+uint32_t
+nfsv4_op_offload_cancel(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	struct nfsv4_offload *of;
+	uint32_t st = NFS4_OK;
+
+	mutex_enter(&nfsv4_state_lock);
+	of = offload_find(c, &a->stateid.stateid);
+	if (of == NULL || of->of_uid != nfsv4_client_principal(c))
+		st = NFS4ERR_BAD_STATEID;
+	else
+		of->of_cancel = true;
+	mutex_exit(&nfsv4_state_lock);
+	return st;
+}
+
 /*
- * s15.8, s15.9.  Nothing is ever asynchronous here, so no stateid names
- * anything, draft-cel-nfsv4-copy-implementation-experience-03 s7.
+ * s15.9.  osr_complete has one element once it has finished, as draft-
+ * cel-nfsv4-copy-implementation-experience-03 s7 reads the RFC, and none
+ * before.
  */
 uint32_t
-nfsv4_op_offload(struct nfsv4_compound *c, union nfsv4_args *a)
+nfsv4_op_offload_status(struct nfsv4_compound *c, union nfsv4_args *a)
 {
+	struct nfsv4_offload *of;
+	uint64_t done = 0;
+	uint32_t st = NFS4_OK, status = 0, n = 0;
 
-	return NFS4ERR_BAD_STATEID;
+	mutex_enter(&nfsv4_state_lock);
+	of = offload_find(c, &a->stateid.stateid);
+	if (of == NULL)
+		st = NFS4ERR_BAD_STATEID;
+	else {
+		done = of->of_done;
+		n = of->of_finished ? 1 : 0;
+		status = of->of_status;
+	}
+	mutex_exit(&nfsv4_state_lock);
+	if (st != NFS4_OK)
+		return st;
+	return xdr_u_int64_t(c->c_rx, &done) && xdr_u_int32_t(c->c_rx, &n) &&
+	    (n == 0 || xdr_u_int32_t(c->c_rx, &status)) ? NFS4_OK :
+	    NFS4ERR_RESOURCE;
 }
 
 /*
@@ -737,10 +1033,11 @@ nfsv4_op_io_advise(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
- * s15.12, ADBs of s8.1.1.  Stops short of block_count past NFSV4_COPY_MAX
- * bytes, on a whole block, wr_count telling where: the alternative of
- * s15.12.3.1 needs CB_OFFLOAD.  The RFC gives adb_block_num a type but
- * not a form in the block; 32 bits big-endian is what s8.3 shows.
+ * s15.12, ADBs of s8.1.1.  All of adb_block_count is written, as s15.12.3
+ * must have it: past NFSV4_COPY_MAX in a thread where the client can be
+ * told, s15.12.3.1, and here where it cannot.  The RFC gives
+ * adb_block_num a type but not a form in the block; 32 bits big-endian
+ * is what s8.3 shows.
  */
 uint32_t
 nfsv4_op_write_same(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -749,9 +1046,11 @@ nfsv4_op_write_same(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_cfh *cf = &c->c_cur;
 	struct vnode *vp = cf->cf_vp;
 	struct nfsv4_verifier verf;
+	struct nfsv4_offload *of;
+	struct nfsv4_stateid si;
 	char *buf;
 	uint64_t bs, count, done, i;
-	uint32_t st, none = 0, committed;
+	uint32_t st, none = 0, committed, one;
 	u_int end;
 	bool num;
 	int error;
@@ -769,9 +1068,10 @@ nfsv4_op_write_same(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (num && (bs < sizeof(uint32_t) ||
 	    wa->reloff_blocknum > bs - sizeof(uint32_t)))
 		return NFS4ERR_INVAL;
-	count = MIN(wa->block_count, NFSV4_COPY_MAX / bs);
-	if (wa->offset > (uint64_t)INT64_MAX ||
-	    count * bs > (uint64_t)INT64_MAX - wa->offset)
+	if (wa->offset > (uint64_t)INT64_MAX)
+		return NFS4ERR_FBIG;
+	count = wa->block_count;
+	if (count > ((uint64_t)INT64_MAX - wa->offset) / bs)
 		return NFS4ERR_FBIG;
 
 	buf = kmem_zalloc(bs, KM_SLEEP);
@@ -783,6 +1083,35 @@ nfsv4_op_write_same(struct nfsv4_compound *c, union nfsv4_args *a)
 			kmem_free(buf, bs);
 			return NFS4ERR_BADXDR;
 		}
+	}
+
+	if (count * bs > NFSV4_COPY_MAX && c->c_client != NULL) {
+		of = kmem_zalloc(sizeof(*of), KM_SLEEP);
+		of->of_dst = vp;
+		vref(vp);
+		of->of_dstcred = kauth_cred_hold(cf->cf_cred);
+		of->of_dstoff = wa->offset;
+		of->of_total = count;
+		of->of_block = buf;
+		of->of_bs = bs;
+		of->of_num = num;
+		of->of_numoff = wa->reloff_blocknum;
+		of->of_firstnum = wa->block_num;
+		of->of_stable = wa->stable;
+		if (offload_start(c, of, &si)) {
+			done = 0;
+			one = 1;
+			committed = wa->stable;
+			nfsv4_write_verf(&verf);
+			return xdr_u_int32_t(c->c_rx, &one) &&
+			    nfsv4_xdr_stateid(c->c_rx, &si) &&
+			    xdr_u_int64_t(c->c_rx, &done) &&
+			    xdr_u_int32_t(c->c_rx, &committed) &&
+			    nfsv4_xdr_verifier(c->c_rx, &verf) ? NFS4_OK :
+			    NFS4ERR_RESOURCE;
+		}
+		of->of_block = NULL;	/* still ours, below */
+		offload_free(of);
 	}
 
 	error = 0;

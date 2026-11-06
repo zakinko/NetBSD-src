@@ -273,6 +273,46 @@ cb_authsys(char *buf, size_t len, uid_t uid, gid_t gid)
 	return n;
 }
 
+struct cb_offload_args {
+	const struct cb_target *oa_ct;
+	struct nfsv4_fh	oa_fh;
+	struct nfsv4_stateid oa_stateid;
+	uint32_t	oa_status;
+	uint64_t	oa_count;
+	uint32_t	oa_committed;
+	struct nfsv4_verifier oa_verf;
+};
+
+/* CB_SEQUENCE then CB_OFFLOAD, RFC 7862 s16.1, at minor version 2. */
+static bool
+cb_offload_encode(XDR *x, void *arg)
+{
+	struct cb_offload_args *oa = arg;
+	const struct cb_target *ct = oa->oa_ct;
+	uint32_t zero = 0, two = 2, seqop = NFSV4_OP_CB_SEQUENCE;
+	uint32_t op = NFSV4_OP_CB_OFFLOAD, seq = ct->ct_seq;
+	struct nfsv4_sessionid sid = ct->ct_sid;
+
+	if (!xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
+	    !xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
+	    !xdr_u_int32_t(x, &seqop) || !nfsv4_xdr_sessionid(x, &sid) ||
+	    !xdr_u_int32_t(x, &seq) ||
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_slotid */
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_highest_slotid */
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_cachethis */
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_referring_call_lists */
+	    !xdr_u_int32_t(x, &op) || !nfsv4_xdr_fh(x, &oa->oa_fh) ||
+	    !nfsv4_xdr_stateid(x, &oa->oa_stateid) ||
+	    !xdr_u_int32_t(x, &oa->oa_status))
+		return false;
+	if (oa->oa_status != NFS4_OK)
+		return xdr_u_int64_t(x, &oa->oa_count);
+	/* s16.1.3: wr_callback_id MUST NOT be set. */
+	return xdr_u_int32_t(x, &zero) && xdr_u_int64_t(x, &oa->oa_count) &&
+	    xdr_u_int32_t(x, &oa->oa_committed) &&
+	    nfsv4_xdr_verifier(x, &oa->oa_verf);
+}
+
 /*
  * CB_COMPOUND4args up to the one operation that matters, s17.2.2.  RFC
  * 8881 s18.36.3 has minor version 1, and s20.9 a CB_SEQUENCE first, with
@@ -549,6 +589,52 @@ cb_do_recall(struct nfsv4_state *st)
 		if (error == 0)
 			nfsv4_client_renew(st->st_owner->sw_client);
 	}
+}
+
+/*
+ * Tell a client an operation has finished.  This one is called from a
+ * thread with nothing else to do, so it waits for the call itself.
+ */
+int
+nfsv4_cb_offload(uint64_t clientid, const struct nfsv4_fh *fh,
+    const struct nfsv4_stateid *si, uint32_t status, uint64_t count,
+    uint32_t committed, const struct nfsv4_verifier *verf)
+{
+	struct cb_offload_args oa;
+	struct cb_target ct;
+	struct nfsv4_client *cl;
+	uint32_t res = NFS4ERR_RESOURCE;
+	int error;
+
+	mutex_enter(&nfsv4_state_lock);
+	cl = nfsv4_client_byid41(clientid);
+	if (cl == NULL || cl->cl_retired) {
+		mutex_exit(&nfsv4_state_lock);
+		return 0;		/* nobody to tell */
+	}
+	if (!cb_target_get(cl, &ct) || ct.ct_sess == NULL) {
+		mutex_exit(&nfsv4_state_lock);
+		return EAGAIN;
+	}
+	mutex_exit(&nfsv4_state_lock);
+
+	memset(&oa, 0, sizeof(oa));
+	oa.oa_ct = &ct;
+	oa.oa_fh = *fh;
+	oa.oa_stateid = *si;
+	oa.oa_status = status;
+	oa.oa_count = count;
+	oa.oa_committed = committed;
+	oa.oa_verf = *verf;
+	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_offload_encode, &oa,
+	    cb_status_decode, &res);
+	mutex_enter(&nfsv4_state_lock);
+	cb_target_put(&ct, error);
+	cb_path(&ct, error == 0);
+	mutex_exit(&nfsv4_state_lock);
+	if (error == 0 && res != NFS4_OK)
+		error = EAGAIN;
+	return error;
 }
 
 static void

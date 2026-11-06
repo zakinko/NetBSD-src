@@ -250,6 +250,7 @@
 #define	NFSV4_OP_CB_GETATTR	3
 #define	NFSV4_OP_CB_RECALL	4
 #define	NFSV4_OP_CB_SEQUENCE	11	/* RFC 8881 s20.9 */
+#define	NFSV4_OP_CB_OFFLOAD	15	/* RFC 7863 s2 */
 
 /* RFC 7531 s2, attribute numbers; RFC 7530 s5.6, s5.7 */
 #define	FATTR4_SUPPORTED_ATTRS	0

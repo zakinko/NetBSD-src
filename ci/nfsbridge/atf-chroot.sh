@@ -22,6 +22,9 @@ diag() {
 	sleep 1; kill $p 2>/dev/null; wait $p; echo "server status $?"
 	cat rs.log
 	ls -la
+	[ -f rump_server.core ] && gdb -batch -ex 'bt 30' -ex 'info threads' \
+	    "$(command -v rump_server)" rump_server.core 2>&1
+	rm -f rump_server.core
 	unset RUMP_SERVER RUMP_VERBOSE
 }
 diag bridge
@@ -43,6 +46,7 @@ echo "bridge failures: $f"
 so=$(ls /usr/lib/librumpfs_nfsserver.so.*.* | head -1)
 cp $so /usr/lib/bridge-nfsserver.so
 cp /usr/lib/stock-nfsserver.so $so
+diag stock
 echo '=== control: stock library'
 cd /usr/tests/fs/nfs
 atf-run | tee /var/tmp/raw.stock | atf-report

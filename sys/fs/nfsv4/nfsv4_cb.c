@@ -99,6 +99,7 @@ struct cb_target {
 	uint64_t	ct_conn;
 	struct nfsv4_sessionid ct_sid;
 	uint32_t	ct_seq;
+	uint32_t	ct_vers;
 };
 
 struct cb_recall_args {
@@ -370,8 +371,7 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 		return EADDRNOTAVAIL;
 	memset(&cc, 0, sizeof(cc));
 	cc.cc_prog = ct->ct_prog;
-	/* RFC 8881 s18.36.3 */
-	cc.cc_vers = ct->ct_sess != NULL ? NFSV4_VERSION : NFSV4_CB_VERSION;
+	cc.cc_vers = ct->ct_vers;
 	cc.cc_proc = proc;
 	cc.cc_flavor = ct->ct_flavor;
 	if (ct->ct_flavor == ONCRPC_AUTH_SYS) {
@@ -403,6 +403,7 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_uid = cl->cl_uid;
 	ct->ct_gid = cl->cl_gid;
 	ct->ct_sess = NULL;
+	ct->ct_vers = NFSV4_CB_VERSION;
 	if (cl->cl_minor == 0)
 		return true;
 	se = nfsv4_session_cbget(cl, &ct->ct_conn);
@@ -411,6 +412,7 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_sess = se;
 	ct->ct_sid = se->se_id;
 	ct->ct_seq = se->se_cbseq;
+	ct->ct_vers = se->se_cbvers;
 	ct->ct_prog = se->se_cbprog;
 	ct->ct_flavor = se->se_cbsec.cs_flavor;
 	ct->ct_uid = se->se_cbsec.cs_uid;
@@ -453,6 +455,18 @@ cb_do_probe(struct nfsv4_client *cl)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL, NULL);
+	/*
+	 * RFC 8881 s18.36.3 says version 4, and is what is tried, but the
+	 * XDR of RFC 5662 has "version NFS_CB = 1": a client may have
+	 * followed that, and refuse the other with PROG_MISMATCH.
+	 */
+	if (error == EPROTO && ct.ct_sess != NULL) {
+		ct.ct_vers = NFSV4_CB_VERSION;
+		error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL,
+		    NULL);
+		if (error == 0)
+			ct.ct_sess->se_cbvers = ct.ct_vers;
+	}
 	mutex_enter(&nfsv4_state_lock);
 	/* Nothing in CB_NULL is sequenced. */
 	cb_target_put(&ct, EAGAIN);

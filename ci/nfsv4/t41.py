@@ -16,8 +16,7 @@ def t(name, got, want):
     global fails
     want = want if isinstance(want, (list, tuple)) else [want]
     ok = got in want
-    print("%s %s: got %s, want %s" % ("ok  " if ok else "FAIL", name,
-          nfs4lib.nfsstat4.get(got, got) if hasattr(nfs4lib, 'nfsstat4') else got, want))
+    print("%s %s: got %s, want %s" % ("ok  " if ok else "FAIL", name, got, want))
     if not ok:
         fails += 1
 
@@ -143,7 +142,10 @@ t("s18.37 destroyed", c.compound([op.destroy_session(s3.sessionid)], pipe=first)
   NFS4_OK)
 
 # s2.10.6.2: a retry of a call still running.  Timing decides, so tries.
-s4 = sess_of(b"delay")
+cl4 = c.new_client(stamp + b"delay")
+big = channel_attrs4(0, 512 * 1024, 8192, 8192, 16, 8, [])
+s4 = cl4.create_session(fore_attrs=big)
+s4.compound([op.reclaim_complete(FALSE)])
 res = create_file(s4, stamp + b"d", path=export + [stamp + b"d"])
 check(res)
 fh = res.resarray[-1].object
@@ -154,7 +156,7 @@ data = b"x" * 131072
 seen = {}
 for i in range(30):
     seqop = r4.op(True)
-    ops = [seqop, op.putfh(fh)] + [op.write(sid, 0, FILE_SYNC4, data)] * 8
+    ops = [seqop, op.putfh(fh)] + [op.write(sid, 0, FILE_SYNC4, data)] * 3
     xid = c.compound_async(ops)
     res2 = c.compound([seqop, op.putfh(fh)], pipe=q)
     seen[res2.status] = seen.get(res2.status, 0) + 1

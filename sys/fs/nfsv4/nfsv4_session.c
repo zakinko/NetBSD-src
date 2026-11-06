@@ -686,6 +686,7 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	se->se_cbprog = ca->cb_program;
 	se->se_cbsec = ca->sec;
 	se->se_cbseq = 1;		/* s18.36.3 */
+	se->se_cbvers = NFSV4_VERSION;	/* s18.36.3 */
 	se->se_cost = cost;
 	nfsv4_ses_cost += cost;
 	flags = ca->flags & CREATE_SESSION4_FLAG_CONN_BACK_CHAN;

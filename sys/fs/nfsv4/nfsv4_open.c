@@ -45,6 +45,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/uio.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/oncrpc.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -264,6 +266,27 @@ open_access(const struct nfsv4_cfh *cf, struct vnode *vp, uint32_t access)
 	return NFS4_OK;
 }
 
+/* For NLM_SHARE: oncrpc_share_register().  Called with no NLM lock held. */
+bool
+nfsv4_share_conflict(struct vnode *vp, uint32_t access, uint32_t deny)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	bool conflict = false;
+
+	mutex_enter(&nfsv4_state_lock);
+	if ((f = nfsv4_file_find(vp)) != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type == NFSV4_ST_OPEN &&
+			    ((access & st->st_deny) != 0 ||
+			    (deny & st->st_access) != 0))
+				conflict = true;
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return conflict;
+}
+
 /*
  * s9.9: the test against everything open on the file, with no exception
  * for this owner, then the state, s9.11: an owner has one open of a
@@ -291,6 +314,11 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, uint32_t access,
 			if (st->st_owner == sw)
 				mine = st;
 		}
+	}
+	/* NLM_SHARE, C702 ch. 10, on the same file. */
+	if (oncrpc_share_conflict(ONCRPC_SHARE_NFSV4, vp, access, deny)) {
+		mutex_exit(&nfsv4_state_lock);
+		return NFS4ERR_SHARE_DENIED;
 	}
 	if (mine != NULL)
 		mine->st_seqid++;

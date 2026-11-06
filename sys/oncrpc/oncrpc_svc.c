@@ -863,8 +863,7 @@ oncrpc_svc_register(struct oncrpc_svc *svc, const struct oncrpc_program *op)
 {
 	struct oncrpc_prog *pg, *new;
 
-	if (op->op_vers_low == 0 || op->op_vers_low > op->op_vers_high ||
-	    op->op_dispatch == NULL)
+	if (op->op_vers_low > op->op_vers_high || op->op_dispatch == NULL)
 		return EINVAL;
 
 	new = kmem_zalloc(sizeof(*new), KM_SLEEP);

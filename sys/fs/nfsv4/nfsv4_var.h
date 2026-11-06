@@ -189,4 +189,6 @@ uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_restorefh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_savefh(struct nfsv4_compound *, union nfsv4_args *);
 
+bool	nfsv4_share_conflict(struct vnode *, uint32_t, uint32_t);
+
 #endif /* !_FS_NFSV4_NFSV4_VAR_H_ */

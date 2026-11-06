@@ -401,9 +401,12 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 			nfsv4_state_fini();
 			return error;
 		}
+		oncrpc_share_register(ONCRPC_SHARE_NFSV4,
+		    nfsv4_share_conflict);
 		nfsv4_sysctl_init();
 		return 0;
 	case MODULE_CMD_FINI:
+		oncrpc_share_register(ONCRPC_SHARE_NFSV4, NULL);
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
 		/* The server may go on, for versions 2 and 3. */

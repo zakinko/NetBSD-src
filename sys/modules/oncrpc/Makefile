@@ -6,6 +6,6 @@ KMOD=	oncrpc
 
 .PATH:	${S}/oncrpc
 
-SRCS+=	oncrpc_auth.c oncrpc_msg.c oncrpc_rm.c oncrpc_svc.c
+SRCS+=	oncrpc_auth.c oncrpc_clnt.c oncrpc_msg.c oncrpc_rm.c oncrpc_svc.c
 
 .include <bsd.kmodule.mk>

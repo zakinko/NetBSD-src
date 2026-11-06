@@ -84,6 +84,7 @@
 
 struct file;
 struct mbuf;
+struct sockaddr;
 struct socket;
 struct oncrpc_svc;
 struct oncrpc_req;
@@ -161,5 +162,43 @@ void	oncrpc_req_takemsg(struct oncrpc_req *, struct mbuf **, struct mbuf **,
 void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
 	    void (*)(void *));
 void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
+
+/*
+ * Calling out, over UDP from a reserved port, as the credential given or
+ * root with NULL.  What to call is a whole address.  tries of 0 sends once
+ * and looks for no reply, with xres unused.  Otherwise it may sleep tries *
+ * timo seconds, and ETIMEDOUT means no reply; a reply that is not SUCCESS
+ * is EPROTO.
+ */
+int	oncrpc_clnt_call(const struct sockaddr *, uint32_t, uint32_t, uint32_t,
+	    xdrproc_t, void *, xdrproc_t, void *, u_int, u_int, kauth_cred_t);
+int	oncrpc_clnt_call_tcp(const struct sockaddr *, uint32_t, uint32_t,
+	    uint32_t, xdrproc_t, void *, xdrproc_t, void *, u_int,
+	    kauth_cred_t);
+int	oncrpc_clnt_getport(const struct sockaddr *, uint32_t, uint32_t, int,
+	    uint16_t *);
+
+/*
+ * The lock grace period, which is the host's and not one protocol's: a
+ * lock manager reclaiming the locks of a previous boot must not find them
+ * taken through another protocol.  Whoever recovers locks starts it.
+ */
+void	oncrpc_grace_start(u_int);
+bool	oncrpc_grace_active(void);
+
+/*
+ * Share reservations are also the host's: NFSv4 OPEN and NLM_SHARE deny
+ * each other.  The access and deny bits of both line up, read 1, write 2.
+ * A server asks the others with its own state already in place, so of two
+ * at once both may fail but neither passes unseen.  fn may take its own
+ * lock and not sleep otherwise; the order is NFSv4's, then NLM's.
+ */
+#define	ONCRPC_SHARE_NFSV4	0
+#define	ONCRPC_SHARE_NLM	1
+#define	ONCRPC_SHARE_NSLOTS	2
+struct vnode;
+typedef bool (*oncrpc_share_fn)(struct vnode *, uint32_t, uint32_t);
+void	oncrpc_share_register(u_int, oncrpc_share_fn);
+bool	oncrpc_share_conflict(u_int, struct vnode *, uint32_t, uint32_t);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

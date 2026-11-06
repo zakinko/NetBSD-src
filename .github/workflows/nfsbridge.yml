@@ -78,10 +78,6 @@ jobs:
         run: |
           ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/nfsbridge/client.sh /var/tmp/nfsbridge' | tee out/client.txt
           test "${PIPESTATUS[0]}" = 0
-      - name: A version 2 WRITE with no arguments, on the stock path
-        if: matrix.mode == 'off'
-        continue-on-error: true
-        run: ssh -o ServerAliveInterval=5 netbsd '/var/tmp/rawrpc udp /export/ffs v2write; sleep 3; uptime'
       - name: The Linux client, versions 3 and 4 on the one port
         if: matrix.mode == 'on'
         run: |

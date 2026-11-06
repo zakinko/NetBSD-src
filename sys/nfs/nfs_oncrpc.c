@@ -351,7 +351,7 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 	case RC_DOIT:
 		if (!v3 && nd->nd_procnum == NFSPROC_WRITE &&
 		    nfsrvw_procrastinate > 0) {
-			/* nfsrv_writegather() would make this an EIO. */
+			/* Too short to be a WRITE, as for nfsm_dissect(). */
 			if (nfs_oncrpc_avail(nd) < NFSX_V2WRITEHDR) {
 				m_freem(nd->nd_mrep);
 				nfsrv_updatecache(nd, false, NULL);

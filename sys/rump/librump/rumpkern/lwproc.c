@@ -275,6 +275,12 @@ lwproc_newproc(struct proc *parent, struct vmspace *vm, int flags)
 	mutex_enter(&proc_lock);
 	LIST_INSERT_HEAD(&allproc, p, p_list);
 	LIST_INSERT_HEAD(&parent->p_children, p, p_sibling);
+	/*
+	 * On the list of the parent's group, so of that group.  proc_alloc()
+	 * does not clear this, and proc_leavepgrp() follows it when the
+	 * process goes, which is what a client's disconnect comes to.
+	 */
+	p->p_pgrp = parent->p_pgrp;
 	LIST_INSERT_AFTER(parent, p, p_pglist);
 	mutex_exit(&proc_lock);
 

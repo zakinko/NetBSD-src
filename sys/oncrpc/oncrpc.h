@@ -106,6 +106,8 @@ struct oncrpc_clnt_call {
 	const void	*cc_verf;	/* the verifier; flavor from cc_gss */
 	uint32_t	cc_verflen;
 };
+struct oncrpc_xprt;
+struct oncrpc_rdma_ulb;
 
 /* What a program's dispatch wants done with the request. */
 enum oncrpc_dispatch {
@@ -131,6 +133,7 @@ struct oncrpc_program {
 	enum oncrpc_dispatch
 			(*op_dispatch)(struct oncrpc_req *);
 	void		*op_arg;
+	const struct oncrpc_rdma_ulb *op_ulb;	/* NULL: nothing is DDP-eligible */
 };
 
 /*
@@ -153,6 +156,8 @@ struct oncrpc_req {
 	XDR		*rq_args;
 	XDR		*rq_res;
 	struct mbuf	*rq_raw;	/* for ONCRPC_RAWREPLY */
+	struct oncrpc_xprt *rq_xprt;
+	void		*rq_xctx;	/* the transport's, of this call */
 };
 
 int	oncrpc_svc_create(const char *, u_int, struct oncrpc_svc **);
@@ -191,5 +196,7 @@ void	oncrpc_req_takemsg(struct oncrpc_req *, struct mbuf **, struct mbuf **,
 void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
 	    void (*)(void *));
 void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
+int	oncrpc_svc_addrdma(struct oncrpc_svc *, struct file *, struct mbuf *);
+void	oncrpc_req_ddp_result(struct oncrpc_req *, u_int, u_int);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

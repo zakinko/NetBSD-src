@@ -100,6 +100,83 @@ struct oncrpc_rm {
 	bool		rm_last;	/* this fragment ends the record */
 };
 
+/*
+ * None of these come from the RFC.  ONCRPC_MAXMSG is the largest record
+ * accepted.
+ */
+#define	ONCRPC_MAXMSG		(1024 * 1024)
+
+/* xp_flags */
+#define	XP_READABLE	0x01	/* the transport may have something */
+#define	XP_QUEUED	0x02	/* on svc_pending */
+#define	XP_RECEIVING	0x04	/* a worker is in xo_recv */
+#define	XP_SENDING	0x08	/* a worker is in xo_send */
+#define	XP_DEAD		0x10	/* shut down, off svc_xprts */
+
+struct socket;
+struct oncrpc_xprt;
+struct oncrpc_ireq;
+struct oncrpc_rdma_ulb;
+struct oncrpc_bcall;
+struct oncrpc_program;
+
+/*
+ * What differs from one transport to another.  xo_recv is called by one
+ * worker at a time.  It returns the next message in *mp, or leaves that
+ * NULL with nothing to do yet, or returns an error, which takes the
+ * xprt away.  *namp is the sender on a transport with no one peer, and
+ * *ctxp what the transport wants to have when replying to this call,
+ * given back to xo_send and to xo_ctxfree.  xo_send consumes the reply
+ * and is called by one worker at a time.  xo_shutdown wakes anything
+ * sleeping in the others; the last two are for a transport with such a
+ * thing to do.
+ */
+struct oncrpc_xprt_ops {
+	int	(*xo_recv)(struct oncrpc_xprt *, struct mbuf **, struct mbuf **,
+		    void **);
+	int	(*xo_send)(struct oncrpc_xprt *, struct mbuf *, struct mbuf *,
+		    void *);
+	void	(*xo_shutdown)(struct oncrpc_xprt *);
+	void	(*xo_destroy)(struct oncrpc_xprt *);
+	void	(*xo_ctxfree)(struct oncrpc_xprt *, void *);
+	void	(*xo_ddp_result)(void *, u_int, u_int);
+	void	(*xo_ddp_fix)(void *, u_int, bool);
+};
+
+struct oncrpc_xprt {
+	struct oncrpc_svc	*xp_svc;
+	const struct oncrpc_xprt_ops *xp_ops;
+	void			*xp_priv;
+	struct file		*xp_fp;		/* NULL with no socket */
+	struct socket		*xp_so;
+	struct mbuf		*xp_nam;	/* the peer, if connected */
+	const void		*xp_tag;	/* for closesocks */
+	const struct oncrpc_program *xp_lastop;	/* served last */
+	bool			 xp_mixed;	/* has served more than one */
+	void			*xp_ctx;	/* see oncrpc_req_ctx() */
+	void			(*xp_ctxdtor)(void *);
+	u_int			 xp_refs;
+	u_int			 xp_flags;
+	u_int			 xp_nreqs;	/* calls in progress */
+	uint64_t		 xp_id;		/* rq_connid */
+	LIST_HEAD(, oncrpc_bcall) xp_bcalls;	/* waiting for a reply */
+	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
+	LIST_ENTRY(oncrpc_xprt)	 xp_list;
+	SIMPLEQ_HEAD(, oncrpc_ireq) xp_sendq;
+};
+
+struct oncrpc_xprt *
+	oncrpc_xprt_create(struct oncrpc_svc *,
+	    const struct oncrpc_xprt_ops *, void *, struct mbuf *);
+void	oncrpc_xprt_start(struct oncrpc_xprt *);
+int	oncrpc_xprt_addsock(struct oncrpc_svc *, struct file *, struct mbuf *,
+	    const struct oncrpc_xprt_ops *, void *);
+void	oncrpc_xprt_ready(struct oncrpc_xprt *);
+void	oncrpc_xprt_rele(struct oncrpc_xprt *);
+void	oncrpc_xprt_zap(struct oncrpc_xprt *);
+const struct oncrpc_rdma_ulb *
+	oncrpc_svc_ulb(struct oncrpc_svc *, uint32_t, uint32_t);
+
 void	oncrpc_rm_init(struct oncrpc_rm *, u_int);
 void	oncrpc_rm_fini(struct oncrpc_rm *);
 void	oncrpc_rm_input(struct oncrpc_rm *, struct mbuf *, u_int);

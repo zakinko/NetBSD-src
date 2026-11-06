@@ -31,12 +31,14 @@
  * and dispatch by (program, version).  The socket handling follows
  * nfssvc_addsock(), nfsrv_rcv() and nfsdsock_sendreply().
  *
- * A socket is an xprt.  Its upcall runs with the socket locked and
- * cannot receive, so it only marks the xprt and queues it for a worker.
- * One worker at a time receives on an xprt, as a connection has one
- * record marking state.  Having got a message it puts the xprt back on
- * the queue for the next one, and goes off to serve the call, so calls
- * on one connection run in parallel and replies go out in any order.
+ * An xprt is one transport endpoint, and what the framing of its
+ * messages is lies behind its xprt_ops.  A socket's upcall runs with
+ * the socket locked and cannot receive, so it only marks the xprt and
+ * queues it for a worker.  One worker at a time receives on an xprt, as
+ * a connection has one record marking state.  Having got a message it
+ * puts the xprt back on the queue for the next one, and goes off to
+ * serve the call, so calls on one connection run in parallel and
+ * replies go out in any order.
  *
  * svc_lock covers everything below that is not marked otherwise.  It
  * is taken in the upcall with the socket lock held, so the order is
@@ -83,7 +85,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * bounds the calls one peer can have in progress; beyond that its data
  * stays in the socket and TCP pushes back.
  */
-#define	ONCRPC_MAXMSG		(1024 * 1024)
 #define	ONCRPC_SOCKBUF		(128 * 1024)
 #define	ONCRPC_XPRT_MAXREQS	64
 #define	ONCRPC_BCALL_MAX	(64 * 1024)	/* a call of ours */
@@ -91,7 +92,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	ONCRPC_RCVALL		1000000000	/* as nfsrv_rcv() */
 
 struct oncrpc_ireq;
-struct oncrpc_xprt;
 
 /* A call of ours on a peer's connection; see oncrpc_svc_call(). */
 struct oncrpc_bcall {
@@ -132,33 +132,6 @@ struct oncrpc_svc {
 	u_int			 svc_refs;
 };
 
-/* xp_flags */
-#define	XP_READABLE	0x01	/* the socket may have something */
-#define	XP_QUEUED	0x02	/* on svc_pending */
-#define	XP_RECEIVING	0x04	/* a worker is in xprt_getmsg() */
-#define	XP_SENDING	0x08	/* a worker is in xprt_send() */
-#define	XP_DEAD		0x10	/* shut down, off svc_xprts */
-
-struct oncrpc_xprt {
-	struct oncrpc_svc	*xp_svc;
-	file_t			*xp_fp;
-	struct socket		*xp_so;
-	struct mbuf		*xp_nam;	/* the peer, if connected */
-	const void		*xp_tag;	/* for closesocks */
-	const struct oncrpc_program *xp_lastop;	/* served last */
-	bool			 xp_mixed;	/* has served more than one */
-	void			*xp_ctx;	/* see oncrpc_req_ctx() */
-	void			(*xp_ctxdtor)(void *);
-	u_int			 xp_refs;
-	u_int			 xp_flags;
-	u_int			 xp_nreqs;	/* calls in progress */
-	uint64_t		 xp_id;		/* rq_connid */
-	LIST_HEAD(, oncrpc_bcall) xp_bcalls;	/* waiting for a reply */
-	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
-	LIST_ENTRY(oncrpc_xprt)	 xp_list;
-	SIMPLEQ_HEAD(, oncrpc_ireq) xp_sendq;
-	struct oncrpc_rm	 xp_rm;		/* XP_RECEIVING holder's */
-};
 
 /* A request, with what the program does not see. */
 struct oncrpc_ireq {
@@ -172,9 +145,13 @@ struct oncrpc_ireq {
 	struct oncrpc_xdrmbuf	 ir_res;
 	struct oncrpc_call	 ir_call;
 	struct oncrpc_gss_call	 ir_gss;
+	void			*ir_xctx;	/* the transport's, of this call */
 };
 
 static u_int oncrpc_nsvc;
+static const struct oncrpc_xprt_ops xprt_stream_ops;
+static int xprt_addsock(struct oncrpc_svc *, file_t *, struct mbuf *,
+    const void *, const struct oncrpc_xprt_ops *, void *);
 static kmutex_t oncrpc_named_lock;
 static LIST_HEAD(, oncrpc_svc) oncrpc_named =
     LIST_HEAD_INITIALIZER(oncrpc_named);
@@ -201,7 +178,14 @@ xprt_queue(struct oncrpc_xprt *xp)
 static void
 xprt_upcall(struct socket *so, void *arg, int events, int waitflag)
 {
-	struct oncrpc_xprt *xp = arg;
+
+	oncrpc_xprt_ready(arg);
+}
+
+/* Something may have come in, from outside the worker. */
+void
+oncrpc_xprt_ready(struct oncrpc_xprt *xp)
+{
 	struct oncrpc_svc *svc = xp->xp_svc;
 
 	mutex_enter(&svc->svc_lock);
@@ -210,8 +194,8 @@ xprt_upcall(struct socket *so, void *arg, int events, int waitflag)
 	mutex_exit(&svc->svc_lock);
 }
 
-static void
-xprt_rele(struct oncrpc_xprt *xp)
+void
+oncrpc_xprt_rele(struct oncrpc_xprt *xp)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
 
@@ -227,22 +211,23 @@ xprt_rele(struct oncrpc_xprt *xp)
 	KASSERT(SIMPLEQ_EMPTY(&xp->xp_sendq));
 	if (xp->xp_ctx != NULL)
 		(*xp->xp_ctxdtor)(xp->xp_ctx);
-	oncrpc_rm_fini(&xp->xp_rm);
+	if (xp->xp_ops->xo_destroy != NULL)
+		(*xp->xp_ops->xo_destroy)(xp);
 	m_freem(xp->xp_nam);
-	closef(xp->xp_fp);
+	if (xp->xp_fp != NULL)
+		closef(xp->xp_fp);
 	kmem_free(xp, sizeof(*xp));
 }
 
 /*
- * Shut the socket and drop the reference held by being on svc_xprts.
+ * Shut the transport and drop the reference held by being on svc_xprts.
  * Requests in progress hold their own and finish; their replies fail
- * at the socket.
+ * at the transport.
  */
-static void
-xprt_zap(struct oncrpc_xprt *xp)
+void
+oncrpc_xprt_zap(struct oncrpc_xprt *xp)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
-	struct socket *so = xp->xp_so;
 
 	mutex_enter(&svc->svc_lock);
 	if ((xp->xp_flags & XP_DEAD) != 0) {
@@ -259,23 +244,33 @@ xprt_zap(struct oncrpc_xprt *xp)
 	cv_broadcast(&svc->svc_bcv);
 	mutex_exit(&svc->svc_lock);
 
+	(*xp->xp_ops->xo_shutdown)(xp);
+
+	oncrpc_xprt_rele(xp);
+}
+
+static void
+xprt_sock_shutdown(struct oncrpc_xprt *xp)
+{
+	struct socket *so = xp->xp_so;
+
 	solock(so);
 	so->so_upcall = NULL;
 	so->so_upcallarg = NULL;
 	so->so_rcv.sb_flags &= ~SB_UPCALL;
 	soshutdown(so, SHUT_RDWR);
 	sounlock(so);
-
-	xprt_rele(xp);
 }
 
 /*
- * The next message on a stream socket, or NULL with nothing to do yet.
+ * The next message on a stream socket, or none with nothing to do yet.
  * A stream that ends or breaks takes the xprt with it.
  */
-static struct mbuf *
-xprt_getmsg_stream(struct oncrpc_xprt *xp)
+static int
+xprt_stream_recv(struct oncrpc_xprt *xp, struct mbuf **mp, struct mbuf **namp,
+    void **ctxp)
 {
+	struct oncrpc_rm *rm = xp->xp_priv;
 	struct socket *so = xp->xp_so;
 	struct mbuf *m, *nam;
 	struct uio auio;
@@ -283,11 +278,13 @@ xprt_getmsg_stream(struct oncrpc_xprt *xp)
 	int error, flags;
 
 	for (;;) {
-		error = oncrpc_rm_next(&xp->xp_rm, &m);
-		if (error == 0)
-			return m;
+		error = oncrpc_rm_next(rm, &m);
+		if (error == 0) {
+			*mp = m;
+			return 0;
+		}
 		if (error != EAGAIN)
-			goto bad;
+			return error;
 
 		m = nam = NULL;
 		auio.uio_resid = ONCRPC_RCVALL;
@@ -297,20 +294,19 @@ xprt_getmsg_stream(struct oncrpc_xprt *xp)
 		m_freem(nam);
 		if (m == NULL) {
 			if (error == EWOULDBLOCK)
-				return NULL;
-			goto bad;	/* an error, or the end of the stream */
+				return 0;
+			/* An error, or the end of the stream. */
+			return error != 0 ? error : EPIPE;
 		}
 		cc = ONCRPC_RCVALL - auio.uio_resid;
-		oncrpc_rm_input(&xp->xp_rm, m, cc);
+		oncrpc_rm_input(rm, m, cc);
 	}
-bad:
-	xprt_zap(xp);
-	return NULL;
 }
 
 /* The next datagram, with its sender in *namp. */
-static struct mbuf *
-xprt_getmsg_dgram(struct oncrpc_xprt *xp, struct mbuf **namp)
+static int
+xprt_dgram_recv(struct oncrpc_xprt *xp, struct mbuf **mp, struct mbuf **namp,
+    void **ctxp)
 {
 	struct socket *so = xp->xp_so;
 	struct mbuf *m, *nam;
@@ -325,11 +321,12 @@ xprt_getmsg_dgram(struct oncrpc_xprt *xp, struct mbuf **namp)
 		(void)(*so->so_receive)(so, &nam, &auio, &m, NULL, &flags);
 		if (m == NULL) {
 			m_freem(nam);
-			return NULL;
+			return 0;
 		}
 		if (nam != NULL) {
+			*mp = m;
 			*namp = nam;
-			return m;
+			return 0;
 		}
 		m_freem(m);	/* nowhere to reply */
 	}
@@ -347,6 +344,8 @@ req_free(struct oncrpc_ireq *ir)
 		kauth_cred_free(rq->rq_cred);
 	m_freem(ir->ir_msg);
 	m_freem(ir->ir_nam);
+	if (ir->ir_xctx != NULL)
+		(*xp->xp_ops->xo_ctxfree)(xp, ir->ir_xctx);
 	kmem_free(ir, sizeof(*ir));
 
 	mutex_enter(&svc->svc_lock);
@@ -354,7 +353,49 @@ req_free(struct oncrpc_ireq *ir)
 	xp->xp_nreqs--;
 	xprt_queue(xp);		/* in case it was at the limit */
 	mutex_exit(&svc->svc_lock);
-	xprt_rele(xp);
+	oncrpc_xprt_rele(xp);
+}
+
+static int
+xprt_sock_send(struct oncrpc_xprt *xp, struct mbuf *m, struct mbuf *nam,
+    void *ctx)
+{
+	struct socket *so = xp->xp_so;
+	struct sockaddr *to;
+	struct mbuf *n;
+	uint32_t *rm;
+	u_int len;
+	int error;
+
+	len = m->m_pkthdr.len;
+	to = NULL;
+	if (so->so_type == SOCK_STREAM) {
+		/* Always one fragment; RFC 5531 s11 allows it. */
+		KASSERT(len <= ONCRPC_RM_LENMASK);
+		M_PREPEND(m, ONCRPC_RM_HDRSIZE, M_WAIT);
+		rm = mtod(m, uint32_t *);
+		*rm = htonl(ONCRPC_RM_LAST | len);
+	} else if (nam != NULL && (so->so_state & SS_ISCONNECTED) == 0)
+		to = mtod(nam, struct sockaddr *);
+
+	/*
+	 * sosend() takes a chain whole or refuses it with EMSGSIZE, and a
+	 * reply may be larger than the buffer.
+	 */
+	do {
+		n = NULL;
+		if (so->so_type == SOCK_STREAM &&
+		    m->m_pkthdr.len > ONCRPC_SOCKBUF &&
+		    (n = m_split(m, ONCRPC_SOCKBUF, M_WAIT)) == NULL) {
+			m_freem(m);
+			error = ENOBUFS;
+			break;
+		}
+		error = (*so->so_send)(so, to, NULL, m, NULL, 0, curlwp);
+		m = n;
+	} while (error == 0 && m != NULL);
+	m_freem(m);
+	return so->so_type == SOCK_STREAM ? error : 0;
 }
 
 /*
@@ -367,13 +408,8 @@ xprt_send(struct oncrpc_ireq *ir)
 {
 	struct oncrpc_xprt *xp = ir->ir_xprt;
 	struct oncrpc_svc *svc = xp->xp_svc;
-	struct socket *so = xp->xp_so;
-	struct sockaddr *to;
-	struct mbuf *m, *n;
-	uint32_t *rm;
+	struct mbuf *m;
 	bool zap = false;
-	u_int len;
-	int error;
 
 	mutex_enter(&svc->svc_lock);
 	if ((xp->xp_flags & XP_SENDING) != 0) {
@@ -387,37 +423,7 @@ xprt_send(struct oncrpc_ireq *ir)
 	for (;;) {
 		m = ir->ir_reply;
 		ir->ir_reply = NULL;
-		len = m->m_pkthdr.len;
-		to = NULL;
-		if (so->so_type == SOCK_STREAM) {
-			/* Always one fragment; RFC 5531 s11 allows it. */
-			KASSERT(len <= ONCRPC_RM_LENMASK);
-			M_PREPEND(m, ONCRPC_RM_HDRSIZE, M_WAIT);
-			rm = mtod(m, uint32_t *);
-			*rm = htonl(ONCRPC_RM_LAST | len);
-		} else if (ir->ir_nam != NULL &&
-		    (so->so_state & SS_ISCONNECTED) == 0)
-			to = mtod(ir->ir_nam, struct sockaddr *);
-
-		/*
-		 * sosend() takes a chain whole or refuses it with EMSGSIZE,
-		 * and a reply may be larger than the buffer.
-		 */
-		do {
-			n = NULL;
-			if (so->so_type == SOCK_STREAM &&
-			    m->m_pkthdr.len > ONCRPC_SOCKBUF &&
-			    (n = m_split(m, ONCRPC_SOCKBUF, M_WAIT)) == NULL) {
-				m_freem(m);
-				error = ENOBUFS;
-				break;
-			}
-			error = (*so->so_send)(so, to, NULL, m, NULL, 0,
-			    curlwp);
-			m = n;
-		} while (error == 0 && m != NULL);
-		m_freem(m);
-		if (error != 0 && so->so_type == SOCK_STREAM)
+		if ((*xp->xp_ops->xo_send)(xp, m, ir->ir_nam, ir->ir_xctx) != 0)
 			zap = true;
 		req_free(ir);
 
@@ -431,7 +437,7 @@ xprt_send(struct oncrpc_ireq *ir)
 	xp->xp_flags &= ~XP_SENDING;
 	mutex_exit(&svc->svc_lock);
 	if (zap)
-		xprt_zap(xp);
+		oncrpc_xprt_zap(xp);
 }
 
 /*
@@ -560,7 +566,11 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 
 	mutex_enter(&svc->svc_lock);
 	xp = xprt_byid(svc, id);
-	if (xp == NULL || xp->xp_so->so_type != SOCK_STREAM) {
+	/*
+	 * On the framing of RFC 5531 only, until a transport says how it
+	 * carries a call the other way.
+	 */
+	if (xp == NULL || xp->xp_ops != &xprt_stream_ops) {
 		mutex_exit(&svc->svc_lock);
 		kmem_free(ir, sizeof(*ir));
 		m_freem(m);
@@ -611,7 +621,7 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 		m_freem(open);
 		m_freem(bc.bc_reply);
 	}
-	xprt_rele(xp);
+	oncrpc_xprt_rele(xp);
 	return error;
 }
 
@@ -906,6 +916,10 @@ reply:
 		goto drop;
 	}
 	m = oncrpc_xdrmbuf_detach(&hdr);
+	/* What DDP was told was in rq_res, which is here or is gone. */
+	if (ir->ir_xctx != NULL && ir->ir_xprt->xp_ops->xo_ddp_fix != NULL)
+		(*ir->ir_xprt->xp_ops->xo_ddp_fix)(ir->ir_xctx,
+		    m->m_pkthdr.len, res != NULL);
 	if (res != NULL) {
 		m->m_pkthdr.len += res->m_pkthdr.len;
 		m_remove_pkthdr(res);
@@ -931,6 +945,7 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 	struct oncrpc_xprt *xp;
 	struct oncrpc_ireq *ir;
 	struct mbuf *m, *nam;
+	void *ctx;
 	bool replied;
 	int error = 0;
 
@@ -963,11 +978,13 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 		xp->xp_refs++;
 		mutex_exit(&svc->svc_lock);
 
-		nam = NULL;
-		if (xp->xp_so->so_type == SOCK_STREAM)
-			m = xprt_getmsg_stream(xp);
-		else
-			m = xprt_getmsg_dgram(xp, &nam);
+		m = nam = NULL;
+		ctx = NULL;
+		error = (*xp->xp_ops->xo_recv)(xp, &m, &nam, &ctx);
+		if (error != 0) {
+			KASSERT(m == NULL);
+			oncrpc_xprt_zap(xp);
+		}
 
 		ir = NULL;
 		replied = m != NULL && nam == NULL && xprt_reply(xp, m);
@@ -989,9 +1006,12 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 			ir->ir_xprt = xp;
 			ir->ir_msg = m;
 			ir->ir_nam = nam;
+			ir->ir_xctx = ctx;
+			ir->ir_req.rq_xctx = ctx;
+			ir->ir_req.rq_xprt = xp;
 			svc_serve(svc, ir);
 		}
-		xprt_rele(xp);
+		oncrpc_xprt_rele(xp);
 		mutex_enter(&svc->svc_lock);
 	}
 	mutex_exit(&svc->svc_lock);
@@ -1094,8 +1114,8 @@ oncrpc_svc_destroy(struct oncrpc_svc *svc)
 	while ((xp = LIST_FIRST(&svc->svc_xprts)) != NULL) {
 		xp->xp_refs++;
 		mutex_exit(&svc->svc_lock);
-		xprt_zap(xp);
-		xprt_rele(xp);
+		oncrpc_xprt_zap(xp);
+		oncrpc_xprt_rele(xp);
 		mutex_enter(&svc->svc_lock);
 	}
 	svc->svc_dying = true;
@@ -1215,28 +1235,114 @@ oncrpc_svc_unregister(struct oncrpc_svc *svc, const struct oncrpc_program *op)
 	kmem_free(pg, sizeof(*pg));
 }
 
+static void
+xprt_stream_destroy(struct oncrpc_xprt *xp)
+{
+	struct oncrpc_rm *rm = xp->xp_priv;
+
+	oncrpc_rm_fini(rm);
+	kmem_free(rm, sizeof(*rm));
+}
+
+static const struct oncrpc_xprt_ops xprt_stream_ops = {
+	.xo_recv = xprt_stream_recv,
+	.xo_send = xprt_sock_send,
+	.xo_shutdown = xprt_sock_shutdown,
+	.xo_destroy = xprt_stream_destroy,
+};
+
+static const struct oncrpc_xprt_ops xprt_dgram_ops = {
+	.xo_recv = xprt_dgram_recv,
+	.xo_send = xprt_sock_send,
+	.xo_shutdown = xprt_sock_shutdown,
+};
+
 /*
- * Serve a socket: a connected stream, or a datagram socket shared by
- * all its peers.  The file gets a reference of its own, as the caller
- * will close it.  nam, the peer of a stream if known, is consumed.
+ * Make an xprt of a transport on no socket of ours.  It holds the
+ * reference of being on svc_xprts, and is served once put there by
+ * oncrpc_xprt_start().
  */
-int
-oncrpc_svc_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam)
+struct oncrpc_xprt *
+oncrpc_xprt_create(struct oncrpc_svc *svc, const struct oncrpc_xprt_ops *ops,
+    void *priv, struct mbuf *nam)
+{
+	struct oncrpc_xprt *xp;
+
+	xp = kmem_zalloc(sizeof(*xp), KM_SLEEP);
+	xp->xp_svc = svc;
+	xp->xp_id = atomic_inc_64_nv(&oncrpc_nextconn);
+	xp->xp_ops = ops;
+	xp->xp_priv = priv;
+	xp->xp_nam = nam;
+	xp->xp_refs = 1;
+	xp->xp_flags = XP_READABLE;
+	SIMPLEQ_INIT(&xp->xp_sendq);
+	return xp;
+}
+
+void
+oncrpc_xprt_start(struct oncrpc_xprt *xp)
+{
+	struct oncrpc_svc *svc = xp->xp_svc;
+
+	mutex_enter(&svc->svc_lock);
+	LIST_INSERT_HEAD(&svc->svc_xprts, xp, xp_list);
+	svc->svc_nxprt++;
+	xprt_queue(xp);
+	mutex_exit(&svc->svc_lock);
+}
+
+/* With the socket locked. */
+static void
+xprt_sock_start(struct oncrpc_xprt *xp, struct socket *so)
 {
 
-	return oncrpc_svc_addsock_tag(svc, fp, nam, NULL);
+	so->so_rcv.sb_flags &= ~SB_NOINTR;
+	so->so_rcv.sb_timeo = 0;
+	so->so_snd.sb_flags &= ~SB_NOINTR;
+	so->so_snd.sb_timeo = 0;
+	so->so_upcallarg = xp;
+	so->so_upcall = xprt_upcall;
+	so->so_rcv.sb_flags |= SB_UPCALL;
+	/* Data may have arrived before the upcall was there to see it. */
+	oncrpc_xprt_start(xp);
 }
 
 /*
- * The same, with a tag for oncrpc_svc_closesocks(): whoever added a
- * socket to a shared server closes its own and no other holder's.
+ * Take over a socket for an xprt.  The file gets a reference of its
+ * own, as the caller will close it.  nam, the peer of a stream if
+ * known, is consumed.  ops is NULL for the framing of RFC 5531, or
+ * those of something that frames its own messages on a stream, with
+ * priv its state, which stays the caller's on failure.
+ */
+int
+oncrpc_xprt_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
+    const struct oncrpc_xprt_ops *ops, void *priv)
+{
+
+	return xprt_addsock(svc, fp, nam, NULL, ops, priv);
+}
+
+/*
+ * The same with the framing of RFC 5531, and a tag for
+ * oncrpc_svc_closesocks(): whoever added a socket to a shared server
+ * closes its own and no other holder's.
  */
 int
 oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
     const void *tag)
 {
+
+	return xprt_addsock(svc, fp, nam, tag, NULL, NULL);
+}
+
+static int
+xprt_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
+    const void *tag, const struct oncrpc_xprt_ops *ops, void *priv)
+{
 	struct socket *so;
 	struct oncrpc_xprt *xp;
+	struct oncrpc_rm *rm = NULL;
 	int error, val;
 
 	if (fp->f_type != DTYPE_SOCKET) {
@@ -1245,6 +1351,10 @@ oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
 	}
 	so = fp->f_socket;
 	if (so->so_type != SOCK_STREAM && so->so_type != SOCK_DGRAM) {
+		error = EPROTOTYPE;
+		goto bad;
+	}
+	if (ops != NULL && so->so_type != SOCK_STREAM) {
 		error = EPROTOTYPE;
 		goto bad;
 	}
@@ -1262,17 +1372,18 @@ oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
 		    sizeof(val));
 	}
 
-	xp = kmem_zalloc(sizeof(*xp), KM_SLEEP);
-	xp->xp_svc = svc;
-	xp->xp_id = atomic_inc_64_nv(&oncrpc_nextconn);
+	if (ops == NULL && so->so_type == SOCK_STREAM) {
+		rm = kmem_alloc(sizeof(*rm), KM_SLEEP);
+		oncrpc_rm_init(rm, ONCRPC_MAXMSG);
+		ops = &xprt_stream_ops;
+		priv = rm;
+	} else if (ops == NULL)
+		ops = &xprt_dgram_ops;
+
+	xp = oncrpc_xprt_create(svc, ops, priv, nam);
 	xp->xp_fp = fp;
 	xp->xp_so = so;
-	xp->xp_nam = nam;
 	xp->xp_tag = tag;
-	xp->xp_refs = 1;
-	xp->xp_flags = XP_READABLE;
-	SIMPLEQ_INIT(&xp->xp_sendq);
-	oncrpc_rm_init(&xp->xp_rm, ONCRPC_MAXMSG);
 
 	/*
 	 * All at once under the socket lock: the upcall may run as soon as
@@ -1283,26 +1394,17 @@ oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
 	    soreserve(so, ONCRPC_SOCKBUF, ONCRPC_SOCKBUF);
 	if (error != 0) {
 		sounlock(so);
-		oncrpc_rm_fini(&xp->xp_rm);
+		if (rm != NULL) {
+			oncrpc_rm_fini(rm);
+			kmem_free(rm, sizeof(*rm));
+		}
 		kmem_free(xp, sizeof(*xp));
 		goto bad;
 	}
 	mutex_enter(&fp->f_lock);
 	fp->f_count++;
 	mutex_exit(&fp->f_lock);
-	so->so_rcv.sb_flags &= ~SB_NOINTR;
-	so->so_rcv.sb_timeo = 0;
-	so->so_snd.sb_flags &= ~SB_NOINTR;
-	so->so_snd.sb_timeo = 0;
-	so->so_upcallarg = xp;
-	so->so_upcall = xprt_upcall;
-	so->so_rcv.sb_flags |= SB_UPCALL;
-	/* Data may have arrived before the upcall was there to see it. */
-	mutex_enter(&svc->svc_lock);
-	LIST_INSERT_HEAD(&svc->svc_xprts, xp, xp_list);
-	svc->svc_nxprt++;
-	xprt_queue(xp);
-	mutex_exit(&svc->svc_lock);
+	xprt_sock_start(xp, so);
 	sounlock(so);
 	return 0;
 
@@ -1337,14 +1439,15 @@ restart:
 	LIST_FOREACH(xp, &svc->svc_xprts, xp_list) {
 		if (xp->xp_tag != tag)
 			continue;
-		if (op != NULL && xp->xp_so->so_type == SOCK_STREAM &&
+		if (op != NULL &&
+		    (xp->xp_so == NULL || xp->xp_so->so_type == SOCK_STREAM) &&
 		    xp->xp_lastop != NULL &&
 		    (xp->xp_mixed || xp->xp_lastop != op))
 			continue;
 		xp->xp_refs++;
 		mutex_exit(&svc->svc_lock);
-		xprt_zap(xp);
-		xprt_rele(xp);
+		oncrpc_xprt_zap(xp);
+		oncrpc_xprt_rele(xp);
 		mutex_enter(&svc->svc_lock);
 		goto restart;
 	}
@@ -1427,6 +1530,57 @@ oncrpc_req_finish(struct oncrpc_req *rq, struct mbuf *raw)
 		return;
 	}
 	xprt_send(ir);
+}
+
+/*
+ * Serve a socket: a connected stream, or a datagram socket shared by
+ * all its peers.
+ */
+int
+oncrpc_svc_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam)
+{
+
+	return oncrpc_xprt_addsock(svc, fp, nam, NULL, NULL);
+}
+
+/*
+ * What the program of a call says of RPC-over-RDMA, for a transport to
+ * check the call against before it is dispatched.  The bindings outlive
+ * the registration, being constant.
+ */
+const struct oncrpc_rdma_ulb *
+oncrpc_svc_ulb(struct oncrpc_svc *svc, uint32_t prog, uint32_t vers)
+{
+	const struct oncrpc_rdma_ulb *ub = NULL;
+	struct oncrpc_prog *pg;
+
+	mutex_enter(&svc->svc_lock);
+	LIST_FOREACH(pg, &svc->svc_progs, pg_list) {
+		if (pg->pg_prog->op_prog == prog &&
+		    vers >= pg->pg_prog->op_vers_low &&
+		    vers <= pg->pg_prog->op_vers_high) {
+			ub = pg->pg_prog->op_ulb;
+			break;
+		}
+	}
+	mutex_exit(&svc->svc_lock);
+	return ub;
+}
+
+/*
+ * A data item in the results that the upper-layer binding of the
+ * transport lets go by DDP: len bytes at pos of rq_res, of which the
+ * length word just before is not one.  Called in the order of the
+ * items.  Does nothing on a transport with no such thing, so a program
+ * needs no idea which one a call came by.
+ */
+void
+oncrpc_req_ddp_result(struct oncrpc_req *rq, u_int pos, u_int len)
+{
+	struct oncrpc_xprt *xp = rq->rq_xprt;
+
+	if (xp->xp_ops->xo_ddp_result != NULL)
+		(*xp->xp_ops->xo_ddp_result)(rq->rq_xctx, pos, len);
 }
 
 u_int

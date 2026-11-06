@@ -29,8 +29,9 @@ fh, sid = c.create_confirm(b'edge', path, access=OPEN4_SHARE_ACCESS_BOTH,
 r = c.compound([op.putfh(fh), op.write(sid, 4 << 20, UNSTABLE4, b'x' * 4096)])
 want('WRITE', r.status, NFS4_OK)
 
-for off, cnt in ((0, 0), (4 << 20, 0), (4096, 0), (4 << 20, 1 << 40),
-                 (1 << 40, 1), (1 << 40, 0), (1, (1 << 32) - 1)):
+for off, cnt in ((0, 0), (4 << 20, 0), (4096, 0), (4 << 20, 0xffffffff),
+                 (1 << 40, 1), (1 << 40, 0), (1 << 62, 1), (1 << 62, 0),
+                 (1, (1 << 32) - 1)):
     r = c.compound([op.putfh(fh), op.commit(off, cnt)])
     want('COMMIT %#x %#x' % (off, cnt), r.status, NFS4_OK)
 # Past the bounds, with count 32 bits wide: s16.3.4

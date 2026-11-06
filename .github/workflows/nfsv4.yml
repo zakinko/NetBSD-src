@@ -7,6 +7,9 @@ on:
       - 'sys/modules/nfsv4/**'
       - 'sys/oncrpc/**'
       - 'sys/kern/vfs_lockf.c'
+      - 'sys/kern/vfs_vnops.c'
+      - 'sys/kern/vfs_syscalls.c'
+      - 'sys/kern/sys_descrip.c'
       - 'sys/sys/lockf.h'
       - 'sys/ufs/ffs/ffs_inode.c'
       - 'sys/fs/tmpfs/tmpfs_subr.c'
@@ -38,7 +41,7 @@ jobs:
         id: kernel
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
       - uses: actions/cache/save@v4
         if: steps.tools.outputs.cache-hit != 'true'
@@ -49,7 +52,7 @@ jobs:
         if: steps.kernel.outputs.cache-hit != 'true'
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
@@ -129,6 +132,12 @@ jobs:
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
       - name: Restarts, which are not in all
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh reboot" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-reboot
+      - name: Referrals and owners
+        run: |
+          PYNFS_ARGS='--usespecial=/export/ref/there fslocations' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-fsloc
+          cp ci/nfsv4/owner.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          python3 ./owner.py /export/pynfs 2>&1 | tee "$OLDPWD/out/owner.txt" || true
       - name: Named attributes and fs_locations
         run: |
           cp ci/nfsv4/named-attr.py "$HOME/pynfs/nfs4.0/"
@@ -150,6 +159,7 @@ jobs:
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-deleg.json out/pynfs-deleg.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-reboot.json out/pynfs-reboot.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-fsloc.json out/pynfs-fsloc.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-acl.json out/pynfs-acl.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
@@ -164,5 +174,6 @@ jobs:
             out/linux-client.txt
             out/named-attr.txt
             out/edge.txt
+            out/owner.txt
             out/kernel.txt
           retention-days: 30

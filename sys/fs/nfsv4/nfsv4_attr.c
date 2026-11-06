@@ -90,6 +90,11 @@ static const uint64_t attr_setonly =
 static const uint64_t attr_delegated =
     BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) | BIT(FATTR4_TIME_MODIFY);
 
+/* What an absent file system has, s8.3.1. */
+static const uint64_t attr_absent =
+    BIT(FATTR4_FS_LOCATIONS) | BIT(FATTR4_FSID) | BIT(FATTR4_RDATTR_ERROR) |
+    BIT(FATTR4_MOUNTED_ON_FILEID);
+
 /* Those needing VOP_GETATTR, and those needing VFS_STATVFS. */
 static const uint64_t attr_vattr =
     BIT(FATTR4_TYPE) | BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) |
@@ -139,6 +144,15 @@ nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm)
 {
 
 	return (attr_mask(bm) & attr_setonly) == 0;
+}
+
+/* s8.3.1: VERIFY in an absent file system. */
+bool
+nfsv4_attr_absent_ok(const struct nfsv4_bitmap *bm)
+{
+
+	return (attr_mask(bm) & BIT(FATTR4_FS_LOCATIONS)) != 0 &&
+	    (attr_mask(bm) & ~attr_absent) == 0;
 }
 
 bool
@@ -208,25 +222,13 @@ attr_u64(XDR *x, uint64_t v)
 	return xdr_u_int64_t(x, &v);
 }
 
-/*
- * fs_locations, s8.8.  No file system is known to live anywhere else,
- * so there are no locations, as s8.8 has it, and only fs_root says
- * anything: the mount point, which is the path a client reaches it by
- * through the pseudo file system.
- */
+/* A pathname4, s2.2.8, from the text of a path. */
 static bool
-attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
+attr_pathname(XDR *x, const char *p, const char *end)
 {
-	const char *p, *end, *e;
-	size_t len;
+	const char *e;
 	uint32_t n = 0, l;
 
-	if (cf->cf_vp != NULL) {
-		p = cf->cf_vp->v_mount->mnt_stat.f_mntonname;
-		len = strlen(p);
-	} else
-		p = nfsv4_cfh_path(cf, &len);
-	end = p + len;
 	for (e = p; e < end; e++) {
 		if (*e != '/' && (e == p || e[-1] == '/'))
 			n++;
@@ -247,11 +249,89 @@ attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
 			return false;
 		p = e;
 	}
-	n = 0;
-	return xdr_u_int32_t(x, &n);	/* locations<> */
+	return true;
 }
 
-/* Numbers, as RFC 7530 s5.9 allows outside Kerberos. */
+static u_int
+attr_count(const char *p, const char *end, char c)
+{
+	u_int n = 1;
+
+	for (; p < end; p++)
+		n += *p == c;
+	return n;
+}
+
+/* The fs_location4 of "s1,s2:/root". */
+static bool
+attr_fs_location(XDR *x, const char *p, const char *end)
+{
+	const char *colon, *e;
+	uint32_t n, l;
+
+	colon = memchr(p, ':', end - p);
+	if (colon == NULL)
+		return false;
+	n = attr_count(p, colon, ',');
+	if (!xdr_u_int32_t(x, &n))
+		return false;
+	while (p < colon) {
+		e = memchr(p, ',', colon - p);
+		if (e == NULL)
+			e = colon;
+		l = (uint32_t)(e - p);
+		if (!xdr_u_int32_t(x, &l) ||
+		    !xdr_opaque(x, __UNCONST(p), l))
+			return false;
+		p = e < colon ? e + 1 : e;
+	}
+	return attr_pathname(x, colon + 1, end);
+}
+
+/*
+ * fs_locations, s8.8.  Other than for a referral no file system is known
+ * to live anywhere else, so there are no locations, as s8.8 has it, and
+ * only fs_root says anything: the mount point, which is the path a client
+ * reaches it by through the pseudo file system.
+ */
+static bool
+attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
+{
+	const char *p, *end, *e;
+	size_t len;
+	uint32_t n;
+
+	if (cf->cf_ref != NULL) {
+		p = cf->cf_ref->rf_path;
+		len = strlen(p);
+	} else if (cf->cf_vp != NULL) {
+		p = cf->cf_vp->v_mount->mnt_stat.f_mntonname;
+		len = strlen(p);
+	} else
+		p = nfsv4_cfh_path(cf, &len);
+	if (!attr_pathname(x, p, p + len))
+		return false;
+	if (cf->cf_ref == NULL) {
+		n = 0;
+		return xdr_u_int32_t(x, &n);	/* locations<> */
+	}
+	p = cf->cf_ref->rf_locs;
+	end = p + strlen(p);
+	n = attr_count(p, end, ';');
+	if (!xdr_u_int32_t(x, &n))
+		return false;
+	while (p < end) {
+		e = memchr(p, ';', end - p);
+		if (e == NULL)
+			e = end;
+		if (!attr_fs_location(x, p, e))
+			return false;
+		p = e < end ? e + 1 : e;
+	}
+	return true;
+}
+
+/* s5.9, by nfsv4_idmap.c. */
 static bool
 attr_id(XDR *x, bool group, uint32_t id)
 {
@@ -350,6 +430,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 
 	sup = attr_supported_by(vp);
 	m = attr_mask(want) & sup & ~attr_setonly;
+	if (cf->cf_ref != NULL)
+		m &= attr_absent;
 	if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);
 
@@ -455,7 +537,11 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_u32(&x, 0);
 			break;
 		case FATTR4_FSID:
-			if (vp != NULL) {
+			if (cf->cf_ref != NULL) {
+				/* s8.3.1: unlike any other here */
+				ok = attr_u64(&x, NFSV4_PSEUDO_FSID_MAJOR +
+				    cf->cf_ref->rf_index) && attr_u64(&x, 0);
+			} else if (vp != NULL) {
 				const fsid_t *fs =
 				    &vp->v_mount->mnt_stat.f_fsidx;
 				ok = attr_u64(&x, (uint32_t)fs->__fsid_val[0]) &&

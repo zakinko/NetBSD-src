@@ -211,6 +211,15 @@ readdir_entry(struct readdir_state *rd, const char *name, size_t namelen,
 		    &cf);
 		if (rderr == NFS4ERR_NOENT)
 			return NFS4_OK;
+		/* s8.3.2 */
+		if (rderr == NFS4_OK && cf.cf_ref != NULL &&
+		    (m->bm_w[0] & (1U << FATTR4_FS_LOCATIONS)) == 0) {
+			rderr = NFS4ERR_MOVED;
+			if ((m->bm_w[0] & (1U << FATTR4_RDATTR_ERROR)) == 0) {
+				nfsv4_cfh_clear(&cf);
+				return rderr;
+			}
+		}
 		if (rderr != NFS4_OK) {
 			if ((m->bm_w[0] & (1U << FATTR4_RDATTR_ERROR)) == 0)
 				return rderr;

@@ -190,6 +190,9 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		st = NFS4ERR_NOTSUPP;
 	else if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
 		st = NFS4ERR_NOFILEHANDLE;
+	else if (c->c_cur.cf_set && c->c_cur.cf_ref != NULL &&
+	    !nfsv4_referral_allowed(op, a))
+		st = NFS4ERR_MOVED;		/* s8.2 */
 	else {
 		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
 			c->c_drc = true;
@@ -343,6 +346,45 @@ nfsv4_sysctl_stable(SYSCTLFN_ARGS)
 	return nfsv4_stable_open(path);
 }
 
+/* What is written goes to fn, a line at a time being a write. */
+static int
+nfsv4_sysctl_line(SYSCTLFN_ARGS, int (*fn)(const char *))
+{
+	struct sysctlnode node = *rnode;
+	char *buf;
+	int error;
+
+	buf = kmem_zalloc(MAXPATHLEN, KM_SLEEP);
+	node.sysctl_data = buf;
+	node.sysctl_size = MAXPATHLEN;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error == 0 && newp != NULL)
+		error = (*fn)(buf);
+	kmem_free(buf, MAXPATHLEN);
+	return error;
+}
+
+static int
+nfsv4_sysctl_idmap(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_idmap_line);
+}
+
+static int
+nfsv4_sysctl_domain(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_idmap_setdomain);
+}
+
+static int
+nfsv4_sysctl_referral(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_referral_line);
+}
+
 static const struct oncrpc_program nfsv4_program = {
 	.op_prog = NFSV4_PROGRAM,
 	.op_vers_low = NFSV4_VERSION,
@@ -401,6 +443,18 @@ nfsv4_sysctl_init(void)
 	    nfsv4_sysctl_addsock, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "idmap", SYSCTL_DESCR("Add a line to the owner table"),
+	    nfsv4_sysctl_idmap, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "domain", SYSCTL_DESCR("dns_domain of owners"),
+	    nfsv4_sysctl_domain, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "referral", SYSCTL_DESCR("Add a referral"),
+	    nfsv4_sysctl_referral, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "delegations", SYSCTL_DESCR("0 none, 1 read, 2 read and write"),
 	    NULL, 0, &nfsv4_deleg_mode, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
@@ -423,8 +477,12 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_drc_init();
 		nfsv4_cb_init();
 		nfsv4_stable_init();
+		nfsv4_idmap_init();
+		nfsv4_referral_init();
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
+			nfsv4_referral_fini();
+			nfsv4_idmap_fini();
 			nfsv4_stable_fini();
 			nfsv4_deleg_fini();
 			nfsv4_cb_fini();
@@ -435,6 +493,9 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
 			oncrpc_svc_destroy(nfsv4_svc);
+			nfsv4_referral_fini();
+			nfsv4_idmap_fini();
+			nfsv4_deleg_fini();
 			nfsv4_stable_fini();
 			nfsv4_cb_fini();
 			nfsv4_drc_fini();
@@ -452,6 +513,8 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_drc_fini();
 		nfsv4_state_fini();
 		nfsv4_stable_fini();
+		nfsv4_idmap_fini();
+		nfsv4_referral_fini();
 		return 0;
 	default:
 		return ENOTTY;

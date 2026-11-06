@@ -75,6 +75,7 @@ struct nfsv4_cfh {
 	int		cf_exflags;
 	u_int		cf_attr;	/* NFSV4_ATTR_*; see nfsv4_xattr.c */
 	char		cf_aname[NFSV4_ANAME_MAX + 1];
+	const struct nfsv4_referral *cf_ref;	/* absent, s8.2 */
 };
 
 /*

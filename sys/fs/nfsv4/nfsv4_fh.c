@@ -151,6 +151,7 @@ nfsv4_cfh_clear(struct nfsv4_cfh *cf)
 	cf->cf_cred = NULL;
 	cf->cf_set = false;
 	cf->cf_attr = 0;
+	cf->cf_ref = NULL;
 }
 
 void
@@ -271,6 +272,7 @@ nfsv4_cfh_setvp(struct nfsv4_compound *c, struct nfsv4_cfh *cf,
 	n.cf_fh.fh_len = NFSV4_FH_HDR + size;
 	n.cf_vp = vp;
 	n.cf_set = true;
+	n.cf_ref = nfsv4_referral_find(vp);
 	nfsv4_cfh_clear(cf);
 	*cf = n;
 	return NFS4_OK;

@@ -22,6 +22,10 @@ mkdir -p /export/tmpfs
 mount_tmpfs -s 256m tmpfs /export/tmpfs
 chmod 1777 /export/tmpfs
 # FFS with NFSv4 ACLs: they live in extended attributes, so 2ea.
+# A referral, RFC 7530 s8.4.3, on a file system of its own.
+mkdir -p /export/ref
+mount_tmpfs -s 8m tmpfs /export/ref
+mkdir /export/ref/there
 mkdir -p /export/acl
 dd if=/dev/zero of=/var/tmp/acl.img bs=1m count=256
 newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
@@ -43,6 +47,7 @@ cat >/etc/exports <<EOF
 /export/pynfs -maproot=root -noresvport
 /export/tmpfs -maproot=root -noresvport
 /export/acl -maproot=root -noresvport
+/export/ref -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf
@@ -55,4 +60,8 @@ cc -g -Wall -o nfsv4d nfsv4d.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1
+sysctl -w 'vfs.nfsv4.referral=/export/ref/there srv1,srv2:/x/y;srv3:/z'
+sysctl -w vfs.nfsv4.domain=example.org
+sysctl -w 'vfs.nfsv4.idmap=u 1234 alice'
+sysctl -w 'vfs.nfsv4.idmap=g 5678 staff'
 netstat -an -f inet | grep '\.2049 '

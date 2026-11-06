@@ -4,7 +4,7 @@
 diag() {
 	echo "=== rump_server by hand: $1"
 	mkdir -p /var/tmp/diag; cd /var/tmp/diag
-	rm -f fsimage rs.log; newfs -q user -B be -O 1 -s 4000 -F fsimage >/dev/null
+	rm -f fsimage rs.log diagsock; newfs -q user -B be -O 1 -s 4000 -F fsimage >/dev/null
 	export RUMP_SERVER=unix://diagsock RUMP_VERBOSE=1
 	rump_server -s -v -lrumpvfs -lrumpdev -lrumpnet -lrumpnet_net \
 	    -lrumpnet_netinet -lrumpnet_netinet6 -lrumpnet_local \
@@ -22,7 +22,7 @@ diag() {
 	sleep 1; kill $p 2>/dev/null; wait $p; echo "server status $?"
 	cat rs.log
 	ls -la
-	[ -f rump_server.core ] && gdb -batch -ex 'bt 30' -ex 'info threads' \
+	[ -f rump_server.core ] && gdb -batch -ex 'bt 30' -ex 'x/i $pc' -ex 'info registers' \
 	    "$(command -v rump_server)" rump_server.core 2>&1
 	rm -f rump_server.core
 	unset RUMP_SERVER RUMP_VERBOSE

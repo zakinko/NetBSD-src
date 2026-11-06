@@ -118,7 +118,7 @@ jobs:
         id: dest
         with:
           path: out-dest
-          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'ci/nfsbridge/atf-build.sh') }}
+          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh') }}
       - if: steps.dest.outputs.cache-hit != 'true'
         run: |
           sh ci/nfsbridge/atf-build.sh "$PWD/nb" "$PWD/out-dest"

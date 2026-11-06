@@ -36,7 +36,7 @@
  *	NFSV4_FHT_REAL		fhandle_t, from vfs_composefh()
  *	NFSV4_FHT_PSEUDO	path of a node of the pseudo file system
  *	NFSV4_FHT_ATTRDIR	as REAL: the named attributes of that file
- *	NFSV4_FHT_ATTR		as REAL, then a name of byte 1's length
+ *	NFSV4_FHT_ATTR		as REAL, then a hash of the name
  *
  * The pseudo file system is computed, with no table behind it.  Its
  * nodes are the proper ancestors of the mount points exported to this
@@ -221,8 +221,9 @@ nfsv4_cfh_setattr(struct nfsv4_cfh *cf, u_int kind, const char *name,
 	struct nfsv4_fh *fh = &cf->cf_fh;
 
 	if (cf->cf_attr == NFSV4_ATTR_FILE)
-		fh->fh_len -= strlen(cf->cf_aname);
-	if (len > NFSV4_ANAME_MAX || fh->fh_len + len > NFS4_FHSIZE)
+		fh->fh_len -= NFSV4_ANAME_HASH;
+	if (len > NFSV4_ANAME_MAX ||
+	    fh->fh_len + NFSV4_ANAME_HASH > NFS4_FHSIZE)
 		return NFS4ERR_NAMETOOLONG;
 	cf->cf_attr = kind;
 	switch (kind) {
@@ -231,9 +232,8 @@ nfsv4_cfh_setattr(struct nfsv4_cfh *cf, u_int kind, const char *name,
 		break;
 	case NFSV4_ATTR_FILE:
 		fh->fh_data[0] = NFSV4_FHT_ATTR;
-		fh->fh_data[1] = (uint8_t)len;
-		memcpy(fh->fh_data + fh->fh_len, name, len);
-		fh->fh_len += len;
+		nfsv4_xattr_hash(name, len, fh->fh_data + fh->fh_len);
+		fh->fh_len += NFSV4_ANAME_HASH;
 		memcpy(cf->cf_aname, name, len);
 		cf->cf_aname[len] = '\0';
 		break;
@@ -421,8 +421,8 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 		fhandle_t	fh;
 		char		buf[NFS4_FHSIZE];
 	} u;
-	char aname[NFSV4_ANAME_MAX + 1];
-	size_t len, alen = 0;
+	uint8_t ahash[NFSV4_ANAME_HASH];
+	size_t len;
 	uint32_t st;
 	int error, exflags;
 
@@ -438,12 +438,11 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 		    (const char *)fh->fh_data + NFSV4_FH_HDR, len);
 		return st == NFS4ERR_NOENT ? NFS4ERR_STALE : st;
 	case NFSV4_FHT_ATTR:
-		alen = fh->fh_data[1];
-		if (alen == 0 || alen > NFSV4_ANAME_MAX || alen >= len)
+		if (len <= NFSV4_ANAME_HASH)
 			return NFS4ERR_BADHANDLE;
-		len -= alen;
-		memcpy(aname, fh->fh_data + NFSV4_FH_HDR + len, alen);
-		aname[alen] = '\0';
+		len -= NFSV4_ANAME_HASH;
+		memcpy(ahash, fh->fh_data + NFSV4_FH_HDR + len,
+		    NFSV4_ANAME_HASH);
 		break;
 	case NFSV4_FHT_REAL:
 	case NFSV4_FHT_ATTRDIR:
@@ -486,8 +485,7 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 	if (fh->fh_data[0] == NFSV4_FHT_ATTRDIR)
 		return nfsv4_cfh_setattr(&c->c_cur, NFSV4_ATTR_DIR, "", 0);
 	if (fh->fh_data[0] == NFSV4_FHT_ATTR)
-		return nfsv4_cfh_setattr(&c->c_cur, NFSV4_ATTR_FILE, aname,
-		    alen);
+		return nfsv4_xattr_byhash(&c->c_cur, ahash);
 	return NFS4_OK;
 }
 

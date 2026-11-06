@@ -29,6 +29,8 @@
 #ifndef _FS_NFSV4_NFSV4_VAR_H_
 #define _FS_NFSV4_NFSV4_VAR_H_
 
+#include <sys/queue.h>
+
 #include <oncrpc/oncrpc.h>
 
 #include <fs/nfsv4/nfsv4_xdr.h>
@@ -39,13 +41,25 @@ struct vattr;
 struct vnode;
 
 /*
- * A named attribute's name, whose limit is what is sure to fit in a
- * handle beside any file system's own: a choice, RFC 7530 s5.3 asking
- * for all the names a directory could have.
+ * A named attribute.  RFC 7530 s5.3 asks for all the names a directory
+ * could have, and the handle has room only for a hash of one.
  */
 #define	NFSV4_ATTR_DIR		1
 #define	NFSV4_ATTR_FILE		2
-#define	NFSV4_ANAME_MAX		64
+#define	NFSV4_ANAME_MAX		255
+#define	NFSV4_ANAME_HASH	16	/* of the name, in the handle */
+
+/* An owner string at its longest; see nfsv4_idmap.c. */
+#define	NFSV4_IDSTR_MAX		128
+
+/* See nfsv4_referral.c. */
+struct nfsv4_referral {
+	SLIST_ENTRY(nfsv4_referral) rf_list;
+	struct vnode	*rf_vp;
+	u_int		rf_index;
+	char		rf_path[256];
+	char		rf_locs[512];
+};
 
 /*
  * A current or saved filehandle.  A real one holds a reference to its
@@ -141,6 +155,23 @@ uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 
 uint32_t nfsv4_errno(int);
 void	nfsv4_write_verf(struct nfsv4_verifier *);
+
+void	nfsv4_idmap_init(void);
+void	nfsv4_idmap_fini(void);
+int	nfsv4_idmap_line(const char *);
+int	nfsv4_idmap_setdomain(const char *);
+u_int	nfsv4_idmap_out(bool, uint32_t, char *);
+uint32_t nfsv4_idmap_in(bool, const char *, u_int, u_int, uint32_t *);
+
+void	nfsv4_referral_init(void);
+void	nfsv4_referral_fini(void);
+int	nfsv4_referral_line(const char *);
+const struct nfsv4_referral *
+	nfsv4_referral_find(const struct vnode *);
+bool	nfsv4_referral_allowed(uint32_t, const union nfsv4_args *);
+bool	nfsv4_attr_absent_ok(const struct nfsv4_bitmap *);
+uint32_t nfsv4_xattr_byhash(struct nfsv4_cfh *, const uint8_t *);
+void	nfsv4_xattr_hash(const char *, size_t, uint8_t *);
 
 int	nfsv4_xattr_size(const struct nfsv4_cfh *, uint64_t *);
 int	nfsv4_xattr_list(const struct nfsv4_cfh *, char **, size_t *, size_t *);

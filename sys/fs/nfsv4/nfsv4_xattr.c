@@ -35,9 +35,9 @@
  * The VFS has no vnode for an attribute, so a node here is the vnode of
  * the file with a mark on the handle: cf_attr says what it is and cf_aname
  * names the attribute, and the handle carries both, see nfsv4_fh.c.  Such
- * a handle stays good as FH4_PERSISTENT says.  The price is that the
- * name must fit in the handle next to the file's own, so the longer
- * names of extended attributes cannot be used: NFS4ERR_NAMETOOLONG.
+ * a handle stays good as FH4_PERSISTENT says.  A name as long as s5.3
+ * wants does not fit there, so the handle has its hash, and PUTFH finds
+ * the name among the file's attributes.  There is no table to lose.
  *
  * Operations on those nodes come here first from nfsv4_one_op(), so
  * that the ones that do not know of them need not.  The VOPs have no
@@ -57,6 +57,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/extattr.h>
 #include <sys/kauth.h>
 #include <sys/kmem.h>
+#include <sys/sha2.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <sys/vnode.h>
@@ -68,6 +69,49 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	NFSV4_ATTR_MAXSIZE	(64 * 1024)
 
 #define	XA_NS			EXTATTR_NAMESPACE_USER
+
+/* The first bytes of SHA-256: nobody finds a pair by chance, nor needs to. */
+void
+nfsv4_xattr_hash(const char *name, size_t len, uint8_t *out)
+{
+	SHA256_CTX ctx;
+	uint8_t d[SHA256_DIGEST_LENGTH];
+
+	SHA256_Init(&ctx);
+	SHA256_Update(&ctx, (const uint8_t *)name, len);
+	SHA256_Final(d, &ctx);
+	memcpy(out, d, NFSV4_ANAME_HASH);
+}
+
+/* cf is a file; make it the attribute with this hash, or NFS4ERR_STALE. */
+uint32_t
+nfsv4_xattr_byhash(struct nfsv4_cfh *cf, const uint8_t *hash)
+{
+	uint8_t h[NFSV4_ANAME_HASH];
+	char *buf = NULL;
+	size_t len, alen, off;
+	uint32_t st = NFS4ERR_STALE;
+	u_int n;
+	int error;
+
+	error = nfsv4_xattr_list(cf, &buf, &len, &alen);
+	if (error != 0)
+		return nfsv4_errno(error);
+	for (off = 0; off < len; off += n) {
+		n = (uint8_t)buf[off++];
+		if (n > len - off)
+			break;
+		nfsv4_xattr_hash(buf + off, n, h);
+		if (memcmp(h, hash, sizeof(h)) == 0) {
+			st = nfsv4_cfh_setattr(cf, NFSV4_ATTR_FILE, buf + off,
+			    n);
+			break;
+		}
+	}
+	if (alen != 0)
+		kmem_free(buf, alen);
+	return st;
+}
 
 static uint32_t
 xa_errno(int error)

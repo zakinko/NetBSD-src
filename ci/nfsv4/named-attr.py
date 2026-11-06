@@ -112,6 +112,22 @@ want('LOOKUPP twice, to the file', r.status, NFS4_OK)
 if r.status == NFS4_OK and r.resarray[-1].switch.switch.object != fh:
     print('FAILED LOOKUPP came to some other handle')
     fails += 1
+# The longest name, s5.3, by a handle that has to find it again.
+long = b'n' * 255
+r = c.compound([op.putfh(adir),
+                c.open(b'naowner3', long, OPEN4_CREATE, UNCHECKED4, {}, None,
+                       OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE),
+                op.getfh()])
+want('OPEN of a name of 255', r.status, NFS4_OK)
+c.advance_seqid(b'naowner3', r)
+lfh = r.resarray[-1].switch.switch.object
+r = c.compound([op.putfh(lfh), op.getattr(nfs4lib.list2bitmap([FATTR4_TYPE]))])
+want('PUTFH of it', r.status, NFS4_OK)
+r = c.compound([op.putfh(adir), op.remove(long)])
+want('REMOVE of it', r.status, NFS4_OK)
+r = c.compound([op.putfh(lfh), op.getattr(nfs4lib.list2bitmap([FATTR4_TYPE]))])
+want('PUTFH of it, gone', r.status, NFS4ERR_STALE)
+
 r = c.compound([op.putfh(afh), op.close(c.get_seqid(b'naowner2'), stateid)])
 want('CLOSE', r.status, NFS4_OK)
 c.advance_seqid(b'naowner2', r)

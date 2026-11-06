@@ -442,7 +442,7 @@ nfs_oncrpc_fini(void)
 {
 
 	oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
-	nfs_oncrpc_closesocks();
+	oncrpc_svc_closesocks(nfs_oncrpc_svc, nfs_oncrpc_tag);
 
 	/* What is queued runs out; each entry is due within the delay. */
 	mutex_enter(&nfsd_lock);
@@ -469,9 +469,11 @@ nfs_oncrpc_run(void)
 	return oncrpc_svc_run(nfs_oncrpc_svc);
 }
 
+/* Connections that version 4 has used stay, served by its threads. */
 void
 nfs_oncrpc_closesocks(void)
 {
 
-	oncrpc_svc_closesocks(nfs_oncrpc_svc, nfs_oncrpc_tag);
+	oncrpc_svc_closesocks_for(nfs_oncrpc_svc, nfs_oncrpc_tag,
+	    &nfs_oncrpc_program);
 }

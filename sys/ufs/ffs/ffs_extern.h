@@ -113,6 +113,7 @@ int	ffs_balloc(struct vnode *, off_t, int, kauth_cred_t, int,
 int	ffs_update(struct vnode *, const struct timespec *,
     const struct timespec *, int);
 int	ffs_truncate(struct vnode *, off_t, int, kauth_cred_t);
+int	ffs_fdiscard(void *);
 
 /* ffs_vfsops.c */
 VFS_PROTOS(ffs);

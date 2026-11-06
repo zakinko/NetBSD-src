@@ -13,6 +13,7 @@ on:
       - 'sys/kern/vnode_if.src'
       - 'sys/sys/lockf.h'
       - 'sys/ufs/ffs/ffs_inode.c'
+      - 'sys/ufs/ffs/ffs_vnops.c'
       - 'sys/fs/tmpfs/tmpfs_subr.c'
       - 'tests/fs/nfsv4/**'
       - 'tests/oncrpc/**'
@@ -46,7 +47,7 @@ jobs:
         id: kernel
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/ufs/ffs/ffs_vnops.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
       - uses: actions/cache/save@v4
         if: steps.tools.outputs.cache-hit != 'true'
@@ -57,7 +58,7 @@ jobs:
         if: steps.kernel.outputs.cache-hit != 'true'
         with:
           path: nb/netbsd
-          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsv4-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/kern/vnode_if.src', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/ufs/ffs/ffs_vnops.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       # ZFS failing must not keep FFS and tmpfs from being measured.
       - continue-on-error: true

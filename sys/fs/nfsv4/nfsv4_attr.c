@@ -253,12 +253,12 @@ attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
 
 /* Numbers, as RFC 7530 s5.9 allows outside Kerberos. */
 static bool
-attr_id(XDR *x, uint32_t id)
+attr_id(XDR *x, bool group, uint32_t id)
 {
-	char buf[12];
+	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len;
 
-	len = snprintf(buf, sizeof(buf), "%u", id);
+	len = nfsv4_idmap_out(group, id, buf);
 	return xdr_u_int32_t(x, &len) && xdr_opaque(x, buf, len);
 }
 
@@ -525,10 +525,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_u32(&x, vp ? va.va_nlink : 2);
 			break;
 		case FATTR4_OWNER:
-			ok = attr_id(&x, vp ? va.va_uid : 0);
+			ok = attr_id(&x, false, vp ? va.va_uid : 0);
 			break;
 		case FATTR4_OWNER_GROUP:
-			ok = attr_id(&x, vp ? va.va_gid : 0);
+			ok = attr_id(&x, true, vp ? va.va_gid : 0);
 			break;
 		case FATTR4_RAWDEV:
 			if (vp != NULL && (va.va_type == VBLK ||
@@ -614,9 +614,9 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
  * a string that is not one has no translation here.
  */
 static uint32_t
-attr_parse_id(XDR *x, uint32_t *idp)
+attr_parse_id(XDR *x, bool group, uint32_t *idp)
 {
-	char buf[12];
+	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len;
 
 	if (!xdr_u_int32_t(x, &len))
@@ -629,15 +629,18 @@ attr_parse_id(XDR *x, uint32_t *idp)
 	}
 	if (!xdr_opaque(x, buf, len))
 		return NFS4ERR_BADXDR;
-	return nfsv4_attr_strid(buf, len, idp);
+	return nfsv4_attr_strid(group, buf, len, idp);
 }
 
 uint32_t
-nfsv4_attr_strid(const char *buf, u_int len, uint32_t *idp)
+nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t *idp)
 {
+	const char *at;
 	uint64_t v;
 	u_int i;
 
+	if ((at = memchr(buf, '@', len)) != NULL)
+		return nfsv4_idmap_in(group, buf, len, (u_int)(at - buf), idp);
 	if (buf[0] == '0' && len > 1)		/* "no leading zeros" */
 		return NFS4ERR_BADOWNER;
 	v = 0;
@@ -752,12 +755,12 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				va->va_mode = v;
 			break;
 		case FATTR4_OWNER:
-			st = attr_parse_id(x, &id);
+			st = attr_parse_id(x, false, &id);
 			if (st == NFS4_OK)
 				va->va_uid = id;
 			break;
 		case FATTR4_OWNER_GROUP:
-			st = attr_parse_id(x, &id);
+			st = attr_parse_id(x, true, &id);
 			if (st == NFS4_OK)
 				va->va_gid = id;
 			break;

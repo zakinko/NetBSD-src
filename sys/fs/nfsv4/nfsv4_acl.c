@@ -94,7 +94,6 @@ static const struct {
  * The longest who that can mean anything: the special identifiers of
  * s6.2.1.5 and a number, s5.9.
  */
-#define	ACL_WHOMAX	16
 
 /* Is there an ACL to be had here?  A pseudo node has none. */
 bool
@@ -126,7 +125,7 @@ nfsv4_acl_get(struct vnode *vp, kauth_cred_t cred, struct acl **aclp)
 static bool
 acl_put_who(XDR *x, const struct acl_entry *ae)
 {
-	char buf[ACL_WHOMAX];
+	char buf[NFSV4_IDSTR_MAX];
 	const char *who = NULL;
 	uint32_t len;
 	u_int i;
@@ -136,7 +135,7 @@ acl_put_who(XDR *x, const struct acl_entry *ae)
 			who = acl_special[i].as_who;
 	}
 	if (who == NULL) {
-		len = snprintf(buf, sizeof(buf), "%u", ae->ae_id);
+		len = nfsv4_idmap_out(ae->ae_tag == ACL_GROUP, ae->ae_id, buf);
 		who = buf;
 	} else
 		len = strlen(who);
@@ -191,7 +190,7 @@ nfsv4_acl_put(XDR *x, const struct acl *acl)
 static uint32_t
 acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 {
-	char buf[ACL_WHOMAX];
+	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len, id, st;
 	u_int i;
 
@@ -217,7 +216,7 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 	if (buf[len - 1] == '@')
 		return NFS4ERR_ATTRNOTSUPP;
 
-	st = nfsv4_attr_strid(buf, len, &id);
+	st = nfsv4_attr_strid(group, buf, len, &id);
 	if (st != NFS4_OK)
 		return st;
 	ae->ae_tag = group ? ACL_GROUP : ACL_USER;

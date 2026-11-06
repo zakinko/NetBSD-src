@@ -224,6 +224,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 };
 
 static struct oncrpc_svc *nfsv4_svc;
+static int nfsv4_rdma_num = -1;
 static struct sysctllog *nfsv4_sysctllog;
 
 static bool
@@ -948,6 +949,7 @@ static const struct oncrpc_program nfsv4_program = {
 	.op_vers_high = NFSV4_VERSION,
 	.op_nprocs = NFSV4_NPROCS,
 	.op_dispatch = nfsv4_dispatch,
+	.op_ulb = &nfsv4_ulb,
 };
 
 /*
@@ -982,7 +984,9 @@ nfsv4_sysctl_addsock(SYSCTLFN_ARGS)
 		nam = m_get(M_WAIT, MT_SONAME);
 		m_copyback(nam, 0, sb.sb_len, &sb);
 	}
-	error = oncrpc_svc_addsock(nfsv4_svc, fp, nam);
+	error = rnode->sysctl_num == nfsv4_rdma_num ?
+	    oncrpc_svc_addrdma(nfsv4_svc, fp, nam) :
+	    oncrpc_svc_addsock(nfsv4_svc, fp, nam);
 	fd_putfile(fd);
 	return error;
 }
@@ -1014,7 +1018,7 @@ nfsv4_fault(volatile int *n)
 static void
 nfsv4_sysctl_init(void)
 {
-	const struct sysctlnode *node = NULL;
+	const struct sysctlnode *node = NULL, *rdma = NULL;
 
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, &node,
 	    CTLFLAG_PERMANENT, CTLTYPE_NODE, "nfsv4", SYSCTL_DESCR("NFS version 4 server"),
@@ -1175,6 +1179,14 @@ nfsv4_sysctl_init(void)
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "impl_name", SYSCTL_DESCR("nii_name of nfs_impl_id4"),
 	    NULL, 0, nfsv4_impl_name, NFSV4_IMPL_MAX,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	/* RFC 8267 s6.3: the port is 20049, and who listens is the daemon. */
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, &rdma,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "addrdma",
+	    SYSCTL_DESCR("Serve this descriptor by iWARP, RFC 8166"),
+	    nfsv4_sysctl_addsock, 0, NULL, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	if (rdma != NULL)
+		nfsv4_rdma_num = rdma->sysctl_num;
 }
 
 MODULE(MODULE_CLASS_MISC, nfsv4, "oncrpc,nfsserver,nfsxattr");

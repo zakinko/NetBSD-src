@@ -19,6 +19,9 @@ if [ ! -d "$HOME/pynfs" ]; then
 	sed -i -e 's/^        self.port = 0$/        self.port = next(_cb_ports)/' \
 	    -e '0,/^class CBServer/s//_cb_ports = iter(range(40001, 40005))\n&/' \
 	    "$HOME/pynfs/nfs4.0/nfs4lib.py"
+	# In Python 3 this compares an int with bytes, and always fails.
+	sed -i "s/if path\[0\] != b'\/':/if path[:1] != b'\/':/" \
+	    "$HOME/pynfs/nfs4.0/testserver.py"
 	(cd "$HOME/pynfs" && python3 setup.py build) >"$OUT/pynfs-build.log" 2>&1
 fi
 cd "$HOME/pynfs/nfs4.0"

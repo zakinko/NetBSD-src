@@ -263,30 +263,6 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 	return nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid, NFSV4_DC_READ);
 }
 
-/* s16.26.5: is the name a file opened to deny writing? */
-bool
-nfsv4_open_denies_remove(const struct nfsv4_cfh *dir, const char *name)
-{
-	struct nfsv4_file *f;
-	struct nfsv4_state *st;
-	struct vnode *vp;
-	bool found = false;
-
-	if (nfsv4_lookup_vp(dir->cf_vp, name, dir->cf_cred, &vp) != 0)
-		return false;
-	mutex_enter(&nfsv4_state_lock);
-	if ((f = nfsv4_file_find(vp)) != NULL) {
-		LIST_FOREACH(st, &f->f_states, st_flist) {
-			if (st->st_type == NFSV4_ST_OPEN &&
-			    (st->st_deny & OPEN4_SHARE_DENY_WRITE) != 0)
-				found = true;
-		}
-	}
-	mutex_exit(&nfsv4_state_lock);
-	vrele(vp);
-	return found;
-}
-
 /*
  * Offer a delegation with an open of access just recorded by the owner
  * sw, s10.4, filling in *od.  From the spare states.

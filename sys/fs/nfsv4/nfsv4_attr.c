@@ -912,6 +912,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	if (fa->fa_mask.bm_more ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
+	/* Whether these can be set depends on the file system. */
+	if ((m & attr_stored) != 0 && (c->c_cur.cf_vp == NULL ||
+	    !nfsv4_xstore_ok(c->c_cur.cf_vp)))
+		return NFS4ERR_ATTRNOTSUPP;
 	if ((m & ~attr_settable) != 0)
 		return NFS4ERR_INVAL;
 

@@ -35,7 +35,7 @@ if what == 'attrs':
                                deny=OPEN4_SHARE_DENY_NONE)
     sup = c.do_getattr(FATTR4_SUPPORTED_ATTRS, path)
     print('supported', sup)
-    if FATTR4_HIDDEN not in sup:
+    if not sup & (1 << FATTR4_HIDDEN):
         print('not on this file system')
         sys.exit(0)
     for a, v in ((FATTR4_HIDDEN, True), (FATTR4_ARCHIVE, True),
@@ -49,7 +49,7 @@ elif what == 'quota':
     fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
                                deny=OPEN4_SHARE_DENY_NONE)
     sup = c.do_getattr(FATTR4_SUPPORTED_ATTRS, path)
-    want('in supported_attrs', FATTR4_QUOTA_USED in sup, True)
+    want('in supported_attrs', bool(sup & (1 << FATTR4_QUOTA_USED)), True)
     r = c.compound([op.putfh(fh), op.write(sid, 0, FILE_SYNC4, b'x' * 65536)])
     want('WRITE', r.status, NFS4_OK)
     used = c.do_getattr(FATTR4_QUOTA_USED, path)
@@ -68,15 +68,15 @@ elif what == 'fair':
                               deny=OPEN4_SHARE_DENY_NONE)
     fh3, s3 = c3.open_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
                               deny=OPEN4_SHARE_DENY_NONE)
-    r1 = c1.lock_file(b'o', fh1, s1, type=WRITE_LT)
+    r1 = c1.lock_file(b'o', fh1, s1, type=WRITE_LT, lockowner=b'lo1')
     want('c1 LOCK', r1.status, NFS4_OK)
-    r = c2.lock_file(b'o', fh2, s2, type=WRITEW_LT)
+    r = c2.lock_file(b'o', fh2, s2, type=WRITEW_LT, lockowner=b'lo2')
     want('c2 WRITEW, denied', r.status, NFS4ERR_DENIED)
     r = c1.unlock_file(1, fh1, r1.lockid)
     want('c1 LOCKU', r.status, NFS4_OK)
-    r = c3.lock_file(b'o', fh3, s3, type=WRITE_LT)
+    r = c3.lock_file(b'o', fh3, s3, type=WRITE_LT, lockowner=b'lo3')
     want('c3 LOCK, behind c2, s9.4', r.status, NFS4ERR_DENIED)
-    r = c2.lock_file(b'o', fh2, s2, type=WRITEW_LT)
+    r = c2.lock_file(b'o', fh2, s2, type=WRITEW_LT, lockowner=b'lo2')
     want('c2 WRITEW, its turn', r.status, NFS4_OK)
 elif what == 'moved':
     c, c2 = client(b'm1', export), client(b'm2', export)

@@ -13,6 +13,8 @@ os.write(f,b'x'*5000)
 time.sleep(25)" &
 sleep 8
 python3 ./more.py cbgetattr /export/pynfs/cg 5000
+grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -6
 wait
+grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -6
 sudo umount "$m"
 ssh netbsd 'dmesg | tail -3'

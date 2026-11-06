@@ -28,8 +28,9 @@
 
 /*
  * Callbacks, RFC 7530 s17 and s18: CB_NULL to find out whether the path
- * works, s10.2, and CB_RECALL.  CB_GETATTR is not used, s10.4.3 allowing
- * the server to recall instead.
+ * works, s10.2, CB_RECALL, and CB_GETATTR.  The last is made in the
+ * thread of the GETATTR it serves, which waits for it at most the
+ * timeout: a client cannot be asked less directly.
  *
  * Nothing that wants a call made may wait for it, as a peer that has
  * gone can hold a call for the whole timeout, so the work is a pair of
@@ -288,6 +289,53 @@ cb_status_decode(XDR *x, void *res)
 	return xdr_u_int32_t(x, (uint32_t *)res);
 }
 
+struct cb_getattr {
+	uint32_t	ga_ident;
+	struct nfsv4_fh	ga_fh;
+	uint64_t	ga_size;
+	uint64_t	ga_change;
+	bool		ga_got;
+};
+
+/* CB_COMPOUND4args of one CB_GETATTR, s18.1, of change and size. */
+static bool
+cb_getattr_encode(XDR *x, void *arg)
+{
+	struct cb_getattr *ga = arg;
+	uint32_t zero = 0, one = 1, op = NFSV4_OP_CB_GETATTR;
+	uint32_t mask = (1U << FATTR4_CHANGE) | (1U << FATTR4_SIZE);
+
+	return xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &zero) &&
+	    xdr_u_int32_t(x, &ga->ga_ident) && xdr_u_int32_t(x, &one) &&
+	    xdr_u_int32_t(x, &op) && nfsv4_xdr_fh(x, &ga->ga_fh) &&
+	    xdr_u_int32_t(x, &one) && xdr_u_int32_t(x, &mask);
+}
+
+/* CB_COMPOUND4res, s17.2.3, with CB_GETATTR4res, s18.1.3. */
+static bool
+cb_getattr_decode(XDR *x, void *res)
+{
+	struct cb_getattr *ga = res;
+	struct nfsv4_bitmap bm;
+	uint32_t status, n, op, len, opst;
+
+	if (!xdr_u_int32_t(x, &status) || !xdr_u_int32_t(x, &n) ||
+	    !nfsv4_xdr_skip(x, n) || !xdr_u_int32_t(x, &n))
+		return false;
+	if (status != NFS4_OK || n != 1)
+		return true;
+	if (!xdr_u_int32_t(x, &op) || !xdr_u_int32_t(x, &opst) ||
+	    op != NFSV4_OP_CB_GETATTR || opst != NFS4_OK ||
+	    !nfsv4_xdr_bitmap(x, &bm) || !xdr_u_int32_t(x, &len))
+		return false;
+	if (bm.bm_n < 1 || bm.bm_w[0] != ((1U << FATTR4_CHANGE) |
+	    (1U << FATTR4_SIZE)) || len != 16)
+		return false;
+	ga->ga_got = xdr_u_int64_t(x, &ga->ga_change) &&
+	    xdr_u_int64_t(x, &ga->ga_size);
+	return ga->ga_got;
+}
+
 static int
 cb_call(const struct cb_target *ct, uint32_t proc,
     bool (*enc)(XDR *, void *), void *arg, bool (*dec)(XDR *, void *),
@@ -425,6 +473,39 @@ cb_thread(void *arg)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	kthread_exit(0);
+}
+
+/*
+ * Ask cl about the file of fh.  The caller holds the lock, which is
+ * dropped for the call: 0 and the two values, or an errno.  cl may be
+ * gone on return.
+ */
+int
+nfsv4_cb_getattr(const struct nfsv4_client *cl, const struct nfsv4_fh *fh,
+    uint64_t *sizep, uint64_t *changep)
+{
+	struct cb_target ct;
+	struct cb_getattr *ga;
+	int error;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	cb_target_get(cl, &ct);
+	mutex_exit(&nfsv4_state_lock);
+	ga = kmem_zalloc(sizeof(*ga), KM_SLEEP);
+	ga->ga_ident = ct.ct_ident;
+	ga->ga_fh = *fh;
+	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_getattr_encode, ga,
+	    cb_getattr_decode, ga);
+	if (error == 0 && !ga->ga_got)
+		error = EIO;
+	if (error == 0) {
+		*sizep = ga->ga_size;
+		*changep = ga->ga_change;
+	}
+	kmem_free(ga, sizeof(*ga));
+	mutex_enter(&nfsv4_state_lock);
+	return error;
 }
 
 /* Find out whether cl can be called, s10.2. */

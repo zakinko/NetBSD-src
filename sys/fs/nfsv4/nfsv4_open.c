@@ -556,6 +556,11 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		if (VOP_ADVLOCK(vp, ds, F_GETLK, &fl, 0) != 0 ||
 		    fl.l_type != F_UNLCK)
 			ds->ds_nowrite = true;
+		/* s10.4.3, sc */
+		vn_lock(vp, LK_SHARED | LK_RETRY);
+		if (VOP_GETATTR(vp, &va, cf->cf_cred) == 0)
+			ds->ds_change = nfsv4_attr_change(vp, &va);
+		VOP_UNLOCK(vp);
 	}
 	vref(vp);
 	st = nfsv4_cfh_setvp(c, &fc, vp);

@@ -162,6 +162,8 @@ struct nfsv4_state {
 	TAILQ_ENTRY(nfsv4_state) st_cbq;	/* to be called back */
 	LIST_ENTRY(nfsv4_state) st_rlist;	/* recalled */
 	uint32_t	st_dtype;	/* OPEN_DELEGATE_* */
+	uint64_t	st_sc;		/* s10.4.3 */
+	bool		st_modified;
 	bool		st_cbqueued;	/* on st_cbq */
 	bool		st_recalled;	/* on st_rlist */
 	bool		st_prev;	/* of a client now restarted, s10.2.1 */
@@ -174,6 +176,7 @@ SLIST_HEAD(nfsv4_reap, nfsv4_state);
 /* Allocated beforehand for a delegation that may come of an OPEN. */
 struct nfsv4_deleg_spare {
 	bool		ds_nowrite;	/* locks on the file, of whoever */
+	uint64_t	ds_change;	/* s10.4.3, sc */
 	struct nfsv4_state *ds_st;
 	struct nfsv4_owner_s *ds_sw;
 	struct nfsv4_file *ds_f;

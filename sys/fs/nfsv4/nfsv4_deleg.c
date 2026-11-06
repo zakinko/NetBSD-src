@@ -197,6 +197,72 @@ nfsv4_deleg_break_name(const struct nfsv4_cfh *dir, const char *name)
 	return st;
 }
 
+/*
+ * s10.4.3: a GETATTR of what the holder of a write delegation may have
+ * changed.  Only for one whose holder is another client; c_ov gets what
+ * the holder said, and if the holder cannot say, it is recalled and the
+ * GETATTR waits like anything else.  Not done here, though a SHOULD: the
+ * constructed times are not stored in the file's metadata, as there is
+ * no way to set ctime through VOP_SETATTR.
+ */
+uint32_t
+nfsv4_deleg_getattr(struct nfsv4_compound *c)
+{
+	const struct nfsv4_cfh *cf = &c->c_cur;
+	struct vnode *vp = cf->cf_vp;
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	struct nfsv4_client *cl;
+	struct nfsv4_fh fh;
+	struct vattr va;
+	uint64_t other, size, cc;
+	int error;
+
+	if (atomic_load_relaxed(&deleg_count) == 0)
+		return NFS4_OK;
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_GETATTR(vp, &va, cf->cf_cred);
+	VOP_UNLOCK(vp);
+	if (error != 0)
+		return nfsv4_errno(error);
+
+	mutex_enter(&nfsv4_state_lock);
+	f = nfsv4_file_find(vp);
+	if (f != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			cl = st->st_owner->sw_client;
+			if (st->st_type == NFSV4_ST_DELEG &&
+			    st->st_dtype == OPEN_DELEGATE_WRITE &&
+			    !st->st_recalled && !st->st_prev &&
+			    cl->cl_cbstate == NFSV4_CB_UP &&
+			    cl->cl_connid != c->c_rq->rq_connid)
+				break;
+		}
+		if (st != NULL) {
+			other = st->st_other;
+			fh = f->f_fh;
+			error = nfsv4_cb_getattr(cl, &fh, &size, &cc);
+			st = error == 0 ? nfsv4_state_byother(other) : NULL;
+			if (st != NULL && st->st_file != NULL) {
+				if (!st->st_modified && (cc != st->st_sc ||
+				    size != va.va_size))
+					st->st_modified = true;
+				if (st->st_modified) {
+					st->st_sc++;
+					c->c_ov.ao_valid = true;
+					c->c_ov.ao_size = size;
+					c->c_ov.ao_change = st->st_sc;
+					getnanotime(&c->c_ov.ao_time);
+				}
+				mutex_exit(&nfsv4_state_lock);
+				return NFS4_OK;
+			}
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid, NFSV4_DC_READ);
+}
+
 /* s16.26.5: is the name a file opened to deny writing? */
 bool
 nfsv4_open_denies_remove(const struct nfsv4_cfh *dir, const char *name)
@@ -284,6 +350,7 @@ nfsv4_deleg_add(struct nfsv4_client *cl, struct vnode *vp,
 	}
 	st = nfsv4_state_add(&ds->ds_st, dw, &ds->ds_f, vp, NFSV4_ST_DELEG);
 	st->st_dtype = type;
+	st->st_sc = ds->ds_change;
 	st->st_access = type == OPEN_DELEGATE_WRITE ?
 	    OPEN4_SHARE_ACCESS_BOTH : OPEN4_SHARE_ACCESS_READ;
 	st->st_file->f_fh = *fh;

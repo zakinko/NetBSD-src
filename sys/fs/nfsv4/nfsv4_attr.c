@@ -107,7 +107,8 @@ static const uint64_t attr_absent =
 
 /* Those needing VOP_GETATTR, and those needing VFS_STATVFS. */
 static const uint64_t attr_vattr =
-    BIT(FATTR4_TYPE) | BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) |
+    BIT(FATTR4_QUOTA_AVAIL_HARD) | BIT(FATTR4_QUOTA_AVAIL_SOFT) |
+    BIT(FATTR4_QUOTA_USED) | BIT(FATTR4_TYPE) | BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) |
     BIT(FATTR4_FILEID) | BIT(FATTR4_MODE) | BIT(FATTR4_NUMLINKS) |
     BIT(FATTR4_OWNER) | BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_RAWDEV) |
     BIT(FATTR4_SPACE_USED) | BIT(FATTR4_TIME_ACCESS) |
@@ -222,7 +223,7 @@ bool
 nfsv4_attr_supported(const struct nfsv4_bitmap *bm, struct vnode *vp)
 {
 
-	return (attr_mask(bm) & ~attr_supported_by(vp)) == 0;
+	return (attr_mask(bm) & ~attr_supported_full(vp)) == 0;
 }
 
 static uint32_t
@@ -519,6 +520,12 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 					return nfsv4_errno(error);
 			}
 		}
+		/* s10.4.3 */
+		if (c->c_ov.ao_valid) {
+			va.va_size = c->c_ov.ao_size;
+			va.va_mtime = c->c_ov.ao_time;
+			va.va_ctime = c->c_ov.ao_time;
+		}
 		if ((m & BIT(FATTR4_MOUNTED_ON_FILEID)) != 0) {
 			error = attr_mounted_on(vp, cf->cf_cred, &va, &id);
 			if (error != 0)
@@ -577,7 +584,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		case FATTR4_CHANGE:
 			/* A pseudo node only changes at a reboot, as far
 			   as a client can tell; see nfsv4_fh.c. */
-			ok = attr_u64(&x, vp ? nfsv4_attr_change(vp, &va) :
+			ok = attr_u64(&x, c->c_ov.ao_valid ? c->c_ov.ao_change :
+			    vp ? nfsv4_attr_change(vp, &va) :
 			    (uint64_t)boot.tv_sec);
 			break;
 		case FATTR4_SIZE:
@@ -769,13 +777,11 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_INVAL;
 	/*
 	 * s10.4.3: a client with a write delegation may have what these
-	 * say in its cache.  s10.4.3 lets the server recall rather than
-	 * use CB_GETATTR.
+	 * say in its cache.
 	 */
 	if (c->c_cur.cf_vp != NULL &&
 	    (attr_mask(&a->getattr.mask) & attr_delegated) != 0) {
-		st = nfsv4_deleg_break(c->c_cur.cf_vp, NULL,
-		    c->c_rq->rq_connid, NFSV4_DC_READ);
+		st = nfsv4_deleg_getattr(c);
 		if (st != NFS4_OK)
 			return st;
 	}
@@ -783,6 +789,7 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	buf = kmem_alloc(NFSV4_ATTRBUF, KM_SLEEP);
 	st = nfsv4_attr_fill(c, &c->c_cur, &a->getattr.mask, NFS4_OK, buf,
 	    NFSV4_ATTRBUF, &got, &len);
+	c->c_ov.ao_valid = false;
 	if (st == NFS4_OK && (!nfsv4_xdr_bitmap(c->c_rx, &got) ||
 	    !xdr_u_int32_t(c->c_rx, &len) ||
 	    !XDR_PUTBYTES(c->c_rx, buf, len)))

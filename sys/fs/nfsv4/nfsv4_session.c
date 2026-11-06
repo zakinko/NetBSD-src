@@ -162,8 +162,10 @@ session_rele(struct nfsv4_session *se)
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 	KASSERT(se->se_refs > 0);
 
-	if (--se->se_refs != 0)
+	if (--se->se_refs != 0) {
+		cv_broadcast(&nfsv4_state_cv);	/* session_fence() */
 		return;
+	}
 	KASSERT(se->se_gone);
 	for (i = 0; i < se->se_nslots; i++) {
 		if (se->se_slots[i].sl_reply != NULL)
@@ -185,6 +187,40 @@ session_drop(struct nfsv4_session *se)
 	LIST_REMOVE(se, se_hash);
 	LIST_REMOVE(se, se_list);
 	session_rele(se);
+}
+
+/*
+ * RFC 7862 s14.1.4: wait for the COMPOUNDs on a session held by the
+ * caller, other than the caller's own, which are the references above
+ * the table's, the caller's and that of mine.
+ */
+static void
+session_fence(const struct nfsv4_compound *c, struct nfsv4_session *se,
+    u_int mine)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	while (se->se_refs > mine + (se == c->c_sess ? 1 : 0))
+		cv_wait(&nfsv4_state_cv, &nfsv4_state_lock);
+}
+
+/* The same for all the sessions of a client, which stays referenced. */
+static void
+client_fence(const struct nfsv4_compound *c, struct nfsv4_client *cl)
+{
+	struct nfsv4_session *se;
+
+	cl->cl_refs++;
+again:
+	LIST_FOREACH(se, &cl->cl_sessions, se_list) {
+		if (se->se_refs > 2 - (se == c->c_sess ? 0 : 1)) {
+			cv_wait(&nfsv4_state_cv, &nfsv4_state_lock);
+			goto again;
+		}
+	}
+	cl->cl_refs--;
+	cv_broadcast(&nfsv4_state_cv);
 }
 
 void
@@ -546,12 +582,18 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s18.35.3: referrals and migration can both be seen here. */
 	uint32_t flags = EXCHGID4_FLAG_USE_NON_PNFS |
 	    EXCHGID4_FLAG_SUPP_MOVED_REFER | EXCHGID4_FLAG_SUPP_MOVED_MIGR;
-	uint32_t seq, st;
+	uint32_t seq, st, argflags;
 	uint64_t id;
 	bool same_verf, same_uid;
 
 	/* s18.35.3 */
-	if ((ea->flags & ~EXCHGID4_ARG_FLAGS) != 0)
+	argflags = EXCHGID4_ARG_FLAGS;
+	/* RFC 7862 s14.1.4: whether it was asked for or not. */
+	if (c->c_minor >= 2) {
+		argflags |= EXCHGID4_FLAG_SUPP_FENCE_OPS;
+		flags |= EXCHGID4_FLAG_SUPP_FENCE_OPS;
+	}
+	if ((ea->flags & ~argflags) != 0)
 		return NFS4ERR_INVAL;
 	/* s18.35.3: the others MUST be sent with RPCSEC_GSS. */
 	if (ea->how != SP4_NONE)
@@ -586,6 +628,13 @@ existing:
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
 		return exchange_reply(c, id, seq, flags);
+	}
+	/* RFC 7862 s14.1.4: a new verifier waits for what is in progress. */
+	if (conf != NULL && !same_verf && c->c_minor >= 2) {
+		client_fence(c, conf);
+		conf = nfsv4_client_find(ea->id, ea->idlen, true, 1);
+		unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
+		same_uid = conf != NULL && conf->cl_uid == uid;
 	}
 	if (conf != NULL && !same_uid) {		/* 3 */
 		if (!conf->cl_expired && time_uptime <= conf->cl_expire &&
@@ -775,8 +824,13 @@ nfsv4_op_destroy_session(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = NFS4ERR_CONN_NOT_BOUND_TO_SESSION;	/* s18.37.3 */
 	else if (se == c->c_sess && c->c_opi + 1 != c->c_numops)
 		st = NFS4ERR_NOT_ONLY_OP;		/* s18.37.3 */
-	else
+	else {
+		/* Taken from the table first, so no more can come. */
+		se->se_refs++;
 		session_drop(se);
+		session_fence(c, se, 1);
+		session_rele(se);
+	}
 	mutex_exit(&nfsv4_state_lock);
 	return st;
 }

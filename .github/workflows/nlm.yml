@@ -1,0 +1,165 @@
+name: nlm
+on:
+  push:
+    branches: [nfsnlm]
+    paths:
+      - 'sys/fs/nlm/**'
+      - 'sys/oncrpc/**'
+      - 'sys/fs/nfsv4/**'
+      - 'sys/kern/vfs_lockf.c'
+      - 'sys/sys/lockf.h'
+      - 'sys/nfs/**'
+      - 'sys/modules/nlm/**'
+      - 'usr.sbin/rpc.lockd/**'
+      - 'usr.sbin/rpc.statd/**'
+      - 'ci/nlm/**'
+      - 'etc/rc.d/nfslocking'
+      - '.github/workflows/nlm.yml'
+  workflow_dispatch:
+concurrency:
+  group: nlm-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: nb
+          key: nlm-nb-${{ github.sha }}
+          restore-keys: nlm-nb-
+      - run: sh ci/nlm/build.sh "$PWD/nb" "$PWD/out"
+      - run: rm -rf nb/zfs nb/zobj && ZFS_KEEP_XDR=1 sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
+        continue-on-error: true
+      - run: grep -n -B3 -A12 'error:' out/zfs-module.log | head -60 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nlm
+            ci/nfsv4/zfs-user.sh
+            ci/nfsv4/zfs-sha
+            etc/rc.d/nfslocking
+            ci/oncrpc/swap.sh
+            usr.sbin/rpc.lockd
+            usr.sbin/rpc.statd
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: The ZFS userland, on the stock kernel
+        run: |
+          scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/
+          ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
+      - run: sh ci/oncrpc/swap.sh out/netbsd.on NLMON ssh netbsd
+      - name: Start the servers, and the grace period
+        shell: bash
+        run: |
+          ssh netbsd 'mkdir -p /var/tmp/nlm'
+          tar -C out -cf - modules | ssh netbsd 'tar -C /var/tmp/nlm -xf -'
+          tar -C usr.sbin -cf - rpc.lockd rpc.statd | ssh netbsd 'tar -C /var/tmp/nlm -xf -'
+          scp ci/nlm/rawnlm.c ci/nlm/server.sh ci/nlm/raw.sh ci/nlm/tunpipe.c ci/nlm/try.c ci/nlm/gfh.c ci/nlm/server2.sh etc/rc.d/nfslocking netbsd:/var/tmp/nlm/
+          ssh netbsd 'cc -o /var/tmp/tunpipe /var/tmp/nlm/tunpipe.c && cc -o /var/tmp/try /var/tmp/nlm/try.c && cc -o /var/tmp/gfh /var/tmp/nlm/gfh.c'
+          ssh netbsd 'sh /var/tmp/nlm/server.sh /var/tmp/nlm on' | tee out/grace.txt
+          test "${PIPESTATUS[0]}" = 0
+      - name: Two clients, by hand
+        shell: bash
+        run: |
+          ssh netbsd 'sh /var/tmp/nlm/raw.sh on' | tee out/raw.txt
+          test "${PIPESTATUS[0]}" = 0
+      - name: The Linux client
+        run: sh ci/nlm/linux.sh "$PWD/out"
+      - name: The NetBSD client
+        shell: bash
+        run: |
+          scp ci/nlm/client.sh netbsd:/var/tmp/nlm/
+          ssh netbsd 'sh /var/tmp/nlm/client.sh' | tee out/client.txt
+          test "${PIPESTATUS[0]}" = 0
+      - name: The NetBSD client against a Linux server, with reclaim
+        run: sh ci/nlm/reclaim.sh "$PWD/out"
+      - name: A real reboot of the server
+        run: sh ci/nlm/reboot.sh "$PWD/out"
+      - name: What the kernel said
+        if: always()
+        run: ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfs|nlm'; sysctl vfs.nlm; tail -30 /var/log/messages; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results
+          path: |
+            out/grace.txt
+            out/raw.txt
+            out/linux.txt
+            out/t_kernel.txt
+            out/client.txt
+            out/reclaim.txt
+            out/reboot.txt
+            out/kernel.txt
+          retention-days: 30
+  plain:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nlm
+            ci/oncrpc/swap.sh
+            usr.sbin/rpc.lockd
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/oncrpc/swap.sh out/netbsd.off NLMOFF ssh netbsd
+      - name: Without NFSSERVER_ONCRPC
+        shell: bash
+        run: |
+          cp out/offmods/* out/modules/
+          rm -f out/modules/zfs.kmod
+          ssh netbsd 'mkdir -p /var/tmp/nlm'
+          tar -C out -cf - modules | ssh netbsd 'tar -C /var/tmp/nlm -xf -'
+          tar -C usr.sbin -cf - rpc.lockd | ssh netbsd 'tar -C /var/tmp/nlm -xf -'
+          scp ci/nlm/rawnlm.c ci/nlm/server.sh ci/nlm/raw.sh netbsd:/var/tmp/nlm/
+          ssh netbsd 'sh /var/tmp/nlm/server.sh /var/tmp/nlm off' | tee out/grace-off.txt
+          test "${PIPESTATUS[0]}" = 0
+          ssh netbsd 'sh /var/tmp/nlm/raw.sh off' | tee out/raw-off.txt
+          test "${PIPESTATUS[0]}" = 0
+      - if: always()
+        run: ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfs|nlm'; dmesg | tail -20" | tee out/kernel-off.txt || echo no answer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-off
+          path: |
+            out/grace-off.txt
+            out/raw-off.txt
+            out/kernel-off.txt
+          retention-days: 30

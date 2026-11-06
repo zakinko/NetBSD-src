@@ -9,7 +9,7 @@ S=$PWD/sys
 git init -q "$W/zfs"; cd "$W/zfs"
 git fetch -q --depth 1 https://github.com/zakinko/zfs "$SHA"
 git checkout -q FETCH_HEAD
-python3 - <<'P'
+[ -n "${ZFS_KEEP_XDR:-}" ] || python3 - <<'P'
 import re
 p='module/Makefile.netbsd';s=open(p).read()
 s2=re.sub(r'SRCS\+=\s*xdr\.c \\\n\s*xdr_array\.c \\\n\s*xdr_mem\.c\n','',s)
@@ -20,6 +20,8 @@ a='MODULE(MODULE_CLASS_DRIVER, zfs, "zlib");'
 assert s.count(a)==1
 open(p,'w').write(s.replace(a,'MODULE(MODULE_CLASS_DRIVER, zfs, "zlib,xdr");'))
 P
+# uvm/uvm.h keeps struct uvm from modules now; this file looks in it.
+sed -i '1i #include <sys/param.h>\n#undef _MODULE\n#include <uvm/uvm.h>\n#define _MODULE 1' module/os/bsd/spl/spl_misc.c
 mkdir -p "$W/zobj"; cd module
 "$W/tools/bin/nbmake-amd64" -f Makefile.netbsd S="$S" MAKEOBJDIR="$W/zobj" \
     MKDEBUG=no MKCTF=no -j"$(nproc)" >"$OUT/zfs-module.log" 2>&1 ||

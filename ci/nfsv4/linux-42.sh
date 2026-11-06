@@ -150,7 +150,7 @@ punchfsck() {
 	t sudo fallocate -p -o 100000 -l 20000000 "$p/punched"
 	t sudo fallocate -p -o 30000000 -l 4096 "$p/punched"
 	t sudo umount "$p"
-	ssh netbsd "sync; umount -f $x; fsck_ffs -fn /dev/r${v}d; mount $o /dev/${v}d $x; rm -f $x/punched; kill -HUP \\$(cat /var/run/mountd.pid)" >"$OUT/fsck-$v.txt" 2>&1
+	ssh netbsd "sync; umount -f $x; fsck_ffs -fn /dev/r${v}d; mount $o /dev/${v}d $x; rm -f $x/punched; kill -HUP \$(cat /var/run/mountd.pid)" >"$OUT/fsck-$v.txt" 2>&1
 	cat "$OUT/fsck-$v.txt"
 	t grep -q 'Phase 5' "$OUT/fsck-$v.txt"
 	n grep -E 'BAD|DUP|MISSING|UNREF|INCORRECT BLOCK' "$OUT/fsck-$v.txt"

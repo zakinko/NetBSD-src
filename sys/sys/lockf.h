@@ -60,9 +60,15 @@ struct lockf;
  *
  * F_HASLK says whether a_id holds a lock in the range: l_type is left as
  * the type of the first one found, or F_UNLCK.
+ *
+ * F_CANCELWAIT makes a thread asleep in F_SETLK with F_WAIT for a_id and
+ * exactly this range return ECANCELED, for a thread that no signal can
+ * reach.  l_type is left F_UNLCK if none was asleep, which may be because
+ * the thread is between two sleeps, and the caller has to ask again.
  */
 #define	F_GETLKID	100
 #define	F_HASLK		101
+#define	F_CANCELWAIT	102
 
 struct lf_query {
 	struct flock	lfq_fl;

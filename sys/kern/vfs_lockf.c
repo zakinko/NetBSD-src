@@ -85,6 +85,9 @@ struct lockf {
 /* Maximum length of sleep chains to traverse to try and detect deadlock. */
 #define MAXDEPTH 50
 
+/* In lf_flags, beside F_WAIT, F_POSIX and F_FLOCK: see F_CANCELWAIT. */
+#define	F_LFCANCEL	0x1000
+
 static kmutex_t lockf_lock __cacheline_aligned;
 static char lockstr[] = "lockf";
 
@@ -606,6 +609,8 @@ lf_setlock(struct lockf *lock, struct lockf **sparelock,
 		}
 #endif /* LOCKF_DEBUG */
 		error = cv_wait_sig(&lock->lf_cv, interlock);
+		if (lock->lf_flags & F_LFCANCEL)
+			error = SET_ERROR(ECANCELED);
 
 		/*
 		 * We may have been awoken by a signal (in
@@ -853,6 +858,31 @@ lf_haslk(struct lockf *lock, struct flock *fl)
 }
 
 /*
+ * Wake a sleeper for lock's id and range, to give up.  Sleepers are only
+ * found through what blocks them.
+ */
+static int
+lf_cancelwait(struct lockf *lock, struct flock *fl)
+{
+	struct lockf *lf, *w;
+
+	fl->l_type = F_UNLCK;
+	for (lf = *lock->lf_head; lf != NULL; lf = lf->lf_next) {
+		TAILQ_FOREACH(w, &lf->lf_blkhd, lf_block) {
+			if (w->lf_id != lock->lf_id ||
+			    w->lf_start != lock->lf_start ||
+			    w->lf_end != lock->lf_end)
+				continue;
+			w->lf_flags |= F_LFCANCEL;
+			cv_broadcast(&w->lf_cv);
+			fl->l_type = w->lf_type;
+			return 0;
+		}
+	}
+	return 0;
+}
+
+/*
  * Do an advisory lock operation.
  */
 int
@@ -935,6 +965,7 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 	case F_GETLK:
 	case F_GETLKID:
 	case F_HASLK:
+	case F_CANCELWAIT:
 		sparelock = NULL;
 		break;
 
@@ -958,6 +989,7 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 	case F_GETLK:
 	case F_GETLKID:
 	case F_HASLK:
+	case F_CANCELWAIT:
 		lock = lf_alloc(0);
 		break;
 	}
@@ -1020,6 +1052,10 @@ lf_advlock(struct vop_advlock_args *ap, struct lockf **head, off_t size)
 
 	case F_HASLK:
 		error = lf_haslk(lock, fl);
+		break;
+
+	case F_CANCELWAIT:
+		error = lf_cancelwait(lock, fl);
 		break;
 
 	default:

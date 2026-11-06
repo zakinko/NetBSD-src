@@ -572,7 +572,7 @@ xa_op_lookup(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_name *nm = &a->name.name;
 	uint32_t st;
 
-	st = nfsv4_name_check(nm);
+	st = nfsv4_name_check(c, nm);
 	if (st != NFS4_OK)
 		return st;
 	return nfsv4_xattr_lookup(c, &c->c_cur, nm->nm_str, &c->c_cur);
@@ -608,7 +608,7 @@ xa_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st;
 	int error;
 
-	st = nfsv4_name_check(nm);
+	st = nfsv4_name_check(c, nm);
 	if (st != NFS4_OK)
 		return st;
 	memset(&ci, 0, sizeof(ci));
@@ -649,9 +649,9 @@ xa_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_NOFILEHANDLE;
 	if (sf->cf_attr != NFSV4_ATTR_DIR || sf->cf_vp != vp)
 		return NFS4ERR_XDEV;
-	st = nfsv4_name_check(&ra->oldname);
+	st = nfsv4_name_check(c, &ra->oldname);
 	if (st == NFS4_OK)
-		st = nfsv4_name_check(&ra->newname);
+		st = nfsv4_name_check(c, &ra->newname);
 	if (st != NFS4_OK)
 		return st;
 	if (strlen(ra->newname.nm_str) > NFSV4_ANAME_MAX)

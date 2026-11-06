@@ -251,8 +251,8 @@ nfsv4_xdr_open_deleg(XDR *x, struct nfsv4_open_deleg *od)
 		return true;
 	/* RFC 8881 s18.16.2, open_none_delegation4 */
 	if (od->od_type == OPEN_DELEGATE_NONE_EXT)
-		return U32(x, &od->od_why) && (od->od_why != WND4_RESOURCE ||
-		    U32(x, &od->od_recall));
+		return U32(x, &od->od_why) && ((od->od_why != WND4_RESOURCE &&
+		    od->od_why != WND4_CONTENTION) || U32(x, &od->od_recall));
 	if (!nfsv4_xdr_stateid(x, &od->od_stateid) || !U32(x, &od->od_recall))
 		return false;
 	if (od->od_type == OPEN_DELEGATE_WRITE &&
@@ -703,7 +703,7 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		case CLAIM_DELEG_PREV_FH:
 			return true;
 		case CLAIM_PREVIOUS:
-			return U32(x, &a->want_delegation.claim);
+			return U32(x, &a->want_delegation.delegate_type);
 		default:
 			return false;
 		}

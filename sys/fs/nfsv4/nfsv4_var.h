@@ -80,6 +80,7 @@ struct nfsv4_cfh {
 	u_int		cf_attr;	/* NFSV4_ATTR_*; see nfsv4_xattr.c */
 	char		cf_aname[NFSV4_ANAME_MAX + 1];
 	const struct nfsv4_referral *cf_ref;	/* absent, s8.2 */
+	bool		cf_wrongsec;	/* the export refuses this request */
 };
 
 /* What SETATTR asked of the attributes of nfsv4_xattr.c. */
@@ -209,6 +210,8 @@ uint32_t nfsv4_file_check(const struct nfsv4_compound *,
 int	nfsv4_dir_change(struct vnode *, kauth_cred_t, uint64_t *);
 uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
+uint32_t nfsv4_setattr_stateid(struct nfsv4_compound *,
+	    const struct nfsv4_stateid *);
 
 uint32_t nfsv4_errno(int);
 void	nfsv4_write_verf(struct nfsv4_verifier *);
@@ -257,7 +260,9 @@ bool	nfsv4_acl_put(XDR *, const struct acl *);
 uint32_t nfsv4_acl_parse(XDR *, struct acl **);
 uint32_t nfsv4_acl_set(struct nfsv4_compound *, struct vnode *, kauth_cred_t);
 uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t *);
-uint32_t nfsv4_name_check(const struct nfsv4_name *);
+uint32_t nfsv4_name_check(const struct nfsv4_compound *,
+	    const struct nfsv4_name *);
+extern int nfsv4_utf8_only;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
 uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);
@@ -322,6 +327,7 @@ uint32_t nfsv4_op_setclientid_confirm(struct nfsv4_compound *,
 uint32_t nfsv4_op_getfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookup(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_lookupp(struct nfsv4_compound *);
 uint32_t nfsv4_op_putfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putpubfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);

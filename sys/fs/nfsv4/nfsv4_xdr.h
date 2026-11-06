@@ -236,6 +236,7 @@ struct nfsv4_args_open {
 	uint32_t	share_access;
 	uint32_t	share_deny;
 	uint32_t	want;		/* RFC 8881 s18.16.1, from share_access */
+	bool		wanted;		/* it has any of those flags */
 	struct nfsv4_owner owner;
 	uint32_t	opentype;
 	uint32_t	createmode;		/* OPEN4_CREATE */
@@ -395,6 +396,7 @@ struct nfsv4_args_u32 {			/* RECLAIM_COMPLETE, SECINFO_NO_NAME */
 
 struct nfsv4_args_want_delegation {
 	uint32_t	want;
+	uint32_t	delegate_type;	/* CLAIM_PREVIOUS */
 	uint32_t	claim;		/* deleg_claim4 */
 };
 

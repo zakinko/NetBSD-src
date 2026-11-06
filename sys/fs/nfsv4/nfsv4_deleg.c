@@ -55,6 +55,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/fcntl.h>
 #include <sys/kmem.h>
 #include <sys/systm.h>
 #include <sys/time.h>
@@ -198,6 +199,35 @@ nfsv4_deleg_break_name(const struct nfsv4_cfh *dir, const char *name)
 }
 
 /*
+ * rfc8881bis-11 s36.25.4 (RFC 8881 s18.25.4 has a SHOULD NOT): an open
+ * that denies writing keeps its name from being removed, by REMOVE or by
+ * a RENAME over it.  Racing the VOP as above.
+ */
+uint32_t
+nfsv4_open_denies_remove(const struct nfsv4_cfh *dir, const char *name)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	struct vnode *vp;
+	uint32_t status = NFS4_OK;
+
+	if (nfsv4_lookup_vp(dir->cf_vp, name, dir->cf_cred, &vp) != 0)
+		return NFS4_OK;		/* the operation will say so */
+	mutex_enter(&nfsv4_state_lock);
+	f = nfsv4_file_find(vp);
+	if (f != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type == NFSV4_ST_OPEN &&
+			    (st->st_deny & OPEN4_SHARE_DENY_WRITE) != 0)
+				status = NFS4ERR_FILE_OPEN;
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	vrele(vp);
+	return status;
+}
+
+/*
  * s10.4.3: a GETATTR of what the holder of a write delegation may have
  * changed.  Only for one whose holder is another client; c_ov gets what
  * the holder said, and if the holder cannot say, it is recalled and the
@@ -264,6 +294,48 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 }
 
 /*
+ * May cl have a delegation of vp?  0 if so, or a WND4_ with 1 added; with
+ * one held already *heldp has it.
+ */
+static uint32_t
+deleg_refused(struct nfsv4_client *cl, struct vnode *vp, bool write,
+    const struct nfsv4_deleg_spare *ds, struct nfsv4_state **heldp)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	*heldp = NULL;
+	if (cl->cl_cbstate != NFSV4_CB_UP || ds->ds_st == NULL ||
+	    deleg_count >= NFSV4_DELEG_MAX || nfsv4_deleg_mode == 0 ||
+	    (write && nfsv4_deleg_mode == 1))
+		return WND4_RESOURCE + 1;
+	if ((write && ds->ds_nowrite) || vp->v_writecount != 0)
+		return WND4_CONTENTION + 1;
+	f = nfsv4_file_find(vp);
+	if (f == NULL)
+		return 0;
+	LIST_FOREACH(st, &f->f_states, st_flist) {
+		if (st->st_owner->sw_client == cl) {
+			/* One delegation of a file to a client is plenty. */
+			if (st->st_type == NFSV4_ST_DELEG) {
+				*heldp = st;
+				return 0;
+			}
+			continue;
+		}
+		if (st->st_type == NFSV4_ST_DELEG &&
+		    (write || st->st_dtype == OPEN_DELEGATE_WRITE))
+			return WND4_CONTENTION + 1;
+		if (st->st_type == NFSV4_ST_OPEN &&
+		    (write || (st->st_access & OPEN4_SHARE_ACCESS_WRITE) != 0))
+			return WND4_CONTENTION + 1;
+	}
+	return 0;
+}
+
+/*
  * Offer a delegation with an open of access just recorded by the owner
  * sw, s10.4, filling in *od.  From the spare states.
  *
@@ -276,35 +348,51 @@ nfsv4_deleg_offer(struct nfsv4_owner_s *sw, struct vnode *vp,
     struct nfsv4_open_deleg *od)
 {
 	struct nfsv4_client *cl = sw->sw_client;
-	struct nfsv4_file *f;
 	struct nfsv4_state *st;
 	bool write = (access & OPEN4_SHARE_ACCESS_WRITE) != 0;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
-	if (cl->cl_cbstate != NFSV4_CB_UP || !sw->sw_confirmed ||
-	    ds->ds_st == NULL || deleg_count >= NFSV4_DELEG_MAX ||
-	    nfsv4_deleg_mode == 0 || (write && nfsv4_deleg_mode == 1) ||
-	    (write && ds->ds_nowrite) || vp->v_writecount != 0)
+	if (!sw->sw_confirmed || deleg_refused(cl, vp, write, ds, &st) != 0 ||
+	    st != NULL)
 		return;
-	f = nfsv4_file_find(vp);
-	KASSERT(f != NULL);
-	LIST_FOREACH(st, &f->f_states, st_flist) {
-		if (st->st_owner->sw_client == cl) {
-			/* One delegation of a file to a client is plenty. */
-			if (st->st_type == NFSV4_ST_DELEG)
-				return;
-			continue;
-		}
-		if (st->st_type == NFSV4_ST_DELEG &&
-		    (write || st->st_dtype == OPEN_DELEGATE_WRITE))
-			return;
-		if (st->st_type == NFSV4_ST_OPEN &&
-		    (write || (st->st_access & OPEN4_SHARE_ACCESS_WRITE) != 0))
-			return;
-	}
 	nfsv4_deleg_add(cl, vp, fh, write ? OPEN_DELEGATE_WRITE :
 	    OPEN_DELEGATE_READ, ds, od);
+}
+
+/* What a delegation of vp from ds wants to know, away from the lock. */
+void
+nfsv4_deleg_look(struct vnode *vp, kauth_cred_t cred,
+    struct nfsv4_deleg_spare *ds)
+{
+	struct flock fl;
+	struct vattr va;
+
+	/* s10.4.2 has the holder lock alone; nobody may have any. */
+	memset(&fl, 0, sizeof(fl));
+	fl.l_whence = SEEK_SET;
+	fl.l_type = F_WRLCK;
+	if (VOP_ADVLOCK(vp, ds, F_GETLK, &fl, 0) != 0 ||
+	    fl.l_type != F_UNLCK)
+		ds->ds_nowrite = true;
+	/* s10.4.3, sc */
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	if (VOP_GETATTR(vp, &va, cred) == 0)
+		ds->ds_change = nfsv4_attr_change(vp, &va);
+	VOP_UNLOCK(vp);
+}
+
+/* s2.10.6.3: what a recall of a delegation from ds is to refer to. */
+void
+nfsv4_deleg_refer(const struct nfsv4_compound *c, struct nfsv4_deleg_spare *ds)
+{
+
+	if (c->c_slot == NULL)
+		return;
+	ds->ds_refset = true;
+	ds->ds_refsid = c->c_sess->se_id;
+	ds->ds_refslot = c->c_slot - c->c_sess->se_slots;
+	ds->ds_refseq = c->c_slot->sl_seq;
 }
 
 /* A delegation of type for cl, whatever else is going on, from ds. */
@@ -330,6 +418,10 @@ nfsv4_deleg_add(struct nfsv4_client *cl, struct vnode *vp,
 	st->st_access = type == OPEN_DELEGATE_WRITE ?
 	    OPEN4_SHARE_ACCESS_BOTH : OPEN4_SHARE_ACCESS_READ;
 	st->st_file->f_fh = *fh;
+	st->st_refset = ds->ds_refset;
+	st->st_refsid = ds->ds_refsid;
+	st->st_refslot = ds->ds_refslot;
+	st->st_refseq = ds->ds_refseq;
 	atomic_inc_uint(&deleg_count);
 	od->od_type = type;
 	nfsv4_stateid_out(st, &od->od_stateid);
@@ -573,29 +665,117 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 	return status;
 }
 
+/* The part of WANT_DELEGATION with the file known to be a good one. */
+static void
+deleg_want(struct nfsv4_compound *c, uint32_t type, bool any,
+    struct nfsv4_open_deleg *od, uint32_t *whyp)
+{
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct nfsv4_client *cl = c->c_client;
+	struct nfsv4_deleg_spare ds;
+	struct nfsv4_state *held;
+	uint32_t why;
+	bool write;
+
+	memset(&ds, 0, sizeof(ds));
+	ds.ds_st = kmem_zalloc(sizeof(*ds.ds_st), KM_SLEEP);
+	ds.ds_sw = kmem_zalloc(sizeof(*ds.ds_sw), KM_SLEEP);
+	ds.ds_f = kmem_zalloc(sizeof(*ds.ds_f), KM_SLEEP);
+	nfsv4_deleg_refer(c, &ds);
+	nfsv4_deleg_look(cf->cf_vp, cf->cf_cred, &ds);
+
+	mutex_enter(&nfsv4_state_lock);
+	write = type == OPEN_DELEGATE_WRITE;
+	why = deleg_refused(cl, cf->cf_vp, write, &ds, &held);
+	if (why != 0 && write && any) {
+		write = false;
+		type = OPEN_DELEGATE_READ;
+		why = deleg_refused(cl, cf->cf_vp, write, &ds, &held);
+	}
+	if (why == 0 && held == NULL)
+		nfsv4_deleg_add(cl, cf->cf_vp, &cf->cf_fh, type, &ds, od);
+	else if (why == 0 && (held->st_dtype == type || any)) {
+		od->od_type = held->st_dtype;
+		nfsv4_stateid_out(held, &od->od_stateid);
+	} else if (why == 0)
+		why = (write ? WND4_NOT_SUPP_UPGRADE :
+		    WND4_NOT_SUPP_DOWNGRADE) + 1;
+	mutex_exit(&nfsv4_state_lock);
+	*whyp = why;
+
+	if (ds.ds_st != NULL)
+		kmem_free(ds.ds_st, sizeof(*ds.ds_st));
+	if (ds.ds_sw != NULL)
+		kmem_free(ds.ds_sw, sizeof(*ds.ds_sw));
+	if (ds.ds_f != NULL)
+		kmem_free(ds.ds_f, sizeof(*ds.ds_f));
+}
+
 /*
- * RFC 8881 s18.49.  Nothing obliges a server to give one, and with no
- * open behind it nothing here would.  ond_server_will_signal_avail is
- * false, so no callback is promised.
+ * RFC 8881 s18.49: a delegation with no open behind it.  Refused for the
+ * same reasons as with one, and it is recalled the same way, s18.49.4.
+ * ond_server_will_signal_avail stays false: no CB_PUSH_DELEG is promised.
+ * Having s18.49.3 ignore WANT_NO_DELEG leaves nothing wanted, so INVAL.
  */
 uint32_t
 nfsv4_op_want_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 {
+	const struct nfsv4_args_want_delegation *wa = &a->want_delegation;
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct vnode *vp = cf->cf_vp;
 	struct nfsv4_open_deleg od;
-	uint32_t want = a->want_delegation.want;
+	uint32_t want, why = 0, type = OPEN_DELEGATE_READ, st;
+	bool any;
 
-	/*
-	 * s18.49.3: what is outside the want is not looked at, and asking
-	 * for nothing is no request.
-	 */
-	want &= OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
-	if (want == 0 || want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
+	want = wa->want & OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+	if (want == 0 || want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ||
+	    want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
 		return NFS4ERR_INVAL;
+	/* As for OPEN: nothing carries those over to a session. */
+	if (wa->claim == CLAIM_DELEG_PREV_FH)
+		return NFS4ERR_NOTSUPP;
+
 	memset(&od, 0, sizeof(od));
-	od.od_type = OPEN_DELEGATE_NONE_EXT;
-	od.od_why = want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ?
-	    WND4_NOT_WANTED : want == OPEN4_SHARE_ACCESS_WANT_CANCEL ?
-	    WND4_CANCELLED : c->c_cur.cf_vp == NULL ||
-	    c->c_cur.cf_vp->v_type == VDIR ? WND4_IS_DIR : WND4_RESOURCE;
+	any = want == OPEN4_SHARE_ACCESS_WANT_ANY_DELEG;
+	if (want == OPEN4_SHARE_ACCESS_WANT_CANCEL)
+		why = WND4_CANCELLED + 1;
+	else if (vp == NULL || vp->v_type == VDIR)
+		why = WND4_IS_DIR + 1;
+	else if (vp->v_type != VREG || cf->cf_attr != 0)
+		why = (want == OPEN4_SHARE_ACCESS_WANT_WRITE_DELEG ?
+		    WND4_WRITE_DELEG_NOT_SUPP_FTYPE : WND4_NOT_SUPP_FTYPE) + 1;
+	else if (wa->claim == CLAIM_PREVIOUS) {
+		/* s18.49.3, as OPEN by the same claim */
+		if (wa->delegate_type != OPEN_DELEGATE_READ &&
+		    wa->delegate_type != OPEN_DELEGATE_WRITE)
+			return NFS4ERR_INVAL;
+		st = c->c_client->cl_reclaimed ? NFS4ERR_NO_GRACE :
+		    nfsv4_reclaim_check(c->c_client);
+		if (st != NFS4_OK)
+			return st;
+		type = wa->delegate_type;
+		any = false;
+	} else if (nfsv4_grace_active() || !c->c_client->cl_reclaimed)
+		return NFS4ERR_GRACE;		/* s18.51.3 */
+	else if (want != OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
+		type = OPEN_DELEGATE_WRITE;
+	if (why == 0) {
+		/* Nothing was opened, so nothing else has asked this. */
+		if (nfsv4_access_vp(cf, VREAD) != 0)
+			return NFS4ERR_ACCESS;
+		if (type == OPEN_DELEGATE_WRITE &&
+		    nfsv4_access_vp(cf, VWRITE) != 0) {
+			if (!any)
+				return NFS4ERR_ACCESS;
+			type = OPEN_DELEGATE_READ;
+		}
+		nfsv4_client_stable(c->c_client);
+		deleg_want(c, type, any, &od, &why);
+	}
+	/* s18.49.3: never OPEN_DELEGATE_NONE. */
+	if (od.od_type == OPEN_DELEGATE_NONE) {
+		od.od_type = OPEN_DELEGATE_NONE_EXT;
+		od.od_why = why - 1;
+	}
 	return nfsv4_xdr_open_deleg(c->c_rx, &od) ? NFS4_OK : NFS4ERR_RESOURCE;
 }

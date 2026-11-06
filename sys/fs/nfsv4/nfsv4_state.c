@@ -563,17 +563,12 @@ void
 nfsv4_reap_finish(struct nfsv4_reap *reap)
 {
 	struct nfsv4_state *st;
-	struct flock fl;
 
 	while ((st = SLIST_FIRST(reap)) != NULL) {
 		SLIST_REMOVE_HEAD(reap, st_reap);
 		if (st->st_reapvp != NULL) {
 			if (st->st_type == NFSV4_ST_LOCK) {
-				memset(&fl, 0, sizeof(fl));
-				fl.l_type = F_UNLCK;
-				fl.l_whence = SEEK_SET;
-				(void)VOP_ADVLOCK(st->st_reapvp, st->st_owner,
-				    F_UNLCK, &fl, 0);
+				nfsv4_lock_drop(st, st->st_reapvp);
 			}
 			vrele(st->st_reapvp);
 			st->st_reapvp = NULL;

@@ -405,9 +405,14 @@
 
 /* RFC 8881 s18.16.2, enum why_no_delegation4 */
 #define	WND4_NOT_WANTED		0
+#define	WND4_CONTENTION		1
 #define	WND4_RESOURCE		2
-#define	WND4_IS_DIR		8
+#define	WND4_NOT_SUPP_FTYPE	3
+#define	WND4_WRITE_DELEG_NOT_SUPP_FTYPE	4
+#define	WND4_NOT_SUPP_UPGRADE	5
+#define	WND4_NOT_SUPP_DOWNGRADE	6
 #define	WND4_CANCELLED		7
+#define	WND4_IS_DIR		8
 
 /* RFC 7531 s2, enum open_claim_type4 */
 #define	CLAIM_NULL		0

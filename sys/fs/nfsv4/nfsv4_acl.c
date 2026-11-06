@@ -261,6 +261,10 @@ nfsv4_acl_parse(XDR *x, struct acl **aclp)
 		    (flag & ACE4_IDENTIFIER_GROUP) != 0);
 		if (st != NFS4_OK)
 			return st;
+		/* RFC 8881 s6.2.1.4.1: it would apply to nothing, ever. */
+		if ((flag & ACE4_INHERIT_ONLY_ACE) != 0 && (flag &
+		    (ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE)) == 0)
+			return NFS4ERR_ATTRNOTSUPP;
 		flag &= ~ACE4_IDENTIFIER_GROUP;
 		ae->ae_flags = 0;
 		for (j = 0; j < __arraycount(acl_flags); j++) {

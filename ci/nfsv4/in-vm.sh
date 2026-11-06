@@ -18,6 +18,9 @@ sysctl vfs.nfsv4
 mkdir -p /export/pynfs
 mount_mfs -s 1g swap /export/pynfs
 chmod 1777 /export/pynfs
+mkdir -p /export/sec
+mount_tmpfs -s 8m tmpfs /export/sec
+chmod 1777 /export/sec
 mkdir -p /export/tmpfs
 mount_tmpfs -s 256m tmpfs /export/tmpfs
 chmod 1777 /export/tmpfs
@@ -61,6 +64,7 @@ mount | grep /export/
 # pynfs comes from a high port through the tunnel.
 cat >/etc/exports <<EOF
 /export/pynfs -maproot=root -noresvport
+/export/sec -maproot=root -noresvport
 /export/tmpfs -maproot=root -noresvport
 /export/acl -maproot=root -noresvport
 /export/ref -maproot=root -noresvport

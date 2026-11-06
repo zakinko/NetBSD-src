@@ -115,6 +115,19 @@ verf_to_time(const struct nfsv4_verifier *v, struct timespec *ts)
 }
 
 /*
+ * RFC 8881 s18.16.4 has the verifier on stable storage.  atime is not
+ * kept on a file system mounted without it, and mtime is the other of
+ * the times that a client cannot ask to see held at a value here.
+ */
+static inline struct timespec *
+verf_time(const struct vnode *vp, struct vattr *va)
+{
+
+	return (vp->v_mount->mnt_flag & MNT_NOATIME) != 0 ? &va->va_mtime :
+	    &va->va_atime;
+}
+
+/*
  * What OPEN does to the file system: find or create the file, and
  * give the referenced, unlocked vnode in *vpp.  Under OPEN4_CREATE with
  * the directory locked over it, so that change_info4 can be atomic.
@@ -188,7 +201,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		    oa->createmode == EXCLUSIVE4_1)) {
 			verf_to_time(&oa->createverf, &ts);
 			error = VOP_GETATTR(vp, &cva, cf->cf_cred);
-			if (error == 0 && timespeccmp(&cva.va_atime, &ts, !=))
+			if (error == 0 &&
+			    timespeccmp(verf_time(vp, &cva), &ts, !=))
 				error = EEXIST;
 		}
 		VOP_UNLOCK(vp);
@@ -236,7 +250,7 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	if (oa->createmode == EXCLUSIVE4 || oa->createmode == EXCLUSIVE4_1) {
 		if (oa->createmode == EXCLUSIVE4)
 			vattr_null(&sva);
-		verf_to_time(&oa->createverf, &sva.va_atime);
+		verf_to_time(&oa->createverf, verf_time(vp, &sva));
 		set |= 1ULL << FATTR4_TIME_ACCESS_SET;
 	}
 	if (sva.va_size != VNOVAL || sva.va_uid != VNOVAL ||
@@ -245,6 +259,10 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    sva.va_birthtime.tv_sec != VNOVAL) {
 		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 		error = VOP_SETATTR(vp, &sva, cf->cf_cred);
+		/* s18.16.4; a crash must not leave a stranger to the resend. */
+		if (error == 0 && (oa->createmode == EXCLUSIVE4 ||
+		    oa->createmode == EXCLUSIVE4_1))
+			error = VOP_FSYNC(vp, cf->cf_cred, FSYNC_WAIT, 0, 0);
 		VOP_UNLOCK(vp);
 		if (error != 0) {
 			vrele(vp);
@@ -331,8 +349,15 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, const char *aname,
 				continue;
 			if ((access & st->st_deny) != 0 ||
 			    (deny & st->st_access) != 0) {
+				/* RFC 8881 s8.4.3, as for locks. */
+				status = NFS4ERR_SHARE_DENIED;
+				if (time_uptime >
+				    st->st_owner->sw_client->cl_expire) {
+					status = NFS4ERR_DELAY;
+					cv_broadcast(&nfsv4_state_cv);
+				}
 				mutex_exit(&nfsv4_state_lock);
-				return NFS4ERR_SHARE_DENIED;
+				return status;
 			}
 			if (st->st_owner == sw)
 				mine = st;
@@ -358,6 +383,23 @@ open_share(struct nfsv4_owner_s *sw, struct vnode *vp, const char *aname,
 	return NFS4_OK;
 }
 
+/*
+ * s9.6.3.4.3.  The client stays for as long as the request has it, and
+ * two at once may write it twice, which does no harm.
+ */
+void
+nfsv4_client_stable(struct nfsv4_client *cl)
+{
+	bool first;
+
+	mutex_enter(&nfsv4_state_lock);
+	first = !cl->cl_stable;
+	cl->cl_stable = true;
+	mutex_exit(&nfsv4_state_lock);
+	if (first)
+		nfsv4_stable_good(cl->cl_idstr, cl->cl_idlen);
+}
+
 static uint32_t
 open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
     struct nfsv4_stateid *si, struct nfsv4_change_info *ci, uint64_t set,
@@ -365,7 +407,6 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 {
 	struct nfsv4_client *cl = sw->sw_client;
 	uint32_t rflags;
-	bool first;
 	XDR rb;
 
 	c->c_curst = *si;
@@ -374,16 +415,7 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 		rflags |= OPEN4_RESULT_CONFIRM;
 	sw->sw_rfh = c->c_cur.cf_fh;
 
-	/*
-	 * s9.6.3.4.3.  The owner is busy, so the client stays.  Two owners
-	 * at once may write it twice, which does no harm.
-	 */
-	mutex_enter(&nfsv4_state_lock);
-	first = !cl->cl_stable;
-	cl->cl_stable = true;
-	mutex_exit(&nfsv4_state_lock);
-	if (first)
-		nfsv4_stable_good(cl->cl_idstr, cl->cl_idlen);
+	nfsv4_client_stable(cl);
 
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	if (!nfsv4_xdr_stateid(&rb, si) ||
@@ -394,6 +426,20 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 		return NFS4ERR_SERVERFAULT;
 	*rlen = xdr_getpos(&rb);
 	return NFS4_OK;
+}
+
+/* RFC 8881 s18.16.3: any want at all has a reason to hear of no delegation. */
+static void
+open_no_deleg(const struct nfsv4_args_open *oa, struct nfsv4_open_deleg *od,
+    uint32_t why)
+{
+
+	if (!oa->wanted || od->od_type != OPEN_DELEGATE_NONE)
+		return;
+	od->od_type = OPEN_DELEGATE_NONE_EXT;
+	od->od_why = oa->want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ?
+	    WND4_NOT_WANTED : oa->want == OPEN4_SHARE_ACCESS_WANT_CANCEL ?
+	    WND4_CANCELLED : why;
 }
 
 /*
@@ -425,10 +471,12 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    NFS4ERR_NO_GRACE : nfsv4_reclaim_check(sw->sw_client);
 	if (st != NFS4_OK)
 		return st;
-	if (vp == NULL || vp->v_type == VDIR)
+	if (vp == NULL)
 		return NFS4ERR_ISDIR;
-	if (vp->v_type != VREG)
-		return NFS4ERR_SYMLINK;
+	/* RFC 8881 s8.4.2.1: not what would be refused in steady state. */
+	st = open_access(c, cf, vp, oa->share_access);
+	if (st != NFS4_OK)
+		return st;
 	sw->sw_confirmed = true;	/* s9.1.11, s16.18.5 */
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, cf, NULL, NULL);
@@ -441,6 +489,7 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		od.od_recall = sw->sw_client->cl_cbstate != NFSV4_CB_UP;
 		mutex_exit(&nfsv4_state_lock);
 	}
+	open_no_deleg(oa, &od, WND4_RESOURCE);
 	return open_reply(c, sw, &si, &ci, 0, &od, rlen);
 }
 
@@ -463,11 +512,13 @@ open_attr(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	if (!OPEN4_ACCESS_OK(oa->share_access) ||
 	    !OPEN4_DENY_OK(oa->share_deny))
 		return NFS4ERR_INVAL;
-	st = nfsv4_name_check(&oa->file);
+	st = nfsv4_name_check(c, &oa->file);
 	if (st != NFS4_OK)
 		return st;
-	if (create && oa->createmode == EXCLUSIVE4)
-		return NFS4ERR_INVAL;	/* s16.16.5 */
+	/* s16.16.5, and RFC 8881 s18.16.3 of the new one too */
+	if (create && (oa->createmode == EXCLUSIVE4 ||
+	    oa->createmode == EXCLUSIVE4_1))
+		return NFS4ERR_INVAL;
 	vattr_null(&sva);
 	if (create) {
 		st = nfsv4_attr_parse(c, &oa->createattrs, &sva, &set);
@@ -495,6 +546,7 @@ open_attr(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		return st;
 	memset(&ci, 0, sizeof(ci));
 	memset(&od, 0, sizeof(od));
+	open_no_deleg(oa, &od, WND4_NOT_SUPP_FTYPE);
 	return open_reply(c, sw, &si, &ci, set & (1ULL << FATTR4_SIZE), &od,
 	    rlen);
 }
@@ -539,10 +591,18 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		break;
 	case CLAIM_PREVIOUS:
 		return open_previous(c, oa, sw, spare, sparef, ds, rlen);
-	case CLAIM_DELEGATE_CUR:
 	case CLAIM_DELEGATE_PREV:
-	case CLAIM_DELEG_CUR_FH:
 	case CLAIM_DELEG_PREV_FH:
+		/*
+		 * RFC 8881 s18.16.3 has these optional, and to offer them is
+		 * to keep delegations across CREATE_SESSION, which a client
+		 * of 4.1 does not get: nothing carries them over.
+		 */
+		if (c->c_minor != 0)
+			return NFS4ERR_NOTSUPP;
+		break;
+	case CLAIM_DELEGATE_CUR:
+	case CLAIM_DELEG_CUR_FH:
 		break;
 	default:			/* s16.16.5 */
 		return NFS4ERR_NOTSUPP;
@@ -568,7 +628,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		vp = cf->cf_vp;
 		vref(vp);
 	} else {
-		st = nfsv4_name_check(&oa->file);
+		st = nfsv4_name_check(c, &oa->file);
 		if (st != NFS4_OK)
 			return st;
 		st = open_vnode(c, oa, &vp, &ci, &set, &created);
@@ -576,7 +636,8 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 			return st;
 	}
 	trunc = !created && set != 0;
-	if (trunc)
+	/* RFC 8881 s18.16.3: under it, the mask says what was set. */
+	if (trunc && c->c_minor == 0)
 		set = 0;
 
 	if (!created) {
@@ -600,27 +661,24 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	 * The handle goes to the state before the current handle changes:
 	 * CB_RECALL and a PUTFH of a file now unlinked want the file's.
 	 */
-	if (ds->ds_st != NULL) {
-		struct flock fl;
-
-		/* s10.4.2 has the holder lock alone; nobody may have any. */
-		memset(&fl, 0, sizeof(fl));
-		fl.l_whence = SEEK_SET;
-		fl.l_type = F_WRLCK;
-		if (VOP_ADVLOCK(vp, ds, F_GETLK, &fl, 0) != 0 ||
-		    fl.l_type != F_UNLCK)
-			ds->ds_nowrite = true;
-		/* s10.4.3, sc */
-		vn_lock(vp, LK_SHARED | LK_RETRY);
-		if (VOP_GETATTR(vp, &va, cf->cf_cred) == 0)
-			ds->ds_change = nfsv4_attr_change(vp, &va);
-		VOP_UNLOCK(vp);
-	}
+	if (ds->ds_st != NULL)
+		nfsv4_deleg_look(vp, cf->cf_cred, ds);
 	vref(vp);
 	st = nfsv4_cfh_setvp(c, &fc, vp);
 	if (st != NFS4_OK) {
 		vrele(vp);
 		goto bad;
+	}
+	/* RFC 8881 s2.6.3.1.1.3, s18.29.4: not of what this just created. */
+	if (fc.cf_wrongsec && !created && !OPEN_BYFH(oa->claim)) {
+		st = NFS4ERR_WRONGSEC;
+		goto bad;
+	}
+	/* RFC 8881 s18.16.4: truncating is a write, whatever the access. */
+	if (trunc) {
+		st = nfsv4_deleg_break(vp, sw->sw_client, 0, NFSV4_DC_WRITE);
+		if (st != NFS4_OK)
+			goto bad;
 	}
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, &fc,
@@ -644,14 +702,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	nfsv4_cfh_copy(cf, &fc);
 	nfsv4_cfh_clear(&fc);
 	vrele(vp);
-	/* RFC 8881 s18.16.3 */
-	if (oa->want != 0 && od.od_type == OPEN_DELEGATE_NONE) {
-		od.od_type = OPEN_DELEGATE_NONE_EXT;
-		od.od_why = oa->want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ?
-		    WND4_NOT_WANTED :
-		    oa->want == OPEN4_SHARE_ACCESS_WANT_CANCEL ?
-		    WND4_CANCELLED : WND4_RESOURCE;
-	}
+	open_no_deleg(oa, &od, WND4_RESOURCE);
 	return open_reply(c, sw, &si, &ci, set, &od, rlen);
 bad:
 	nfsv4_cfh_clear(&fc);
@@ -713,9 +764,11 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	/* RFC 8881 s18.16.1: the want is not part of the share. */
 	oa->want = 0;
+	oa->wanted = false;
 	if (c->c_minor != 0) {
 		oa->want = oa->share_access &
 		    OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+		oa->wanted = (oa->share_access & ~OPEN4_SHARE_ACCESS_MASK) != 0;
 		if ((oa->share_access & ~(OPEN4_SHARE_ACCESS_MASK |
 		    OPEN4_SHARE_ACCESS_WANT_DELEG_MASK |
 		    OPEN4_WANT_FLAGS)) != 0 ||
@@ -779,6 +832,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 			ds.ds_st = kmem_zalloc(sizeof(*ds.ds_st), KM_SLEEP);
 			ds.ds_sw = kmem_zalloc(sizeof(*ds.ds_sw), KM_SLEEP);
 			ds.ds_f = kmem_zalloc(sizeof(*ds.ds_f), KM_SLEEP);
+			nfsv4_deleg_refer(c, &ds);
 		}
 		status = open_do(c, oa, sw, &sst, &sf, &ds, &rlen);
 		status = nfsv4_seq_reply(c, sw, oa->seqid, NFSV4_OP_OPEN, status,
@@ -1114,6 +1168,23 @@ out:
 	return status;
 }
 
+/* RFC 8881 s8.2.6: of a SETATTR that does not set the size. */
+uint32_t
+nfsv4_setattr_stateid(struct nfsv4_compound *c, const struct nfsv4_stateid *si)
+{
+	struct nfsv4_state *st;
+	uint32_t status;
+
+	if (nfsv4_stateid_special(si))
+		return NFS4_OK;
+	mutex_enter(&nfsv4_state_lock);
+	status = nfsv4_stateid_lookup(c, si, &st);
+	if (status == NFS4_OK)
+		status = nfsv4_stateid_check(si, st, c->c_cur.cf_vp, 0);
+	mutex_exit(&nfsv4_state_lock);
+	return status;
+}
+
 /* s16.16.6: access is checked on each READ and WRITE, not only at OPEN. */
 uint32_t
 nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -1260,11 +1331,12 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	if (buf != NULL)
 		kmem_free(buf, n);
-	if (error != 0)
+	/* RFC 8881 s18.32.4: what got written is the answer, if any did. */
+	if (error != 0 && uio.uio_resid == n)
 		return nfsv4_errno(error);
 
 	n -= uio.uio_resid;
-	committed = wa->stable;
+	committed = error != 0 ? UNSTABLE4 : wa->stable;
 	nfsv4_write_verf(&verf);
 	return xdr_u_int32_t(c->c_rx, &n) &&
 	    xdr_u_int32_t(c->c_rx, &committed) &&

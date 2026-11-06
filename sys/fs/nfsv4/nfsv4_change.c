@@ -101,7 +101,7 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_NOTDIR;
 	if (vt == VNON)
 		return NFS4ERR_BADTYPE;
-	st = nfsv4_name_check(&ca->name);
+	st = nfsv4_name_check(c, &ca->name);
 	if (st != NFS4_OK)
 		return st;
 	if (ca->type == NF4LNK) {
@@ -226,12 +226,14 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = dir_check(cf);
 	if (st != NFS4_OK)
 		return st;
-	st = nfsv4_name_check(nm);
+	st = nfsv4_name_check(c, nm);
 	/* A reclaim to come may name the file, s9.6.2. */
 	if (st == NFS4_OK && nfsv4_grace_active())
 		st = NFS4ERR_GRACE;
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
+	if (st == NFS4_OK && c->c_minor != 0)
+		st = nfsv4_open_denies_remove(cf, nm->nm_str);
 	if (st != NFS4_OK)
 		return st;
 
@@ -304,13 +306,20 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_NOFILEHANDLE;
 	if (sf->cf_attr != 0)
 		return NFS4ERR_XDEV;		/* s5.3 */
+	/*
+	 * RFC 8881 s2.6.3.1.2.  The current handle passed, so a tuple good
+	 * for both exists: the one kind of policy here has "reserved port"
+	 * acceptable to every export.
+	 */
+	if (sf->cf_wrongsec)
+		return NFS4ERR_WRONGSEC;
 	st = dir_check(sf);
 	if (st == NFS4_OK)
 		st = dir_check(tf);
 	if (st == NFS4_OK)
-		st = nfsv4_name_check(&ra->oldname);
+		st = nfsv4_name_check(c, &ra->oldname);
 	if (st == NFS4_OK)
-		st = nfsv4_name_check(&ra->newname);
+		st = nfsv4_name_check(c, &ra->newname);
 	if (st != NFS4_OK)
 		return st;
 	if (sf->cf_vp->v_mount != tf->cf_vp->v_mount)
@@ -321,6 +330,8 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_deleg_break_name(sf, ra->oldname.nm_str);
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(tf, ra->newname.nm_str);
+	if (st == NFS4_OK && c->c_minor != 0)
+		st = nfsv4_open_denies_remove(tf, ra->newname.nm_str);
 	if (st != NFS4_OK)
 		return st;
 
@@ -441,9 +452,11 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_ISDIR;
 	if (sf->cf_attr != 0)
 		return NFS4ERR_XDEV;		/* s5.3 */
+	if (sf->cf_wrongsec)
+		return NFS4ERR_WRONGSEC;	/* as for RENAME */
 	st = dir_check(cf);
 	if (st == NFS4_OK)
-		st = nfsv4_name_check(nm);
+		st = nfsv4_name_check(c, nm);
 	if (st != NFS4_OK)
 		return st;
 	vp = sf->cf_vp;
@@ -516,10 +529,11 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = NFS4ERR_INVAL;
 		else
 			st = nfsv4_io_check(c, &sa->stateid, true);
-	}
-	/* s10.4.4 */
+	} else if (st == NFS4_OK && c->c_minor != 0)
+		st = nfsv4_setattr_stateid(c, &sa->stateid);	/* RFC 8881 s8.2.6 */
+	/* s10.4.4; RFC 8881 s8.2.6: a session says who, and not the stateid. */
 	if (st == NFS4_OK)
-		st = nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid,
+		st = nfsv4_deleg_break(vp, c->c_client, c->c_rq->rq_connid,
 		    NFSV4_DC_WRITE);
 	if (st == NFS4_OK) {
 		if ((set & ~(1ULL << FATTR4_ACL)) != 0) {
@@ -540,6 +554,35 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (!nfsv4_attr_put_mask(c->c_rx, set))
 		return NFS4ERR_RESOURCE;
 	return st;
+}
+
+/*
+ * RFC 8881 s6.2.4: a mode with undefined bits is NFS4ERR_INVAL to VERIFY
+ * and NVERIFY too.  Those before it are as long here as in fa, or the
+ * lengths would have differed, unless two of them differ opposite ways,
+ * and that is a mode this does not find.
+ */
+static bool
+mode_undefined(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
+    const char *theirs)
+{
+	struct nfsv4_bitmap before, got;
+	char *buf;
+	u_int len;
+	bool bad = false;
+
+	if (fa->fa_mask.bm_n < 2 ||
+	    (fa->fa_mask.bm_w[1] & (1U << (FATTR4_MODE - 32))) == 0)
+		return false;
+	before = fa->fa_mask;
+	before.bm_n = 2;
+	before.bm_w[1] &= (1U << (FATTR4_MODE - 32)) - 1;
+	buf = kmem_alloc(NFSV4_ATTRBUF, KM_SLEEP);
+	if (nfsv4_attr_fill(c, &c->c_cur, &before, NFS4_OK, buf, NFSV4_ATTRBUF,
+	    &got, &len) == NFS4_OK && len + 4 <= fa->fa_len)
+		bad = (be32dec(theirs + len) & ~ALLPERMS) != 0;
+	kmem_free(buf, NFSV4_ATTRBUF);
+	return bad;
 }
 
 /*
@@ -579,6 +622,8 @@ verify_same(struct nfsv4_compound *c, const struct nfsv4_fattr *fa, bool *same)
 	    !XDR_GETBYTES(c->c_ax, theirs, len) ||
 	    !XDR_SETPOS(c->c_ax, end))
 		st = NFS4ERR_BADXDR;
+	else if (mode_undefined(c, fa, theirs))
+		st = NFS4ERR_INVAL;
 	else {
 		*same = true;
 		for (i = 0; i < len; i++) {

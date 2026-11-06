@@ -212,6 +212,9 @@ readdir_entry(struct readdir_state *rd, const char *name, size_t namelen,
 		    &cf);
 		if (rderr == NFS4ERR_NOENT)
 			return NFS4_OK;
+		/* RFC 8881 s18.29.4, the only way READDIR can say this. */
+		if (rderr == NFS4_OK && cf.cf_wrongsec)
+			rderr = NFS4ERR_WRONGSEC;
 		/* s8.3.2 */
 		if (rderr == NFS4_OK && cf.cf_ref != NULL &&
 		    (m->bm_w[0] & (1U << FATTR4_FS_LOCATIONS)) == 0) {
@@ -527,7 +530,7 @@ nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
-	st = nfsv4_name_check(nm);
+	st = nfsv4_name_check(c, nm);
 	if (st != NFS4_OK)
 		return st;
 	memset(&to, 0, sizeof(to));
@@ -549,7 +552,7 @@ nfsv4_op_secinfo_no_name(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st, n = 2, sys = ONCRPC_AUTH_SYS, none = ONCRPC_AUTH_NONE;
 
 	if (a->u32.value == SECINFO_STYLE4_PARENT) {
-		st = nfsv4_op_lookupp(c, a);
+		st = nfsv4_lookupp(c);
 		if (st != NFS4_OK)
 			return st;
 	}

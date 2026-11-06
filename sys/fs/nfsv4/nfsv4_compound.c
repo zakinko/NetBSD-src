@@ -85,6 +85,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * cannot then be refused.  More than any of those has for results.
  */
 #define	NFSV4_REP_ROOM		256
+
+/*
+ * Not from the RFC: RFC 8881 s2.10.6.4 would rather OPEN and CREATE fail
+ * than leave no room for the next operation, which is GETFH or the like:
+ * its status, and the handle with its length.  s2.10.6.4 goes on to
+ * NFS4ERR_UNSAFE_COMPOUND where that cannot be known; here it is, and the
+ * GETFH need not come next: the client of Linux has ACCESS there.
+ */
+#define	NFSV4_REP_NEXT		(16 + NFS4_FHSIZE)
 #define	NFSV4_ARGSUM_WORDS	64
 
 /* flags of an operation */
@@ -284,6 +293,77 @@ op_position(const struct nfsv4_compound *c, uint32_t op,
 }
 
 /*
+ * An OPEN follows a put filehandle operation: does it leave the answer
+ * to that operation?  By name and of what exists it does, s2.6.3.1.1.3.
+ * By handle it is "anything else", s2.6.3.1.1.7, and to create is under
+ * the policy of the directory, which was the put's to apply, s18.29.4.
+ */
+static bool
+wrongsec_open(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct vnode *vp;
+
+	if (!nfsv4_xdr_args(c->c_ax, NFSV4_OP_OPEN, c->c_minor, a))
+		return false;			/* the OPEN will say */
+	if (cf->cf_attr != 0 || cf->cf_vp == NULL ||
+	    (a->open.claim != CLAIM_NULL &&
+	    a->open.claim != CLAIM_DELEGATE_CUR &&
+	    a->open.claim != CLAIM_DELEGATE_PREV))
+		return true;
+	if (a->open.opentype != OPEN4_CREATE || a->open.file.nm_len == 0)
+		return false;
+	if (nfsv4_lookup_vp(cf->cf_vp, a->open.file.nm_str, cf->cf_cred,
+	    &vp) != 0)
+		return true;
+	vrele(vp);
+	return false;
+}
+
+/*
+ * RFC 8881 s2.6.3.1.1: does a put filehandle operation say
+ * NFS4ERR_WRONGSEC, seeing what comes after it?  a is free to use, the
+ * operation having ended, and the arguments are left where they were.
+ */
+static bool
+wrongsec_next(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	XDR *ax = c->c_ax;
+	uint32_t i, op;
+	u_int pos;
+	bool r = false;
+
+	pos = XDR_GETPOS(ax);
+	for (i = c->c_opi + 1; i < c->c_numops; i++) {
+		if (!xdr_u_int32_t(ax, &op))
+			break;
+		switch (op) {
+		case NFSV4_OP_SAVEFH:		/* s2.6.3.1.1.1 */
+			continue;
+		case NFSV4_OP_PUTFH:		/* s2.6.3.1.1.2 */
+		case NFSV4_OP_PUTPUBFH:
+		case NFSV4_OP_PUTROOTFH:
+		case NFSV4_OP_RESTOREFH:
+		case NFSV4_OP_LOOKUP:		/* s2.6.3.1.1.3 */
+		case NFSV4_OP_LOOKUPP:		/* s2.6.3.1.1.4 */
+		case NFSV4_OP_SECINFO:		/* s2.6.3.1.1.5 */
+		case NFSV4_OP_SECINFO_NO_NAME:
+			break;
+		case NFSV4_OP_OPEN:
+			r = wrongsec_open(c, a);
+			break;
+		default:			/* s2.6.3.1.1.7 */
+			r = op >= NFSV4_OP_ACCESS &&
+			    op < __arraycount(nfsv4_ops);
+			break;
+		}
+		break;
+	}
+	(void)XDR_SETPOS(ax, pos);
+	return r;
+}
+
+/*
  * Evaluate one operation.  Whatever goes wrong before it starts is its
  * status, in the order: is it an operation, does it decode, is it
  * implemented, is there a filehandle.
@@ -319,8 +399,23 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
 			c->c_drc = true;
 		if (c->c_cur.cf_set && c->c_cur.cf_attr != 0)
-			return nfsv4_xattr_op(c, op, a, od->od_func);
-		return (*od->od_func)(c, a);
+			st = nfsv4_xattr_op(c, op, a, od->od_func);
+		else
+			st = (*od->od_func)(c, a);
+		if (st != NFS4_OK || !c->c_cur.cf_wrongsec)
+			return st;
+		switch (op) {
+		case NFSV4_OP_PUTFH:
+		case NFSV4_OP_PUTPUBFH:
+		case NFSV4_OP_PUTROOTFH:
+		case NFSV4_OP_RESTOREFH:
+			if (c->c_minor == 0 || wrongsec_next(c, a))
+				return NFS4ERR_WRONGSEC;
+			break;
+		default:
+			break;
+		}
+		return NFS4_OK;
 	}
 
 	/* SETATTR4res has its bitmap whatever the status, s16.32.3. */
@@ -530,7 +625,9 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 			if (statpos > NFSV4_RES_LIMIT - NFSV4_RES_ROOM)
 				status = NFS4ERR_RESOURCE;
 			else if (i > 0 && (status = reply_toobig(&c,
-			    statpos + NFSV4_REP_ROOM)) != NFS4_OK)
+			    statpos + NFSV4_REP_ROOM + ((op == NFSV4_OP_OPEN ||
+			    op == NFSV4_OP_CREATE) ? NFSV4_REP_NEXT : 0))) !=
+			    NFS4_OK)
 				/* not started */;
 			else {
 				status = nfsv4_one_op(&c, op, a);
@@ -754,6 +851,10 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "delegations", SYSCTL_DESCR("0 none, 1 read, 2 read and write"),
 	    NULL, 0, &nfsv4_deleg_mode, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "utf8only", SYSCTL_DESCR("Version 4.1 takes only UTF-8 names"),
+	    NULL, 0, &nfsv4_utf8_only, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "stable", SYSCTL_DESCR("File of clients that can reclaim"),

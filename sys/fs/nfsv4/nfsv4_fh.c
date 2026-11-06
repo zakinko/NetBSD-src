@@ -115,20 +115,75 @@ nfsv4_errno(int error)
 }
 
 /*
- * A component of a name, by RFC 7530 s12.7 and s13.1.7.  A name is not
- * checked to be UTF-8: FFS keeps uninterpreted bytes, and s12.8 lets a
- * server accept such names.  What it says of them, not changing them
- * and comparing them by octets, is what happens here anyway.  "." and
- * ".." have no meaning in NFSv4 (s16.13.5), and passing them down would
- * give them the meaning they have here.
+ * vfs.nfsv4.utf8only.  With 0, names in the bytes that local programs
+ * left stay reachable at the price of RFC 8881 s18.4.3.
+ */
+int nfsv4_utf8_only = 1;
+
+/* RFC 3629 s4: no overlong form, no surrogate, nothing past U+10FFFF. */
+static bool
+utf8_valid(const uint8_t *p, size_t len)
+{
+	const uint8_t *end = p + len;
+	uint8_t lo, hi;
+	u_int n;
+
+	while (p < end) {
+		lo = 0x80;
+		hi = 0xbf;
+		if (*p < 0x80) {
+			p++;
+			continue;
+		} else if (*p >= 0xc2 && *p <= 0xdf)
+			n = 1;
+		else if (*p >= 0xe0 && *p <= 0xef) {
+			n = 2;
+			if (*p == 0xe0)
+				lo = 0xa0;
+			else if (*p == 0xed)
+				hi = 0x9f;
+		} else if (*p >= 0xf0 && *p <= 0xf4) {
+			n = 3;
+			if (*p == 0xf0)
+				lo = 0x90;
+			else if (*p == 0xf4)
+				hi = 0x8f;
+		} else
+			return false;
+		if ((size_t)(end - p) <= n)
+			return false;
+		p++;
+		if (*p < lo || *p > hi)
+			return false;
+		while (--n > 0) {
+			p++;
+			if (*p < 0x80 || *p > 0xbf)
+				return false;
+		}
+		p++;
+	}
+	return true;
+}
+
+/*
+ * A component of a name, by RFC 7530 s12.7 and s13.1.7.  Version 4.0 does
+ * not check it to be UTF-8: FFS keeps uninterpreted bytes, and s12.8 lets
+ * a server accept such names.  What it says of them, not changing them
+ * and comparing them by octets, is what happens here anyway.  RFC 8881
+ * s14.5 and s18.4.3 have version 4.1 say NFS4ERR_INVAL.  "." and ".."
+ * have no meaning in NFSv4 (s16.13.5), and passing them down would give
+ * them the meaning they have here.
  */
 uint32_t
-nfsv4_name_check(const struct nfsv4_name *nm)
+nfsv4_name_check(const struct nfsv4_compound *c, const struct nfsv4_name *nm)
 {
 
 	if (nm->nm_toolong)
 		return NFS4ERR_NAMETOOLONG;
 	if (nm->nm_len == 0)
+		return NFS4ERR_INVAL;
+	if (c->c_minor != 0 && nfsv4_utf8_only &&
+	    !utf8_valid((const uint8_t *)nm->nm_str, nm->nm_len))
 		return NFS4ERR_INVAL;
 	if (memchr(nm->nm_str, '/', nm->nm_len) != NULL ||
 	    memchr(nm->nm_str, '\0', nm->nm_len) != NULL)
@@ -172,7 +227,8 @@ nfsv4_cfh_copy(struct nfsv4_cfh *to, const struct nfsv4_cfh *from)
  * here also for AUTH_NONE, which has no identity to use otherwise.  The
  * port test has no such counterpart in the RFC, but an export that asks
  * for it should get it; a client told NFS4ERR_WRONGSEC at least knows
- * this is about how it connected.
+ * this is about how it connected.  Which operation says so depends on
+ * those around it, RFC 8881 s2.6.3.1.1, so here it is only noted.
  */
 static uint32_t
 cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
@@ -192,7 +248,7 @@ cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
 		if ((sin->sin_family == AF_INET ||
 		    sin->sin_family == AF_INET6) &&
 		    ntohs(sin->sin_port) >= IPPORT_RESERVED)
-			return NFS4ERR_WRONGSEC;
+			cf->cf_wrongsec = true;
 	}
 
 	if (rq->rq_cred == NULL) {
@@ -661,10 +717,12 @@ nfsv4_op_lookup(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
 		return cf->cf_vp->v_type == VLNK ? NFS4ERR_SYMLINK :
 		    NFS4ERR_NOTDIR;
-	st = nfsv4_name_check(nm);
+	st = nfsv4_name_check(c, nm);
 	if (st != NFS4_OK)
 		return st;
-	return nfsv4_cfh_lookup(c, cf, nm->nm_str, nm->nm_len, cf);
+	st = nfsv4_cfh_lookup(c, cf, nm->nm_str, nm->nm_len, cf);
+	/* RFC 8881 s2.6.3.1.1.3: the policy of what was found. */
+	return st == NFS4_OK && cf->cf_wrongsec ? NFS4ERR_WRONGSEC : st;
 }
 
 /*
@@ -702,7 +760,7 @@ lookupp_fsroot(struct nfsv4_compound *c, struct vnode *fsvp)
 }
 
 uint32_t
-nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
+nfsv4_lookupp(struct nfsv4_compound *c)
 {
 	struct nfsv4_cfh *cf = &c->c_cur;
 	struct vnode *vp;
@@ -740,4 +798,14 @@ nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		vrele(vp);
 	return st;
+}
+
+/* RFC 8881 s2.6.3.1.1.4: SECINFO_NO_NAME goes up without this answer. */
+uint32_t
+nfsv4_op_lookupp(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	uint32_t st;
+
+	st = nfsv4_lookupp(c);
+	return st == NFS4_OK && c->c_cur.cf_wrongsec ? NFS4ERR_WRONGSEC : st;
 }

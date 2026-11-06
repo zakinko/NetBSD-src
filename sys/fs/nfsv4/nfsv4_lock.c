@@ -220,6 +220,147 @@ nfsv4_lock_waited(struct nfsv4_owner_s *lo, struct vnode *vp,
 }
 
 /*
+ * RFC 8881 s9.5: of a lock-owner's states on a file, each byte belongs to
+ * the one last used to lock it, for the CLOSE of the open behind one to
+ * leave the others' locks alone.  The file system knows only the owner.
+ * The count is a choice, to bound what one state can make this keep.
+ */
+#define	NFSV4_LRANGE_MAX	1024
+
+static void
+lrange_toall(struct nfsv4_state *st)
+{
+	struct nfsv4_lrange *lr;
+
+	while ((lr = LIST_FIRST(&st->st_ranges)) != NULL) {
+		LIST_REMOVE(lr, lr_list);
+		kmem_free(lr, sizeof(*lr));
+	}
+	st->st_nranges = 0;
+	st->st_allfile = true;
+}
+
+static struct nfsv4_lrange *
+lrange_add(struct nfsv4_state *st, off_t start, off_t end)
+{
+	struct nfsv4_lrange *lr;
+
+	if (st->st_allfile)
+		return NULL;
+	if (st->st_nranges >= NFSV4_LRANGE_MAX ||
+	    (lr = kmem_alloc(sizeof(*lr), KM_NOSLEEP)) == NULL) {
+		lrange_toall(st);
+		return NULL;
+	}
+	lr->lr_start = start;
+	lr->lr_end = end;
+	LIST_INSERT_HEAD(&st->st_ranges, lr, lr_list);
+	st->st_nranges++;
+	return lr;
+}
+
+/* Take the bytes from start up to end out of what st has. */
+static void
+lrange_sub(struct nfsv4_state *st, off_t start, off_t end)
+{
+	struct nfsv4_lrange *lr, *next;
+	off_t tail;
+
+	LIST_FOREACH_SAFE(lr, &st->st_ranges, lr_list, next) {
+		if (lr->lr_end <= start || lr->lr_start >= end)
+			continue;
+		tail = lr->lr_end;
+		if (lr->lr_start < start) {
+			lr->lr_end = start;
+			if (tail > end)
+				(void)lrange_add(st, end, tail);
+		} else if (tail > end)
+			lr->lr_start = end;
+		else {
+			LIST_REMOVE(lr, lr_list);
+			st->st_nranges--;
+			kmem_free(lr, sizeof(*lr));
+		}
+		if (st->st_allfile)
+			return;
+	}
+}
+
+/*
+ * A LOCK through st, or with st NULL a LOCKU, has been done of fl.  The
+ * states of the owner are few, and s9.5's case is the rare one.
+ */
+void
+nfsv4_lock_assign(struct nfsv4_owner_s *lo, struct nfsv4_file *f,
+    struct nfsv4_state *st, const struct flock *fl)
+{
+	struct nfsv4_state *t;
+	off_t end;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	end = fl->l_len == 0 ? INT64_MAX : fl->l_start + fl->l_len;
+	LIST_FOREACH(t, &lo->sw_states, st_olist) {
+		if (t->st_file == f)
+			lrange_sub(t, fl->l_start, end);
+	}
+	if (st != NULL)
+		(void)lrange_add(st, fl->l_start, end);
+}
+
+/* The state is going, on the way out of nfsv4_state_unlink(). */
+void
+nfsv4_lock_drop(struct nfsv4_state *st, struct vnode *vp)
+{
+	struct nfsv4_lrange *lr;
+	struct flock fl;
+
+	memset(&fl, 0, sizeof(fl));
+	fl.l_type = F_UNLCK;
+	fl.l_whence = SEEK_SET;
+	if (st->st_allfile) {
+		(void)VOP_ADVLOCK(vp, st->st_owner, F_UNLCK, &fl, 0);
+		return;
+	}
+	mutex_enter(&nfsv4_state_lock);
+	while ((lr = LIST_FIRST(&st->st_ranges)) != NULL) {
+		LIST_REMOVE(lr, lr_list);
+		st->st_nranges--;
+		mutex_exit(&nfsv4_state_lock);
+		fl.l_start = lr->lr_start;
+		fl.l_len = lr->lr_end == INT64_MAX ? 0 :
+		    lr->lr_end - lr->lr_start;
+		(void)VOP_ADVLOCK(vp, st->st_owner, F_UNLCK, &fl, 0);
+		kmem_free(lr, sizeof(*lr));
+		mutex_enter(&nfsv4_state_lock);
+	}
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/*
+ * RFC 8881 s8.4.3: a lock of an expired lease does not stand in the way.
+ * The scan may not have come round to it; it is told to, and the caller
+ * has the client ask again, the lock being gone by then.
+ */
+static bool
+lock_holder_expired(const void *id)
+{
+	struct nfsv4_owner_s *sw;
+	bool expired = false;
+
+	if (id == NULL)
+		return false;
+	mutex_enter(&nfsv4_state_lock);
+	sw = nfsv4_owner_byid(id);
+	if (sw != NULL && time_uptime > sw->sw_client->cl_expire) {
+		expired = true;
+		cv_broadcast(&nfsv4_state_cv);
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return expired;
+}
+
+/*
  * Try the lock; the result for the reply goes in *rlen.  It is not
  * waited for even for READW_LT and WRITEW_LT: s9.4 has a client poll,
  * and a server may answer at once.
@@ -254,6 +395,8 @@ lock_set(struct nfsv4_compound *c, struct nfsv4_owner_s *lo, struct flock *fl,
 		q.lfq_fl = *fl;
 		q.lfq_id = NULL;
 	}
+	if (lock_holder_expired(q.lfq_id))
+		return NFS4ERR_DELAY;
 	*rlen = lock_denied(c, &q);
 	return NFS4ERR_DENIED;
 }
@@ -419,6 +562,7 @@ have_owner:
 			LIST_INSERT_HEAD(&ost->st_locks, st, st_plist);
 		} else
 			st->st_seqid++;
+		nfsv4_lock_assign(lo, st->st_file, st, &fl);
 		nfsv4_stateid_out(st, &si);
 		c->c_curst = si;
 		mutex_exit(&nfsv4_state_lock);
@@ -487,6 +631,8 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 		return nfsv4_errno(error);
 	if (q.lfq_fl.l_type == F_UNLCK)
 		return NFS4_OK;
+	if (lock_holder_expired(q.lfq_id))
+		return NFS4ERR_DELAY;
 	rlen = lock_denied(c, &q);
 	return XDR_PUTBYTES(c->c_rx, c->c_rbuf, rlen) ? NFS4ERR_DENIED :
 	    NFS4ERR_RESOURCE;
@@ -543,6 +689,7 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (status == NFS4_OK) {
 		mutex_enter(&nfsv4_state_lock);
 		st->st_seqid++;
+		nfsv4_lock_assign(lo, st->st_file, NULL, &fl);
 		nfsv4_stateid_out(st, &si);
 		c->c_curst = si;
 		mutex_exit(&nfsv4_state_lock);

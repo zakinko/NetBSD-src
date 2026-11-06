@@ -100,6 +100,9 @@ struct cb_target {
 	struct nfsv4_sessionid ct_sid;
 	uint32_t	ct_seq;
 	uint32_t	ct_vers;
+	bool		ct_ref;		/* s20.9.2, on the same session */
+	uint32_t	ct_refslot;
+	uint32_t	ct_refseq;
 };
 
 struct cb_recall_args {
@@ -272,8 +275,8 @@ cb_authsys(char *buf, size_t len, uid_t uid, gid_t gid)
 
 /*
  * CB_COMPOUND4args up to the one operation that matters, s17.2.2.  RFC
- * 8881 s18.36.3 has minor version 1, and s20.9 a CB_SEQUENCE first; no
- * call refers to another, as nothing here races a reply, s2.10.6.3.
+ * 8881 s18.36.3 has minor version 1, and s20.9 a CB_SEQUENCE first, with
+ * the call that a recall may overtake, s2.10.6.3.
  */
 static bool
 cb_head(XDR *x, const struct cb_target *ct, uint32_t ident)
@@ -294,7 +297,11 @@ cb_head(XDR *x, const struct cb_target *ct, uint32_t ident)
 	    xdr_u_int32_t(x, &zero) &&		/* csa_slotid */
 	    xdr_u_int32_t(x, &zero) &&		/* csa_highest_slotid */
 	    xdr_u_int32_t(x, &zero) &&		/* csa_cachethis */
-	    xdr_u_int32_t(x, &zero);		/* csa_referring_call_lists */
+	    (!ct->ct_ref ? xdr_u_int32_t(x, &zero) :
+	    xdr_u_int32_t(x, &one) && nfsv4_xdr_sessionid(x, &sid) &&
+	    xdr_u_int32_t(x, &one) &&
+	    xdr_u_int32_t(x, __UNCONST(&ct->ct_refseq)) &&
+	    xdr_u_int32_t(x, __UNCONST(&ct->ct_refslot)));
 }
 
 /* CB_COMPOUND4args, s17.2.2, of the one operation that is used here. */
@@ -414,6 +421,7 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_uid = cl->cl_uid;
 	ct->ct_gid = cl->cl_gid;
 	ct->ct_sess = NULL;
+	ct->ct_ref = false;
 	ct->ct_vers = NFSV4_CB_VERSION;
 	if (cl->cl_minor == 0)
 		return true;
@@ -500,6 +508,21 @@ cb_do_recall(struct nfsv4_state *st)
 	ra.ra_ct = &ct;
 	ra.ra_ident = ct.ct_ident;
 	nfsv4_stateid_out(st, &ra.ra_stateid);
+	/* RFC 8881 s8.2.2: what a callback carries has seqid 0. */
+	if (st->st_owner->sw_client->cl_minor != 0)
+		ra.ra_stateid.si_seqid = 0;
+	/*
+	 * s2.10.6.3: while the slot has seen no later request the client
+	 * may not have the reply that gave it this.  Calls come by way of
+	 * one session, and the others' replies are not looked for.
+	 */
+	if (ct.ct_sess != NULL && st->st_refset &&
+	    memcmp(&st->st_refsid, &ct.ct_sid, sizeof(ct.ct_sid)) == 0 &&
+	    ct.ct_sess->se_slots[st->st_refslot].sl_seq == st->st_refseq) {
+		ct.ct_ref = true;
+		ct.ct_refslot = st->st_refslot;
+		ct.ct_refseq = st->st_refseq;
+	}
 	ra.ra_fh = st->st_file->f_fh;
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_recall_encode, &ra,

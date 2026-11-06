@@ -148,6 +148,11 @@ jobs:
           cp ci/nfsv4/t41.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./t41.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t41.txt" || true
+      - name: What the reading of RFC 8881 found
+        run: |
+          cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 400 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -219,6 +224,7 @@ jobs:
             out/ctime-*.txt
             out/linux-client-*.txt
             out/t41.txt
+            out/t41b.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

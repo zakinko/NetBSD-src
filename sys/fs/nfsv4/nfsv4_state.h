@@ -203,6 +203,13 @@ struct nfsv4_file {
 #define	NFSV4_ST_LOCK		2
 #define	NFSV4_ST_DELEG		3
 
+/* What of a file a lock state has locked, s9.5.  lr_end is past the last. */
+struct nfsv4_lrange {
+	LIST_ENTRY(nfsv4_lrange) lr_list;
+	off_t		lr_start;
+	off_t		lr_end;
+};
+
 struct nfsv4_state {
 	LIST_ENTRY(nfsv4_state) st_hash;
 	LIST_ENTRY(nfsv4_state) st_olist;	/* on the owner */
@@ -221,6 +228,9 @@ struct nfsv4_state {
 	uint32_t	st_accbits;	/* each access ever opened with */
 	uint32_t	st_denybits;
 	bool		st_asked;	/* lock, by lock_owner_held() */
+	LIST_HEAD(, nfsv4_lrange) st_ranges;	/* lock, unless st_allfile */
+	u_int		st_nranges;
+	bool		st_allfile;	/* too many: taken to be all of it */
 	struct vnode	*st_reapvp;	/* a reference, while reaping */
 	bool		st_free;	/* reaping ends it */
 	bool		st_closed;	/* kept for a resent CLOSE */
@@ -234,6 +244,10 @@ struct nfsv4_state {
 	bool		st_cbqueued;	/* on st_cbq */
 	bool		st_recalled;	/* on st_rlist */
 	bool		st_prev;	/* of a client now restarted, s10.2.1 */
+	bool		st_refset;	/* the request granting it, s2.10.6.3 */
+	struct nfsv4_sessionid st_refsid;
+	uint32_t	st_refslot;
+	uint32_t	st_refseq;
 	time_t		st_recall_end;	/* when it is revoked */
 	time_t		st_cbnext;	/* when to call again, if not 0 */
 };
@@ -244,6 +258,10 @@ SLIST_HEAD(nfsv4_reap, nfsv4_state);
 struct nfsv4_deleg_spare {
 	bool		ds_nowrite;	/* locks on the file, of whoever */
 	uint64_t	ds_change;	/* s10.4.3, sc */
+	bool		ds_refset;	/* st_refset and the rest */
+	struct nfsv4_sessionid ds_refsid;
+	uint32_t	ds_refslot;
+	uint32_t	ds_refseq;
 	struct nfsv4_state *ds_st;
 	struct nfsv4_owner_s *ds_sw;
 	struct nfsv4_file *ds_f;
@@ -349,6 +367,10 @@ void	nfsv4_deleg_add(struct nfsv4_client *, struct vnode *,
 	    const struct nfsv4_fh *, uint32_t, struct nfsv4_deleg_spare *,
 	    struct nfsv4_open_deleg *);
 void	nfsv4_deleg_gone(struct nfsv4_state *);
+void	nfsv4_deleg_look(struct vnode *, kauth_cred_t,
+	    struct nfsv4_deleg_spare *);
+void	nfsv4_deleg_refer(const struct nfsv4_compound *,
+	    struct nfsv4_deleg_spare *);
 uint32_t nfsv4_deleg_claim_cur(const struct nfsv4_compound *,
 	    struct nfsv4_client *,
 	    const struct nfsv4_stateid *, struct vnode *);
@@ -371,6 +393,10 @@ uint32_t nfsv4_seq_replay(struct nfsv4_compound *, struct nfsv4_owner_s *,
 	    bool);
 void	nfsv4_seq_cancel(struct nfsv4_owner_s *);
 void	nfsv4_reap_finish(struct nfsv4_reap *);
+void	nfsv4_client_stable(struct nfsv4_client *);
+void	nfsv4_lock_assign(struct nfsv4_owner_s *, struct nfsv4_file *,
+	    struct nfsv4_state *, const struct flock *);
+void	nfsv4_lock_drop(struct nfsv4_state *, struct vnode *);
 uid_t	nfsv4_client_principal(const struct nfsv4_compound *);
 void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 	    uint32_t, const char *, u_int);
@@ -384,5 +410,6 @@ int	nfsv4_cb_getattr(const struct nfsv4_client *, const struct nfsv4_fh *,
 uint32_t nfsv4_deleg_break(struct vnode *, const struct nfsv4_client *,
 	    uint64_t, u_int);
 uint32_t nfsv4_deleg_break_name(const struct nfsv4_cfh *, const char *);
+uint32_t nfsv4_open_denies_remove(const struct nfsv4_cfh *, const char *);
 
 #endif /* !_FS_NFSV4_NFSV4_STATE_H_ */

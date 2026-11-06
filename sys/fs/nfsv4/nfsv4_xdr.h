@@ -338,6 +338,14 @@ struct nfsv4_chanattrs {
 	uint32_t	ca_ird;
 };
 
+/* What is kept of callback_sec_parms4<>, RFC 8881 s18.33.1. */
+struct nfsv4_cbsec {
+	bool		cs_gss;		/* one is RPCSEC_GSS */
+	uint32_t	cs_flavor;	/* the first of the others */
+	uint32_t	cs_uid;		/* of AUTH_SYS */
+	uint32_t	cs_gid;
+};
+
 struct nfsv4_args_create_session {
 	uint64_t	clientid;
 	uint32_t	sequence;
@@ -345,12 +353,12 @@ struct nfsv4_args_create_session {
 	struct nfsv4_chanattrs fore;
 	struct nfsv4_chanattrs back;
 	uint32_t	cb_program;
-	bool		gss;		/* a csa_sec_parms is RPCSEC_GSS */
+	struct nfsv4_cbsec sec;
 };
 
 struct nfsv4_args_backchannel_ctl {
 	uint32_t	cb_program;
-	bool		gss;
+	struct nfsv4_cbsec sec;
 };
 
 struct nfsv4_sessionid {

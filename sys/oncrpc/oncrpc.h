@@ -151,6 +151,9 @@ void	oncrpc_svc_unregister(struct oncrpc_svc *,
 	    const struct oncrpc_program *);
 int	oncrpc_svc_addsock(struct oncrpc_svc *, struct file *, struct mbuf *);
 u_int	oncrpc_svc_nxprt(struct oncrpc_svc *);
+bool	oncrpc_svc_alive(struct oncrpc_svc *, uint64_t);
+int	oncrpc_svc_call(struct oncrpc_svc *, uint64_t,
+	    const struct oncrpc_clnt_call *, int);
 int	oncrpc_clnt_call(const struct sockaddr *,
 	    const struct oncrpc_clnt_call *, int);
 

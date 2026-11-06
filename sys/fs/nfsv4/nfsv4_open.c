@@ -364,6 +364,7 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 	bool first;
 	XDR rb;
 
+	c->c_curst = *si;
 	rflags = OPEN4_RESULT_LOCKTYPE_POSIX;
 	if (!sw->sw_confirmed)
 		rflags |= OPEN4_RESULT_CONFIRM;
@@ -415,7 +416,9 @@ open_previous(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    !OPEN4_DENY_OK(oa->share_deny) ||
 	    oa->delegate_type > OPEN_DELEGATE_WRITE)
 		return NFS4ERR_INVAL;
-	st = nfsv4_reclaim_check(sw->sw_client);
+	/* RFC 8881 s18.51.3 */
+	st = c->c_minor != 0 && sw->sw_client->cl_reclaimed ?
+	    NFS4ERR_NO_GRACE : nfsv4_reclaim_check(sw->sw_client);
 	if (st != NFS4_OK)
 		return st;
 	if (vp == NULL || vp->v_type == VDIR)
@@ -613,7 +616,9 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		goto bad;
 	}
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
-	    sparef, &si, &fc, ds, &od);
+	    sparef, &si, &fc,
+	    oa->want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ||
+	    oa->want == OPEN4_SHARE_ACCESS_WANT_CANCEL ? NULL : ds, &od);
 	if (st != NFS4_OK)
 		goto bad;
 

@@ -37,9 +37,9 @@
  * in memory until the last COMPOUND on it ends, but goes from the table
  * as soon as it is destroyed.
  *
- * Nothing is sent on a backchannel, as nothing here is recallable:
- * delegations and layouts are not given.  A connection can be bound to
- * one all the same, and no SEQ4_STATUS_CB_PATH_DOWN is ever set.
+ * The backchannel is the connections bound to it, and calls go out on
+ * them by nfsv4_cb.c.  It has one slot, so one call at a time, whatever
+ * the client offered: the server's choice among ca_maxrequests slots.
  *
  * The state protection of s2.10.8.3 needs RPCSEC_GSS, which the RPC layer
  * does not have, so only SP4_NONE is accepted.
@@ -204,6 +204,70 @@ session_conn(struct nfsv4_session *se, uint64_t id)
 	return NULL;
 }
 
+/* Is a live connection bound to the backchannel of se.  Forget dead ones. */
+static uint64_t
+session_cbconn(struct nfsv4_session *se)
+{
+	u_int i, n = 0;
+	uint64_t id = 0;
+
+	for (i = 0; i < se->se_nconn; i++) {
+		if (!nfsv4_conn_alive(se->se_conns[i].sc_id))
+			continue;
+		if ((se->se_conns[i].sc_dir & CDFS4_BACK) != 0 && id == 0)
+			id = se->se_conns[i].sc_id;
+		se->se_conns[n++] = se->se_conns[i];
+	}
+	se->se_nconn = n;
+	return id;
+}
+
+/* A session of cl to call on, made busy, and its connection in *idp. */
+struct nfsv4_session *
+nfsv4_session_cbget(struct nfsv4_client *cl, uint64_t *idp)
+{
+	struct nfsv4_session *se;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(se, &cl->cl_sessions, se_list) {
+		if (!se->se_cbbusy && (*idp = session_cbconn(se)) != 0) {
+			se->se_cbbusy = true;
+			se->se_refs++;
+			return se;
+		}
+	}
+	return NULL;
+}
+
+/* Has cl any backchannel, busy or not. */
+bool
+nfsv4_session_cbany(struct nfsv4_client *cl)
+{
+	struct nfsv4_session *se;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(se, &cl->cl_sessions, se_list) {
+		if (session_cbconn(se) != 0)
+			return true;
+	}
+	return false;
+}
+
+/* s2.10.6.1: only a reply says the sequence ID was seen. */
+void
+nfsv4_session_cbdone(struct nfsv4_session *se, bool replied)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	se->se_cbbusy = false;
+	if (replied)
+		se->se_cbseq++;
+	session_rele(se);
+}
+
 static void
 session_conn_add(struct nfsv4_session *se, uint64_t id, uint32_t dir)
 {
@@ -321,6 +385,11 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 	if (session_conn(se, c->c_rq->rq_connid) == NULL)
 		session_conn_add(se, c->c_rq->rq_connid, CDFS4_FORE);
 	c->c_seqflags = session_lease(se->se_client);
+	/* s18.46.3 */
+	if (session_cbconn(se) == 0)
+		c->c_seqflags |= SEQ4_STATUS_CB_PATH_DOWN_SESSION;
+	if (!nfsv4_session_cbany(se->se_client))
+		c->c_seqflags |= SEQ4_STATUS_CB_PATH_DOWN;
 	c->c_maxslot = se->se_nslots - 1;
 	c->c_resmax = se->se_maxresp;
 	c->c_cachemax = se->se_maxcached;
@@ -588,7 +657,7 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 		goto out;
 	}
 	/* 4; s18.36.3, there being no RPCSEC_GSS handle at all. */
-	if (ca->gss) {
+	if (ca->sec.cs_gss) {
 		st = cl->cl_csstatus = NFS4ERR_NOENT;
 		goto out;
 	}
@@ -615,6 +684,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	se->se_maxops = fore.ca_maxops;
 	se->se_nslots = nslots;
 	se->se_cbprog = ca->cb_program;
+	se->se_cbsec = ca->sec;
+	se->se_cbseq = 1;		/* s18.36.3 */
 	se->se_cost = cost;
 	nfsv4_ses_cost += cost;
 	flags = ca->flags & CREATE_SESSION4_FLAG_CONN_BACK_CHAN;
@@ -628,6 +699,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = cl->cl_csstatus = NFS4_OK;
 	len = cl->cl_cslen;
 	memcpy(reply, cl->cl_csreply, len);
+	if (flags != 0)
+		nfsv4_cb_reset(cl);
 	se = NULL;
 	/* s18.35.4 case 5: the old record goes with the confirmation. */
 	if (old != NULL)
@@ -719,6 +792,8 @@ nfsv4_op_bind_conn(struct nfsv4_compound *c, union nfsv4_args *a)
 		dir = sc->sc_dir;
 	else if (sc->sc_dir != dir)
 		st = NFS4ERR_INVAL;
+	if (st == NFS4_OK && (dir & CDFS4_BACK) != 0)
+		nfsv4_cb_reset(se->se_client);
 	mutex_exit(&nfsv4_state_lock);
 	if (st != NFS4_OK)
 		return st;
@@ -732,10 +807,11 @@ uint32_t
 nfsv4_op_backchannel_ctl(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 
-	if (a->backchannel_ctl.gss)
+	if (a->backchannel_ctl.sec.cs_gss)
 		return NFS4ERR_NOENT;
 	mutex_enter(&nfsv4_state_lock);
 	c->c_sess->se_cbprog = a->backchannel_ctl.cb_program;
+	c->c_sess->se_cbsec = a->backchannel_ctl.sec;
 	mutex_exit(&nfsv4_state_lock);
 	return NFS4_OK;
 }
@@ -812,7 +888,7 @@ nfsv4_op_free_stateid(struct nfsv4_compound *c, union nfsv4_args *a)
 		goto out;
 	}
 	if (st->st_file != NULL) {
-		if (st->st_type == NFSV4_ST_OPEN) {
+		if (st->st_type != NFSV4_ST_LOCK) {
 			nfsv4_owner_idle(sw);
 			status = NFS4ERR_LOCKS_HELD;
 			goto out;

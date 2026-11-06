@@ -137,6 +137,11 @@ jobs:
       - name: The Linux client, version 4.1
         run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
       - run: SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs41
+      - name: What the 4.1 suite does not run
+        run: |
+          cp ci/nfsv4/t41.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 600 python3 ./t41.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t41.txt" || true
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -206,6 +211,7 @@ jobs:
             out/summary.txt
             out/ctime-*.txt
             out/linux-client-*.txt
+            out/t41.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

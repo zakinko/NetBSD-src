@@ -48,6 +48,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/cprng.h>
 #include <sys/condvar.h>
 #include <sys/domain.h>
 #include <sys/errno.h>
@@ -82,11 +83,19 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	ONCRPC_MAXMSG		(1024 * 1024)
 #define	ONCRPC_SOCKBUF		(128 * 1024)
 #define	ONCRPC_XPRT_MAXREQS	64
+#define	ONCRPC_BCALL_MAX	(64 * 1024)	/* a call of ours */
 
 #define	ONCRPC_RCVALL		1000000000	/* as nfsrv_rcv() */
 
 struct oncrpc_ireq;
 struct oncrpc_xprt;
+
+/* A call of ours on a peer's connection; see oncrpc_svc_call(). */
+struct oncrpc_bcall {
+	LIST_ENTRY(oncrpc_bcall) bc_list;
+	uint32_t		 bc_xid;
+	struct mbuf		*bc_reply;
+};
 
 static volatile uint64_t oncrpc_nextconn;
 
@@ -101,6 +110,7 @@ struct oncrpc_svc {
 	kmutex_t		 svc_lock;
 	kcondvar_t		 svc_cv;	/* work for the workers */
 	kcondvar_t		 svc_progcv;	/* a pg_refs went to 0 */
+	kcondvar_t		 svc_bcv;	/* a reply came, or an xprt died */
 	TAILQ_HEAD(, oncrpc_xprt) svc_pending;
 	LIST_HEAD(, oncrpc_xprt) svc_xprts;
 	LIST_HEAD(, oncrpc_prog) svc_progs;
@@ -129,6 +139,7 @@ struct oncrpc_xprt {
 	u_int			 xp_flags;
 	u_int			 xp_nreqs;	/* calls in progress */
 	uint64_t		 xp_id;		/* rq_connid */
+	LIST_HEAD(, oncrpc_bcall) xp_bcalls;	/* waiting for a reply */
 	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
 	LIST_ENTRY(oncrpc_xprt)	 xp_list;
 	SIMPLEQ_HEAD(, oncrpc_ireq) xp_sendq;
@@ -225,6 +236,7 @@ xprt_zap(struct oncrpc_xprt *xp)
 	}
 	LIST_REMOVE(xp, xp_list);
 	svc->svc_nxprt--;
+	cv_broadcast(&svc->svc_bcv);
 	mutex_exit(&svc->svc_lock);
 
 	solock(so);
@@ -401,6 +413,139 @@ xprt_send(struct oncrpc_ireq *ir)
 		xprt_zap(xp);
 }
 
+/*
+ * A message that is the reply to a call of ours goes to whoever waits for
+ * it, and with nobody waiting is dropped: RFC 5531 s9 tells a reply from
+ * a call by the word after the xid.  True if m was one, and is gone.
+ */
+static bool
+xprt_reply(struct oncrpc_xprt *xp, struct mbuf *m)
+{
+	struct oncrpc_svc *svc = xp->xp_svc;
+	struct oncrpc_bcall *bc;
+	uint32_t head[2];
+
+	if (m_length(m) < sizeof(head))
+		return false;
+	m_copydata(m, 0, sizeof(head), head);
+	if (ntohl(head[1]) != ONCRPC_REPLY)
+		return false;
+	mutex_enter(&svc->svc_lock);
+	LIST_FOREACH(bc, &xp->xp_bcalls, bc_list) {
+		if (bc->bc_xid == ntohl(head[0]) && bc->bc_reply == NULL) {
+			bc->bc_reply = m;
+			m = NULL;
+			cv_broadcast(&svc->svc_bcv);
+			break;
+		}
+	}
+	mutex_exit(&svc->svc_lock);
+	m_freem(m);
+	return true;
+}
+
+static struct oncrpc_xprt *
+xprt_byid(struct oncrpc_svc *svc, uint64_t id)
+{
+	struct oncrpc_xprt *xp;
+
+	KASSERT(mutex_owned(&svc->svc_lock));
+
+	LIST_FOREACH(xp, &svc->svc_xprts, xp_list) {
+		if (xp->xp_id == id)
+			return xp;
+	}
+	return NULL;
+}
+
+/* Is that connection still up. */
+bool
+oncrpc_svc_alive(struct oncrpc_svc *svc, uint64_t id)
+{
+	bool alive;
+
+	mutex_enter(&svc->svc_lock);
+	alive = xprt_byid(svc, id) != NULL;
+	mutex_exit(&svc->svc_lock);
+	return alive;
+}
+
+/*
+ * A call to the peer of a connection it made to us, as the backchannel of
+ * RFC 8881 s2.10.3 has it, within timeo seconds.  As oncrpc_clnt_call(),
+ * but on the stream the calls come in on, so the worker that reads it
+ * sorts replies from calls.  The call goes out by the way of a reply.
+ */
+int
+oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
+    const struct oncrpc_clnt_call *cc, int timeo)
+{
+	struct oncrpc_xdrmbuf ax, rx;
+	struct oncrpc_bcall bc;
+	struct oncrpc_xprt *xp;
+	struct oncrpc_ireq *ir;
+	struct mbuf *m;
+	time_t end;
+	int error;
+
+	memset(&bc, 0, sizeof(bc));
+	bc.bc_xid = cprng_fast32();
+	oncrpc_xdrmbuf_create(&ax, NULL, ONCRPC_BCALL_MAX, XDR_ENCODE);
+	if (!oncrpc_msg_encode_call(&ax.xm_xdr, bc.bc_xid, cc) ||
+	    (cc->cc_encode != NULL &&
+	    !(*cc->cc_encode)(&ax.xm_xdr, cc->cc_arg))) {
+		XDR_DESTROY(&ax.xm_xdr);
+		return EMSGSIZE;
+	}
+	m = oncrpc_xdrmbuf_detach(&ax);
+	ir = kmem_zalloc(sizeof(*ir), KM_SLEEP);
+
+	mutex_enter(&svc->svc_lock);
+	xp = xprt_byid(svc, id);
+	if (xp == NULL || xp->xp_so->so_type != SOCK_STREAM) {
+		mutex_exit(&svc->svc_lock);
+		kmem_free(ir, sizeof(*ir));
+		m_freem(m);
+		return ENOTCONN;
+	}
+	xp->xp_refs += 2;	/* for this, and for ir */
+	xp->xp_nreqs++;
+	LIST_INSERT_HEAD(&xp->xp_bcalls, &bc, bc_list);
+	mutex_exit(&svc->svc_lock);
+
+	ir->ir_xprt = xp;
+	ir->ir_reply = m;
+	xprt_send(ir);
+
+	end = time_uptime + timeo;
+	error = 0;
+	mutex_enter(&svc->svc_lock);
+	while (bc.bc_reply == NULL) {
+		if ((xp->xp_flags & XP_DEAD) != 0) {
+			error = ECONNRESET;
+			break;
+		}
+		if (time_uptime >= end) {
+			error = ETIMEDOUT;
+			break;
+		}
+		(void)cv_timedwait(&svc->svc_bcv, &svc->svc_lock, hz);
+	}
+	LIST_REMOVE(&bc, bc_list);
+	mutex_exit(&svc->svc_lock);
+
+	if (bc.bc_reply != NULL) {
+		oncrpc_xdrmbuf_create(&rx, bc.bc_reply, 0, XDR_DECODE);
+		error = oncrpc_msg_decode_reply(&rx.xm_xdr, bc.bc_xid);
+		if (error == 0 && cc->cc_decode != NULL &&
+		    !(*cc->cc_decode)(&rx.xm_xdr, cc->cc_res))
+			error = EBADRPC;
+		m_freem(bc.bc_reply);
+	}
+	xprt_rele(xp);
+	return error;
+}
+
 static struct oncrpc_prog *
 svc_prog_hold(struct oncrpc_svc *svc, const struct oncrpc_call *c,
     uint32_t *lowp, uint32_t *highp, bool *known)
@@ -571,6 +716,7 @@ svc_worker(void *arg)
 	struct oncrpc_xprt *xp;
 	struct oncrpc_ireq *ir;
 	struct mbuf *m, *nam;
+	bool replied;
 
 	mutex_enter(&svc->svc_lock);
 	for (;;) {
@@ -592,7 +738,8 @@ svc_worker(void *arg)
 			m = xprt_getmsg_dgram(xp, &nam);
 
 		ir = NULL;
-		if (m != NULL)
+		replied = m != NULL && nam == NULL && xprt_reply(xp, m);
+		if (m != NULL && !replied)
 			ir = kmem_zalloc(sizeof(*ir), KM_SLEEP);
 
 		mutex_enter(&svc->svc_lock);
@@ -602,7 +749,7 @@ svc_worker(void *arg)
 			xp->xp_refs++;
 		}
 		/* There may be another message behind this one. */
-		if (ir != NULL || (xp->xp_flags & XP_READABLE) != 0)
+		if (ir != NULL || replied || (xp->xp_flags & XP_READABLE) != 0)
 			xprt_queue(xp);
 		mutex_exit(&svc->svc_lock);
 
@@ -637,6 +784,7 @@ oncrpc_svc_create(const char *name, u_int nworkers, struct oncrpc_svc **svcp)
 	mutex_init(&svc->svc_lock, MUTEX_DRIVER, IPL_SOFTNET);
 	cv_init(&svc->svc_cv, "oncrpc");
 	cv_init(&svc->svc_progcv, "oncrpcpg");
+	cv_init(&svc->svc_bcv, "oncrpcbc");
 	TAILQ_INIT(&svc->svc_pending);
 	LIST_INIT(&svc->svc_xprts);
 	LIST_INIT(&svc->svc_progs);
@@ -687,6 +835,7 @@ oncrpc_svc_destroy(struct oncrpc_svc *svc)
 
 	cv_destroy(&svc->svc_cv);
 	cv_destroy(&svc->svc_progcv);
+	cv_destroy(&svc->svc_bcv);
 	mutex_destroy(&svc->svc_lock);
 	kmem_free(svc, SVC_SIZE(svc->svc_nalloc));
 	atomic_dec_uint(&oncrpc_nsvc);

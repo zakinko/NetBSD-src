@@ -95,9 +95,14 @@ struct cb_target {
 	uint32_t	ct_flavor;
 	uid_t		ct_uid;
 	gid_t		ct_gid;
+	struct nfsv4_session *ct_sess;	/* RFC 8881: held, and its slot */
+	uint64_t	ct_conn;
+	struct nfsv4_sessionid ct_sid;
+	uint32_t	ct_seq;
 };
 
 struct cb_recall_args {
+	const struct cb_target *ra_ct;
 	uint32_t	ra_ident;
 	struct nfsv4_stateid ra_stateid;
 	struct nfsv4_fh	ra_fh;
@@ -269,13 +274,29 @@ static bool
 cb_recall_encode(XDR *x, void *arg)
 {
 	struct cb_recall_args *ra = arg;
-	uint32_t zero = 0, one = 1, op = NFSV4_OP_CB_RECALL;
+	const struct cb_target *ct = ra->ra_ct;
+	uint32_t zero = 0, one = 1, two = 2, op = NFSV4_OP_CB_RECALL;
+	uint32_t seqop = NFSV4_OP_CB_SEQUENCE, seq = ct->ct_seq;
+	struct nfsv4_sessionid sid = ct->ct_sid;
 
-	return xdr_u_int32_t(x, &zero) &&	/* tag */
-	    xdr_u_int32_t(x, &zero) &&		/* minorversion, s17.2.3 */
-	    xdr_u_int32_t(x, &ra->ra_ident) &&	/* s17.2.4 */
-	    xdr_u_int32_t(x, &one) &&
-	    xdr_u_int32_t(x, &op) &&
+	/* RFC 8881 s18.36.3: minor version 1, and s20.9 comes first. */
+	if (ct->ct_sess != NULL &&
+	    (!xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &one) ||
+	    !xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
+	    !xdr_u_int32_t(x, &seqop) || !nfsv4_xdr_sessionid(x, &sid) ||
+	    !xdr_u_int32_t(x, &seq) ||
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_slotid */
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_highest_slotid */
+	    !xdr_u_int32_t(x, &zero) ||		/* csa_cachethis */
+	    !xdr_u_int32_t(x, &zero)))		/* csa_referring_call_lists */
+		return false;
+	if (ct->ct_sess == NULL &&
+	    (!xdr_u_int32_t(x, &zero) ||	/* tag */
+	    !xdr_u_int32_t(x, &zero) ||		/* minorversion, s17.2.3 */
+	    !xdr_u_int32_t(x, &ra->ra_ident) ||	/* s17.2.4 */
+	    !xdr_u_int32_t(x, &one)))
+		return false;
+	return xdr_u_int32_t(x, &op) &&
 	    nfsv4_xdr_stateid(x, &ra->ra_stateid) &&
 	    xdr_u_int32_t(x, &zero) &&		/* truncate, s18.2.4 */
 	    nfsv4_xdr_fh(x, &ra->ra_fh);
@@ -345,11 +366,12 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	union cb_addr ua;
 	char cred[ONCRPC_MAX_AUTH_BYTES];
 
-	if (!cb_addr_parse(&ct->ct_addr, &ua))
+	if (ct->ct_sess == NULL && !cb_addr_parse(&ct->ct_addr, &ua))
 		return EADDRNOTAVAIL;
 	memset(&cc, 0, sizeof(cc));
 	cc.cc_prog = ct->ct_prog;
-	cc.cc_vers = NFSV4_CB_VERSION;
+	/* RFC 8881 s18.36.3 */
+	cc.cc_vers = ct->ct_sess != NULL ? NFSV4_VERSION : NFSV4_CB_VERSION;
 	cc.cc_proc = proc;
 	cc.cc_flavor = ct->ct_flavor;
 	if (ct->ct_flavor == ONCRPC_AUTH_SYS) {
@@ -361,12 +383,16 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	cc.cc_arg = arg;
 	cc.cc_decode = dec;
 	cc.cc_res = res;
+	if (ct->ct_sess != NULL)
+		return nfsv4_conn_call(ct->ct_conn, &cc, NFSV4_CB_TIMEO);
 	return oncrpc_clnt_call(&ua.ca_sa, &cc, NFSV4_CB_TIMEO);
 }
 
-static void
-cb_target_get(const struct nfsv4_client *cl, struct cb_target *ct)
+/* False for a client of version 4.1 with no backchannel free. */
+static bool
+cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 {
+	struct nfsv4_session *se;
 
 	ct->ct_addr = cl->cl_cb;
 	ct->ct_clientid = cl->cl_id;
@@ -376,6 +402,28 @@ cb_target_get(const struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_flavor = cl->cl_flavor;
 	ct->ct_uid = cl->cl_uid;
 	ct->ct_gid = cl->cl_gid;
+	ct->ct_sess = NULL;
+	if (cl->cl_minor == 0)
+		return true;
+	se = nfsv4_session_cbget(cl, &ct->ct_conn);
+	if (se == NULL)
+		return false;
+	ct->ct_sess = se;
+	ct->ct_sid = se->se_id;
+	ct->ct_seq = se->se_cbseq;
+	ct->ct_prog = se->se_cbprog;
+	ct->ct_flavor = se->se_cbsec.cs_flavor;
+	ct->ct_uid = se->se_cbsec.cs_uid;
+	ct->ct_gid = se->se_cbsec.cs_gid;
+	return true;
+}
+
+static void
+cb_target_put(struct cb_target *ct, int error)
+{
+
+	if (ct->ct_sess != NULL)
+		nfsv4_session_cbdone(ct->ct_sess, error == 0);
 }
 
 /* What became of a call to the client of ct. */
@@ -397,10 +445,17 @@ cb_do_probe(struct nfsv4_client *cl)
 	struct cb_target ct;
 	int error;
 
-	cb_target_get(cl, &ct);
+	if (!cb_target_get(cl, &ct)) {
+		cl->cl_cbnext = time_uptime + NFSV4_CB_REPROBE;
+		cl->cl_cbstate = nfsv4_session_cbany(cl) ? NFSV4_CB_UP :
+		    NFSV4_CB_DOWN;
+		return;
+	}
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL, NULL);
 	mutex_enter(&nfsv4_state_lock);
+	/* Nothing in CB_NULL is sequenced. */
+	cb_target_put(&ct, EAGAIN);
 	cb_path(&ct, error == 0);
 }
 
@@ -413,7 +468,11 @@ cb_do_recall(struct nfsv4_state *st)
 	uint32_t status = NFS4ERR_RESOURCE;
 	int error;
 
-	cb_target_get(st->st_owner->sw_client, &ct);
+	if (!cb_target_get(st->st_owner->sw_client, &ct)) {
+		st->st_cbnext = time_uptime + NFSV4_CB_RETRY;
+		return;
+	}
+	ra.ra_ct = &ct;
 	ra.ra_ident = ct.ct_ident;
 	nfsv4_stateid_out(st, &ra.ra_stateid);
 	ra.ra_fh = st->st_file->f_fh;
@@ -421,6 +480,7 @@ cb_do_recall(struct nfsv4_state *st)
 	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_recall_encode, &ra,
 	    cb_status_decode, &status);
 	mutex_enter(&nfsv4_state_lock);
+	cb_target_put(&ct, error);
 
 	/* s10.2: a reply of any kind says that the path works. */
 	cb_path(&ct, error == 0);
@@ -490,7 +550,7 @@ nfsv4_cb_getattr(const struct nfsv4_client *cl, const struct nfsv4_fh *fh,
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
-	cb_target_get(cl, &ct);
+	(void)cb_target_get(__UNCONST(cl), &ct);
 	mutex_exit(&nfsv4_state_lock);
 	ga = kmem_zalloc(sizeof(*ga), KM_SLEEP);
 	ga->ga_ident = ct.ct_ident;

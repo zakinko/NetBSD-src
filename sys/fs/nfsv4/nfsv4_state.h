@@ -91,6 +91,9 @@ struct nfsv4_session {
 	uint32_t	se_maxops;
 	uint32_t	se_nslots;
 	uint32_t	se_cbprog;
+	struct nfsv4_cbsec se_cbsec;
+	uint32_t	se_cbseq;	/* of the one slot of the backchannel */
+	bool		se_cbbusy;	/* a call is out on it */
 	size_t		se_cost;	/* of the reply cache budget */
 	size_t		se_size;
 	u_int		se_nconn;
@@ -285,6 +288,10 @@ struct nfsv4_client *
 struct nfsv4_client *
 	nfsv4_client_insert(struct nfsv4_client *);
 void	nfsv4_client_retire(struct nfsv4_client *);
+struct nfsv4_session *
+	nfsv4_session_cbget(struct nfsv4_client *, uint64_t *);
+bool	nfsv4_session_cbany(struct nfsv4_client *);
+void	nfsv4_session_cbdone(struct nfsv4_session *, bool);
 bool	nfsv4_client_has_state(const struct nfsv4_client *);
 uint64_t nfsv4_clientid_new(void);
 struct nfsv4_owner_s *

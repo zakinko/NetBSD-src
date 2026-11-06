@@ -243,6 +243,7 @@ stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		return stateid_current(c, &a->write.stateid, false);
 	case NFSV4_OP_SETATTR:
 		return stateid_current(c, &a->setattr.stateid, false);
+	case NFSV4_OP_DELEGRETURN:
 	case NFSV4_OP_FREE_STATEID:
 		return stateid_current(c, &a->stateid.stateid, false);
 	default:
@@ -636,6 +637,20 @@ nfsv4_sysctl_moved(SYSCTLFN_ARGS)
 {
 
 	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_moved_line);
+}
+
+bool
+nfsv4_conn_alive(uint64_t id)
+{
+
+	return oncrpc_svc_alive(nfsv4_svc, id);
+}
+
+int
+nfsv4_conn_call(uint64_t id, const struct oncrpc_clnt_call *cc, int timeo)
+{
+
+	return oncrpc_svc_call(nfsv4_svc, id, cc, timeo);
 }
 
 static const struct oncrpc_program nfsv4_program = {

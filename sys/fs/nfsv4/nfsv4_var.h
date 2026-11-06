@@ -173,6 +173,8 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
  */
 #define	NFSV4_ATTRBUF		8192
 
+bool	nfsv4_conn_alive(uint64_t);
+int	nfsv4_conn_call(uint64_t, const struct oncrpc_clnt_call *, int);
 void	nfsv4_session_init(void);
 void	nfsv4_session_fini(void);
 void	nfsv4_session_drop_all(struct nfsv4_client *);

@@ -350,11 +350,12 @@ xdr_args_exchange_id(XDR *x, struct nfsv4_args_exchange_id *a)
 
 /* callback_sec_parms4<>, RFC 8881 s18.33.1, noting any RPCSEC_GSS. */
 static bool
-xdr_sec_parms(XDR *x, bool *gss)
+xdr_sec_parms(XDR *x, struct nfsv4_cbsec *cs)
 {
-	uint32_t n, i, flavor, t;
+	uint32_t n, i, flavor, t, uid, gid;
+	bool first = true;
 
-	*gss = false;
+	memset(cs, 0, sizeof(*cs));
 	if (!U32(x, &n) || n > NFSV4_BITMAP_READ)
 		return false;
 	for (i = 0; i < n; i++) {
@@ -362,17 +363,24 @@ xdr_sec_parms(XDR *x, bool *gss)
 			return false;
 		switch (flavor) {
 		case 0:		/* AUTH_NONE */
+			first = false;
 			break;
 		case 1:		/* AUTH_SYS: stamp, name, uid, gid, gids<> */
 			if (!U32(x, &t) || !xdr_skip_opaque(x) ||
-			    !U32(x, &t) || !U32(x, &t) || !U32(x, &t) ||
+			    !U32(x, &uid) || !U32(x, &gid) || !U32(x, &t) ||
 			    t > NFSV4_BITMAP_READ)
 				return false;
 			if (!nfsv4_xdr_skip(x, t * 4))
 				return false;
+			if (first) {
+				cs->cs_flavor = flavor;
+				cs->cs_uid = uid;
+				cs->cs_gid = gid;
+				first = false;
+			}
 			break;
 		case NFSV4_RPCSEC_GSS:
-			*gss = true;
+			cs->cs_gss = true;
 			if (!U32(x, &t) || !xdr_skip_opaque(x) ||
 			    !xdr_skip_opaque(x))
 				return false;
@@ -391,7 +399,7 @@ xdr_args_create_session(XDR *x, struct nfsv4_args_create_session *a)
 	return U64(x, &a->clientid) && U32(x, &a->sequence) &&
 	    U32(x, &a->flags) && nfsv4_xdr_chanattrs(x, &a->fore) &&
 	    nfsv4_xdr_chanattrs(x, &a->back) && U32(x, &a->cb_program) &&
-	    xdr_sec_parms(x, &a->gss);
+	    xdr_sec_parms(x, &a->sec);
 }
 
 static bool
@@ -667,7 +675,7 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		return nfsv4_xdr_owner(x, &a->release_lockowner.owner);
 	case NFSV4_OP_BACKCHANNEL_CTL:
 		return U32(x, &a->backchannel_ctl.cb_program) &&
-		    xdr_sec_parms(x, &a->backchannel_ctl.gss);
+		    xdr_sec_parms(x, &a->backchannel_ctl.sec);
 	case NFSV4_OP_BIND_CONN_TO_SESSION:
 		return nfsv4_xdr_sessionid(x, &a->bind_conn.sessionid) &&
 		    U32(x, &a->bind_conn.dir) && U32(x, &a->bind_conn.rdma) &&

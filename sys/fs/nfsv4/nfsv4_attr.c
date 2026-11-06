@@ -499,7 +499,9 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	m = attr_mask(want) & sup & ~attr_setonly;
 	if (cf->cf_ref != NULL)
 		m &= attr_absent;
-	if (rderr != NFS4_OK)
+	if (rderr == NFS4ERR_MOVED)	/* s8.3.2 */
+		m &= attr_absent;
+	else if (rderr != NFS4_OK)
 		m &= BIT(FATTR4_RDATTR_ERROR);
 
 	id = 0;

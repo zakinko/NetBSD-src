@@ -25,6 +25,15 @@ def client(name, export, uid=0):
     c.init_connection()
     return c
 
+def prev(c, owner, path):
+    # nfs4lib's open() has no way to fill in this arm of the claim.
+    from xdrdef.nfs4_type import open_owner4, openflag4, open_claim4
+    claim = open_claim4(CLAIM_DELEGATE_PREV, file_delegate_prev=path[-1])
+    return c.compound(c.use_obj(path[:-1]) +
+                      [op.open(0, OPEN4_SHARE_ACCESS_READ, OPEN4_SHARE_DENY_NONE,
+                               open_owner4(c.clientid, owner),
+                               openflag4(OPEN4_NOCREATE), claim), op.getfh()])
+
 what, arg = sys.argv[1:3]
 export = arg.strip('/').encode().split(b'/')
 
@@ -75,20 +84,14 @@ elif what == 'prev':
     want('a read delegation', d.delegation_type, OPEN_DELEGATE_READ)
     c.verifier = b'restart1'
     c.init_connection(cid, cb_ident=0)
-    r = c.compound(c.use_obj(path[:-1]) +
-                   [c.open(b'o2', path[-1], access=OPEN4_SHARE_ACCESS_READ,
-                           deny=OPEN4_SHARE_DENY_NONE,
-                           claim_type=CLAIM_DELEGATE_PREV), op.getfh()])
+    r = prev(c, b'o2', path)
     want('CLAIM_DELEGATE_PREV', r.status, NFS4_OK)
     if r.status == NFS4_OK:
         want('it came back', r.resarray[-2].switch.switch.delegation.delegation_type,
              OPEN_DELEGATE_READ)
     r = c.compound([op.delegpurge(c.clientid)])
     want('DELEGPURGE', r.status, NFS4_OK)
-    r = c.compound(c.use_obj(path[:-1]) +
-                   [c.open(b'o3', path[-1], access=OPEN4_SHARE_ACCESS_READ,
-                           deny=OPEN4_SHARE_DENY_NONE,
-                           claim_type=CLAIM_DELEGATE_PREV), op.getfh()])
+    r = prev(c, b'o3', path)
     want('after DELEGPURGE, s16.16.5', r.status, NFS4ERR_INVAL)
 elif what == 'fair':
     c1, c2, c3 = client(b'f1', export), client(b'f2', export), client(b'f3', export)

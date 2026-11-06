@@ -133,9 +133,9 @@ jobs:
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
-      - name: The pynfs tree, when all of it was left out
+      - name: What the run of all would have cleaned up
         if: inputs.quick == 'true'
-        run: PYNFS_ARGS=INIT LIMIT=120 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-init || true
+        run: ssh netbsd 'rm -rf /export/pynfs/tree'
       - name: Delegations, which are not in all
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
       - name: Restarts, which are not in all

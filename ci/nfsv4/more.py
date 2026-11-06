@@ -75,16 +75,20 @@ elif what == 'prev':
     want('a read delegation', d.delegation_type, OPEN_DELEGATE_READ)
     c.verifier = b'restart1'
     c.init_connection(cid, cb_ident=0)
-    r = c.open_file(b'o2', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE,
-                    claim_type=CLAIM_DELEGATE_PREV)
+    r = c.compound(c.use_obj(path[:-1]) +
+                   [c.open(b'o2', path[-1], access=OPEN4_SHARE_ACCESS_READ,
+                           deny=OPEN4_SHARE_DENY_NONE,
+                           claim_type=CLAIM_DELEGATE_PREV), op.getfh()])
     want('CLAIM_DELEGATE_PREV', r.status, NFS4_OK)
     if r.status == NFS4_OK:
         want('it came back', r.resarray[-2].switch.switch.delegation.delegation_type,
              OPEN_DELEGATE_READ)
     r = c.compound([op.delegpurge(c.clientid)])
     want('DELEGPURGE', r.status, NFS4_OK)
-    r = c.open_file(b'o3', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE,
-                    claim_type=CLAIM_DELEGATE_PREV)
+    r = c.compound(c.use_obj(path[:-1]) +
+                   [c.open(b'o3', path[-1], access=OPEN4_SHARE_ACCESS_READ,
+                           deny=OPEN4_SHARE_DENY_NONE,
+                           claim_type=CLAIM_DELEGATE_PREV), op.getfh()])
     want('after DELEGPURGE, s16.16.5', r.status, NFS4ERR_INVAL)
 elif what == 'fair':
     c1, c2, c3 = client(b'f1', export), client(b'f2', export), client(b'f3', export)

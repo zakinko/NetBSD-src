@@ -74,6 +74,7 @@ __RCSID("$NetBSD$");
 
 #define	RPC_REPLY	1
 #define	GSS_CONTINUE	1	/* RFC 2203 App. A */
+#define	GSS_UNAUTHORIZED 0x000f0000	/* RFC 2203 App. A */
 
 static gss_cred_id_t acceptor = GSS_C_NO_CREDENTIAL;
 static char *realm;
@@ -180,9 +181,8 @@ log_gss(const char *what, OM_uint32 major, OM_uint32 minor)
  * A principal to a user.  A client's machine principal, host/name or
  * nfs/name, stands for its root, as the export's -maproot then decides:
  * the state of NFSv4 comes from there with no user behind it.  Whoever
- * has no account here gets no identity, which is the export's anonymous
- * user; what becomes of them is a matter for the export, not a refusal
- * of the context.
+ * has no account here is refused the context: a principal not in the
+ * table must not reach an export at all, not even as its anonymous user.
  */
 static bool
 map_principal(const char *name, size_t len, uint32_t *uid, uint32_t *gid,
@@ -343,6 +343,17 @@ do_accept(struct buf *a, struct buf *r)
 	    (char *)name.value, key->type, mapped ? "mapped" : "not mapped");
 	gss_release_buffer(&m, &name);
 
+	if (!mapped) {
+		gss_release_buffer(&m, &out);
+		gss_krb5_free_lucid_sec_context(&m, lp);
+		put32(r, GSS_UNAUTHORIZED);
+		put32(r, 0);
+		put32(r, 0);
+		put32(r, 0);
+		putbytes(r, NULL, 0);
+		return;
+	}
+
 	put32(r, GSS_S_COMPLETE);
 	put32(r, minor);
 	put32(r, 0);
@@ -356,7 +367,6 @@ do_accept(struct buf *a, struct buf *r)
 	put32(r, (uint32_t)(lc->send_seq >> 32));
 	put32(r, (uint32_t)lc->send_seq);
 	put32(r, lifetime == GSS_C_INDEFINITE ? 86400 : lifetime);
-	put32(r, mapped);
 	put32(r, uid);
 	put32(r, gid);
 	put32(r, ngroups);

@@ -56,6 +56,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -1306,6 +1308,9 @@ nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t flavor,
 
 	if ((at = memchr(buf, '@', len)) != NULL)
 		return nfsv4_idmap_in(group, buf, len, (u_int)(at - buf), idp);
+	/* s5.9: numbers are for those outside Kerberos. */
+	if (flavor == RPCSEC_GSS)
+		return NFS4ERR_BADOWNER;
 	if (buf[0] == '0' && len > 1)		/* "no leading zeros" */
 		return NFS4ERR_BADOWNER;
 	v = 0;

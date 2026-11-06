@@ -80,8 +80,11 @@ __KERNEL_RCSID(0, "$NetBSD: ffs_inode.c,v 1.132 2026/07/22 14:44:49 hannken Exp 
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
 #include <sys/trace.h>
+#include <sys/uio.h>
 #include <sys/vnode.h>
 #include <sys/wapbl.h>
+
+#include <miscfs/genfs/genfs_node.h>
 
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/inode.h>
@@ -615,6 +618,159 @@ out:
 #endif
 	KASSERT(ovp->v_type != VREG || ovp->v_size == oip->i_size);
 	return (allerror);
+}
+
+/*
+ * Take one full block out of a regular file, leaving a hole.  Indirect
+ * blocks stay, as they are nearly always wanted again and truncating
+ * them would need all of ffs_indirtrunc() for a block in the middle of
+ * a file.  As in ffs_truncate() the pointer goes first, so that a crash
+ * in between loses a block to fsck and never leaves one in two places.
+ */
+static int
+ffs_punch_block(struct vnode *vp, daddr_t lbn)
+{
+	struct inode *ip = VTOI(vp);
+	struct fs *fs = ip->i_fs;
+	struct mount *mp = vp->v_mount;
+	struct indir a[UFS_NIADDR + 2];
+	struct buf *bp;
+	daddr_t daddr, fsb;
+	int error, num;
+
+	error = ufs_bmaparray(vp, lbn, &daddr, a, &num, NULL, NULL);
+	if (error != 0 || daddr == (daddr_t)-1)
+		return error;
+	fsb = FFS_DBTOFSB(fs, daddr);
+
+	if (mp->mnt_wapbl != NULL) {
+		error = UFS_WAPBL_REGISTER_DEALLOCATION(mp, daddr,
+		    fs->fs_bsize, NULL);
+		if (error != 0)
+			return error;
+	}
+	if (num == 0) {
+		DIP_ASSIGN(ip, db[lbn], 0);
+		error = ffs_update(vp, NULL, NULL,
+		    mp->mnt_wapbl != NULL ? 0 : UPDATE_WAIT);
+	} else {
+		error = bread(vp, a[num - 1].in_lbn, fs->fs_bsize, B_MODIFY,
+		    &bp);
+		if (error != 0)
+			return error;
+		if (ip->i_ump->um_fstype == UFS1)
+			((int32_t *)bp->b_data)[a[num - 1].in_off] = 0;
+		else
+			((int64_t *)bp->b_data)[a[num - 1].in_off] = 0;
+		error = bwrite(bp);
+	}
+	if (error != 0)
+		return error;
+	if (mp->mnt_wapbl == NULL)
+		ffs_blkfree(fs, ip->i_devvp, fsb, fs->fs_bsize, ip->i_number);
+	DIP_ADD(ip, blocks, -btodb(fs->fs_bsize));
+#if defined(QUOTA) || defined(QUOTA2)
+	(void) chkdq(ip, -btodb(fs->fs_bsize), NOCRED, FORCE);
+#endif
+	ip->i_flag |= IN_CHANGE | IN_UPDATE;
+	return 0;
+}
+
+/* Zeros over what is allocated in part of a block, or of the last. */
+static int
+ffs_zero_part(struct vnode *vp, off_t off, off_t end)
+{
+	struct fs *fs = VTOI(vp)->i_fs;
+	daddr_t bn;
+	char *zero;
+	off_t n;
+	int error;
+
+	error = 0;
+	zero = kmem_zalloc(fs->fs_bsize, KM_SLEEP);
+	while (off < end && error == 0) {
+		n = MIN(end - off, fs->fs_bsize - ffs_blkoff(fs, off));
+		error = VOP_BMAP(vp, ffs_lblkno(fs, off), NULL, &bn, NULL);
+		if (error == 0 && bn != (daddr_t)-1)
+			error = vn_rdwr(UIO_WRITE, vp, zero, n, off,
+			    UIO_SYSSPACE, IO_NODELOCKED, FSCRED, NULL, NULL);
+		off += n;
+	}
+	kmem_free(zero, fs->fs_bsize);
+	return error;
+}
+
+/* Blocks between journal transactions; each may log one indirect block. */
+#define	FFS_PUNCH_BATCH		256
+
+/*
+ * Free the blocks in a range of a regular file and leave zeros in what
+ * is left of it.  The block holding the last byte of the file stays, as
+ * ffs_truncate() and fsck expect the end of a file to be allocated.
+ */
+int
+ffs_fdiscard(void *v)
+{
+	struct vop_fdiscard_args /* {
+		struct vnode *a_vp;
+		off_t a_pos;
+		off_t a_len;
+	} */ *ap = v;
+	struct vnode *vp = ap->a_vp;
+	struct inode *ip = VTOI(vp);
+	struct fs *fs = ip->i_fs;
+	struct mount *mp = vp->v_mount;
+	off_t pos = ap->a_pos, end, first, last;
+	daddr_t lbn;
+	int error, i;
+
+	if (vp->v_type != VREG)
+		return EINVAL;
+	if (pos < 0 || ap->a_len < 0)
+		return EINVAL;
+	if ((ip->i_flags & SF_SNAPSHOT) != 0)
+		return EOPNOTSUPP;
+	end = MIN(pos + ap->a_len, (off_t)ip->i_size);
+	if (pos >= end)
+		return 0;
+
+	first = roundup(pos, fs->fs_bsize);
+	last = rounddown(end, fs->fs_bsize);
+	if (last > rounddown(ip->i_size - 1, fs->fs_bsize))
+		last = rounddown(ip->i_size - 1, fs->fs_bsize);
+	if (first >= last) {
+		return ffs_zero_part(vp, pos, end);
+	}
+
+	error = ffs_zero_part(vp, pos, first);
+	if (error == 0)
+		error = ffs_zero_part(vp, last, end);
+	if (error != 0)
+		return error;
+
+	/* What is cached of the range would come back over the hole. */
+	rw_enter(vp->v_uobj.vmobjlock, RW_WRITER);
+	error = VOP_PUTPAGES(vp, trunc_page(first), round_page(last),
+	    PGO_FREE | PGO_SYNCIO);
+	if (error != 0)
+		return error;
+
+	for (lbn = ffs_lblkno(fs, first); lbn < ffs_lblkno(fs, last);) {
+		error = UFS_WAPBL_BEGIN(mp);
+		if (error != 0)
+			break;
+		genfs_node_wrlock(vp);
+		for (i = 0; i < FFS_PUNCH_BATCH &&
+		    lbn < ffs_lblkno(fs, last) && error == 0; i++, lbn++)
+			error = ffs_punch_block(vp, lbn);
+		genfs_node_unlock(vp);
+		UFS_WAPBL_UPDATE(vp, NULL, NULL, 0);
+		UFS_WAPBL_END(mp);
+		if (error != 0)
+			break;
+		preempt_point();
+	}
+	return error;
 }
 
 /*

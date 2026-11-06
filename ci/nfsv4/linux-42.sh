@@ -31,6 +31,14 @@ assert d <= 1048576 < h <= 4194304
 if sys.argv[2] == "holes":
     assert d > 0 and h < 4194304
 P
+cat >"$OUT/seekcheck-da.py" <<'P'
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY)
+h = os.lseek(fd, 0, os.SEEK_HOLE)
+d = os.lseek(fd, h, os.SEEK_DATA)
+print("hole", h, "data", d)
+assert 70000 <= h + 65536 and h < 1170000 < d + 65536
+P
 # Which operations the client really sent.
 ops() {
 	grep -E "^ *($1):" /proc/self/mountstats | sort -u
@@ -76,6 +84,11 @@ open('$OUT/da','wb').write(b)"
 	flush
 	t cmp "$d/da" "$OUT/da"
 	t test "$(stat -c %s "$d/da")" = 3145728
+	if [ "$holes" = holes ]; then
+		# s15.4.3: FFS really gives the blocks back, and says so.
+		t test "$(stat -c %b "$d/da")" -lt 4000
+		t python3 "$OUT/seekcheck-da.py" "$d/da"
+	fi
 
 	# COPY, past where a short result comes.
 	t dd if=/dev/urandom of="$OUT/co" bs=1M count=70 status=none
@@ -133,6 +146,8 @@ n=len(b)-5;assert b[:5]==bytes(5) and b[5:]==a[1000000:1000000+n] and n>0;print(
 	one /export/tmpfs   none   yes      no    no
 	one /export/acl     holes  yes      no    yes
 	one /tank/x         any    no       yes   yes
+	# What the hole punches left, read by fsck.
+	t ssh netbsd "sync; umount -f /export/acl && fsck_ffs -fn /dev/rvnd1d; r=\$?; mount -o nfs4acls /dev/vnd1d /export/acl; exit \$r"
 	echo "failures: $fails"
 	sudo dmesg | grep -iE 'nfs|rpc' | tail -20
 } >"$LOG" 2>&1

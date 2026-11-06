@@ -336,6 +336,19 @@ nfsrv_fhtovp(nfsrvfh_t *nsfh, int lockflag, struct vnode **vpp,
 	/*
 	 * Check/setup credentials.
 	 */
+	/*
+	 * RFC 2623 s2.3.2: a flavor the export does not have.  A request
+	 * with no ND_SECGSS is AUTH_SYS, the only other that gets here.
+	 */
+	if ((exflags & NFS_EXSEC_MASK) != 0 || (kerbflag & ND_SECGSS) != 0) {
+		int sec = (kerbflag & ND_SECGSS) >> ND_SECSHIFT;
+
+		if (((sec != 0 ? sec : NFS_EXSEC_SYS) & exflags) == 0) {
+			vput(*vpp);
+			return (NFSERR_AUTHERR | AUTH_TOOWEAK);
+		}
+		kerbflag &= ~ND_SECGSS;
+	}
 	if (exflags & MNT_EXKERB) {
 		if (!kerbflag) {
 			vput(*vpp);

@@ -30,12 +30,15 @@ sudo sh -c 'cat >/etc/krb5.conf' <<EOF
 	dns_lookup_kdc = false
 	dns_canonicalize_hostname = false
 	rdns = false
+	udp_preference_limit = 1
 	default_ccache_name = FILE:${CC}_%{uid}
-	permitted_enctypes = aes256-cts-hmac-sha1-96
 [realms]
 	NFSGSS.TEST = {
-		kdc = tcp/10.99.0.1:8888
+		kdc = 10.99.0.1:8888
 	}
+[domain_realm]
+	.test = NFSGSS.TEST
+	nfsgss-server.test = NFSGSS.TEST
 EOF
 scp netbsd:/var/tmp/nfsv4/client.keytab "$OUT/client.keytab"
 sudo install -m 600 "$OUT/client.keytab" /etc/krb5.keytab
@@ -47,9 +50,8 @@ Domain = nfsgss.test
 Nobody-User = nobody
 Nobody-Group = nogroup
 EOF
-for u in alice bob; do
-	sudo useradd -m -u $(( $(printf %d "'$u") + 2000 )) "$u"
-done
+sudo useradd -m -u 2097 alice
+sudo useradd -m -u 2098 bob
 sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
 sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
 gssd_start() {
@@ -79,23 +81,23 @@ oneflavor() {	# export sec vers options
 	t sudo mount -v -t nfs -o "vers=$v,proto=tcp,port=2049,sec=$sec,hard,timeo=100,retrans=2$4" "$S:$e" "$m"
 	grep " $m " /proc/mounts || return
 	d=$m/alice-$sec-$v
-	t a mkdir -p "$d"
-	t a sh -c "echo PLAINTEXT-MARKER-$sec-$v >$d/m"
-	t a dd if=/dev/urandom of=/var/tmp/gss.bin bs=1M count=4 status=none
-	t a cp /var/tmp/gss.bin "$d/b"
+	t sudo -u alice mkdir -p "$d"
+	t sudo -u alice sh -c "echo PLAINTEXT-MARKER-$sec-$v >$d/m"
+	t sudo -u alice dd if=/dev/urandom of=/var/tmp/gss.bin bs=1M count=4 status=none
+	t sudo -u alice cp /var/tmp/gss.bin "$d/b"
 	t sudo sh -c 'sync; echo 3 >/proc/sys/vm/drop_caches'
-	t a cmp /var/tmp/gss.bin "$d/b"
-	t a sh -c "test \"\$(cat $d/m)\" = PLAINTEXT-MARKER-$sec-$v"
-	t a sh -c "test \"\$(stat -c %U $d/m)\" = alice"
+	t sudo -u alice cmp /var/tmp/gss.bin "$d/b"
+	t sudo -u alice sh -c "test \"\$(cat $d/m)\" = PLAINTEXT-MARKER-$sec-$v"
+	t sudo -u alice sh -c "test \"\$(stat -c %U $d/m)\" = alice"
 	t sh -c "ssh netbsd 'ls -ln $e/alice-$sec-$v/m' | grep -q ' 2097 '"
-	t a mv "$d/b" "$d/c"
-	t a ln -s c "$d/s"
-	t a chmod 600 "$d/c"
-	t a sh -c "ls -la $d | grep -q ' c\$'"
+	t sudo -u alice mv "$d/b" "$d/c"
+	t sudo -u alice ln -s c "$d/s"
+	t sudo -u alice chmod 600 "$d/c"
+	t sudo -u alice sh -c "ls -la $d | grep -q ' c\$'"
 	# Bob has a ticket and no right to it.
 	n sudo -u bob cat "$d/c"
 	echo "--- mountstats $sec v$v"; grep -E 'sec=' /proc/self/mountstats | grep "$m" | tail -1
-	t a rm -rf "$d"
+	t sudo -u alice rm -rf "$d"
 	t sudo umount "$m"
 }
 wire() {	# sec: is the text on the wire?
@@ -122,27 +124,44 @@ wire() {	# sec: is the text on the wire?
 	sudo umount "$m"
 	sudo rm -f "$OUT/wire-$sec.pcap"
 }
-enctype() {	# name number
-	sudo sed -i "s/permitted_enctypes = .*/permitted_enctypes = $1/" /etc/krb5.conf
-	sudo rm -f ${CC}_*
+# The Linux client asks for the enctypes of its kernel and takes what
+# the KDC gives, so these all come out as the strongest.
+linux() {
+	sudo rm -f /tmp/krb5cc* /var/tmp/krb5ccmachine* ${CC}_*
 	gssd_start
 	ticket alice; ticket bob
-	echo "=== enctype $1"
 	for s in krb5 krb5i krb5p; do
 		oneflavor /export/krb5all "$s" 4.0 ""
 	done
-	echo "--- gssd saw"; ssh netbsd "tail -6 /var/tmp/nfsv4/gssd.log"
-	ssh netbsd "tail -6 /var/tmp/nfsv4/gssd.log" | grep -q "enctype $2," ||
+	echo "--- gssd saw"; ssh netbsd "tail -12 /var/tmp/nfsv4/gssd.log"
+}
+# Each enctype by name, with libgssapi as the client and the probe.
+oneenctype() {	# name number
+	c=/var/tmp/krb5-$2.conf
+	sed "s/^\[libdefaults\]/[libdefaults]\n\tpermitted_enctypes = $1\n\tdefault_tgs_enctypes = $1\n\tdefault_tkt_enctypes = $1/" /etc/krb5.conf >"$c"
+	chmod 644 "$c"
+	echo "=== enctype $1"
+	sudo -u alice env KRB5_CONFIG="$c" KRB5CCNAME=FILE:${CC}-$2 sh -c 'echo alice-pw | kinit alice >/dev/null'
+	sudo -u alice env KRB5_CONFIG="$c" KRB5CCNAME=FILE:${CC}-$2 \
+	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	ssh netbsd "tail -3 /var/tmp/nfsv4/gssd.log" | grep "alice.*enctype" | tail -1
+	ssh netbsd "tail -6 /var/tmp/nfsv4/gssd.log" | grep -q "alice.*enctype $2," ||
 	    { echo "FAILED: enctype $2 not used"; fails=$((fails + 1)); }
 }
 {
 	uname -r
-	enctype aes256-cts-hmac-sha1-96 18
-	enctype aes128-cts-hmac-sha1-96 17
-	enctype aes128-cts-hmac-sha256-128 19
-	enctype aes256-cts-hmac-sha384-192 20
-	sudo sed -i 's/permitted_enctypes = .*/permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96/' /etc/krb5.conf
-	sudo rm -f ${CC}_*; gssd_start; ticket alice; ticket bob
+	ss -ltn | grep -E '8888|2049'
+	ssh netbsd 'netstat -an -f inet | grep -E "8888|2049"; tail -5 /var/tmp/nfsv4/kdc.log'
+	KRB5_TRACE=/dev/stdout sh -c 'echo alice-pw | kinit alice' | tail -8
+	linux
+	echo '=== version 3'
+	for s in krb5 krb5i krb5p; do
+		oneflavor /export/krb5all "$s" 3 ",mountport=4002,mountproto=tcp,nolock"
+	done
+	sudo mkdir -p /mnt/gsssec3
+	n sudo mount -t nfs -o vers=3,proto=tcp,port=2049,mountport=4002,mountproto=tcp,nolock,sec=krb5 "$S:/export/krb5ponly" /mnt/gsssec3
+	n sudo mount -t nfs -o vers=3,proto=tcp,port=2049,mountport=4002,mountproto=tcp,nolock,sec=sys "$S:/export/krb5all" /mnt/gsssec3
 	wire krb5; wire krb5i; wire krb5p
 	echo '=== the flavors of an export'
 	sudo mkdir -p /mnt/gsssec
@@ -154,12 +173,14 @@ enctype() {	# name number
 	t sudo mount -t nfs -o vers=4.0,proto=tcp,port=2049,sec=sys "$S:/export/sysonly" /mnt/gsssec
 	t sudo umount /mnt/gsssec
 	echo '=== the RPC layer, by hand'
-	sudo -u alice env KRB5CCNAME=FILE:${CC}_$(id -u alice) \
-	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
-	    fails=$((fails + 1))
+	oneenctype aes256-cts-hmac-sha384-192 20
+	oneenctype aes128-cts-hmac-sha256-128 19
+	oneenctype aes256-cts-hmac-sha1-96 18
+	oneenctype aes128-cts-hmac-sha1-96 17
 	echo "failures: $fails"
+	ssh netbsd 'dmesg | tail -5'
 	ssh netbsd "tail -20 /var/tmp/nfsv4/gssd.log"
-	sudo dmesg | grep -iE 'rpc|nfs|gss' | tail -20
+	sudo dmesg | grep -iE 'rpc|nfs|gss' | grep -iE 'fail|err|bad|gss_' | sort -k3 | uniq -c -f2 | tail -30
 } >"$LOG" 2>&1
 sudo pkill -x rpc.gssd
 cat "$LOG"

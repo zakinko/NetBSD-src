@@ -371,7 +371,7 @@ def test_s15_10_lock_range(t, env):
     """
     sess, fh, st = mk(t, env, b"x")
     check(write_file(sess, fh, b"y", 1 << 20, st))
-    bs = 4096 * 16
+    bs = 4096
     lk = locker4(TRUE, open_owner=open_to_lock_owner4(0, st, 0,
                  lock_owner4(0, b"v42")))
     res = sess.compound([op.putfh(fh), op.lock(WRITE_LT, FALSE, bs, bs, lk)])

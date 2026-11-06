@@ -15,11 +15,11 @@ diag() {
 	sleep 3
 	for a in "create" "linkstr shmbus" "inet 10.1.1.1"; do
 		echo "\$ rump.ifconfig shmif0 $a"
-		rump.ifconfig shmif0 $a; echo "exit $?"
+		timeout 20 rump.ifconfig shmif0 $a; echo "exit $?"
 		kill -0 $p 2>/dev/null && echo server alive || echo server gone
 	done
-	rump.halt 2>/dev/null
-	sleep 1; kill $p 2>/dev/null; wait $p; echo "server status $?"
+	timeout 20 rump.halt; echo "halt $?"
+	sleep 1; kill -9 $p 2>/dev/null; wait $p; echo "server status $?"
 	cat rs.log
 	ls -la
 	[ -f rump_server.core ] && gdb -batch -ex 'bt 30' -ex 'x/i $pc' -ex 'info registers' \

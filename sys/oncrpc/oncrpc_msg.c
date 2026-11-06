@@ -147,7 +147,9 @@ oncrpc_msg_encode_denied_auth(XDR *xdrs, uint32_t xid, uint32_t why)
 	    xdr_u_int32_t(xdrs, &why);
 }
 
-/* A call up to the arguments, RFC 5531 s9, with an AUTH_NONE verifier. */
+#define	RPCSEC_GSS_FLAVOR	6	/* RFC 2203 s3 */
+
+/* A call up to the arguments, RFC 5531 s9. */
 bool
 oncrpc_msg_encode_call(XDR *xdrs, uint32_t xid,
     const struct oncrpc_clnt_call *cc)
@@ -155,7 +157,9 @@ oncrpc_msg_encode_call(XDR *xdrs, uint32_t xid,
 	uint32_t mtype = ONCRPC_CALL, rpcvers = ONCRPC_VERS;
 	uint32_t flavor = cc->cc_flavor, len = cc->cc_credlen;
 	uint32_t prog = cc->cc_prog, vers = cc->cc_vers, proc = cc->cc_proc;
-	uint32_t vflavor = ONCRPC_AUTH_NONE, vlen = 0;
+	uint32_t vflavor = cc->cc_verflen != 0 ? RPCSEC_GSS_FLAVOR :
+	    ONCRPC_AUTH_NONE;
+	uint32_t vlen = cc->cc_verflen;
 
 	return xdr_u_int32_t(xdrs, &xid) &&
 	    xdr_u_int32_t(xdrs, &mtype) &&
@@ -167,7 +171,8 @@ oncrpc_msg_encode_call(XDR *xdrs, uint32_t xid,
 	    xdr_u_int32_t(xdrs, &len) &&
 	    (len == 0 || xdr_opaque(xdrs, __UNCONST(cc->cc_cred), len)) &&
 	    xdr_u_int32_t(xdrs, &vflavor) &&
-	    xdr_u_int32_t(xdrs, &vlen);
+	    xdr_u_int32_t(xdrs, &vlen) &&
+	    (vlen == 0 || xdr_opaque(xdrs, __UNCONST(cc->cc_verf), vlen));
 }
 
 /*
@@ -175,9 +180,9 @@ oncrpc_msg_encode_call(XDR *xdrs, uint32_t xid,
  * and succeeded, and the stream is at the results.
  */
 int
-oncrpc_msg_decode_reply(XDR *xdrs, uint32_t xid)
+oncrpc_msg_decode_reply(XDR *xdrs, uint32_t xid,
+    struct oncrpc_opaque_auth *oa)
 {
-	struct oncrpc_opaque_auth oa;
 	uint32_t rxid, mtype, rstat, astat;
 	bool toolong = false;
 
@@ -189,7 +194,7 @@ oncrpc_msg_decode_reply(XDR *xdrs, uint32_t xid)
 		return EBADRPC;
 	if (rstat != ONCRPC_MSG_ACCEPTED)
 		return EPROTO;
-	if (!msg_decode_auth(xdrs, &oa, &toolong) ||
+	if (!msg_decode_auth(xdrs, oa, &toolong) ||
 	    !xdr_u_int32_t(xdrs, &astat))
 		return EBADRPC;
 	return astat == ONCRPC_SUCCESS ? 0 : EPROTO;

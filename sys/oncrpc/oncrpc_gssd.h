@@ -40,9 +40,11 @@
 #define	ONCRPC_GSSD_VERS	1
 
 #define	ONCRPC_GSSD_ACCEPT	1
+#define	ONCRPC_GSSD_INIT	2	/* the initiator, RFC 7530 s3.3.3 */
 
 #define	ONCRPC_GSSD_MAXGROUPS	16	/* as AUTH_SYS, RFC 5531 App. A */
 #define	ONCRPC_GSSD_MAXTOKEN	(60 * 1024)
+#define	ONCRPC_GSSD_MAXNAME	128	/* chosen */
 
 #ifdef _KERNEL
 #include <oncrpc/gss_krb5.h>
@@ -51,7 +53,7 @@
  * The results of ACCEPT:
  *	major, minor, dh, token<>, and if major is 0:
  *	enctype, key<32>, cfx, acceptor_subkey, send_seq (hi, lo), lifetime,
- *	uid, gid, groups<16>
+ *	uid, gid, name<128>, groups<16>
  */
 struct oncrpc_gssd_accept_res {
 	uint32_t	ar_major;
@@ -63,11 +65,15 @@ struct oncrpc_gssd_accept_res {
 	uint32_t	ar_lifetime;	/* seconds from now */
 	uint32_t	ar_uid;
 	uint32_t	ar_gid;
+	uint32_t	ar_namelen;
+	char		ar_name[ONCRPC_GSSD_MAXNAME];
 	uint32_t	ar_ngroups;
 	uint32_t	ar_groups[ONCRPC_GSSD_MAXGROUPS];
 };
 
 int	oncrpc_gssd_accept(uint64_t, const void *, uint32_t,
+	    struct oncrpc_gssd_accept_res *);
+int	oncrpc_gssd_init(uint64_t, const char *, const void *, uint32_t,
 	    struct oncrpc_gssd_accept_res *);
 #endif
 

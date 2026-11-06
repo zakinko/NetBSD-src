@@ -68,6 +68,8 @@ __RCSID("$NetBSD$");
 #define	GSSD_PROG	0x40475353
 #define	GSSD_VERS	1
 #define	GSSD_ACCEPT	1
+#define	GSSD_INIT	2
+#define	GSSD_MAXNAME	128
 #define	GSSD_MAXGROUPS	16
 #define	GSSD_MAXMSG	(64 * 1024)
 #define	GSSD_MAXPENDING	256	/* contexts between two rounds; chosen */
@@ -77,6 +79,7 @@ __RCSID("$NetBSD$");
 #define	GSS_UNAUTHORIZED 0x000f0000	/* RFC 2203 App. A */
 
 static gss_cred_id_t acceptor = GSS_C_NO_CREDENTIAL;
+static gss_cred_id_t initiator = GSS_C_NO_CREDENTIAL;
 static char *realm;
 static bool debug;
 
@@ -339,11 +342,13 @@ do_accept(struct buf *a, struct buf *r)
 		key = &lc->rfc1964_kd.ctx_key;
 	mapped = map_principal(name.value, name.length, &uid, &gid, groups,
 	    &ngroups);
+	if (name.length >= GSSD_MAXNAME)
+		mapped = false;
 	syslog(LOG_INFO, "context for %.*s, enctype %u, %s", (int)name.length,
 	    (char *)name.value, key->type, mapped ? "mapped" : "not mapped");
-	gss_release_buffer(&m, &name);
 
 	if (!mapped) {
+		gss_release_buffer(&m, &name);
 		gss_release_buffer(&m, &out);
 		gss_krb5_free_lucid_sec_context(&m, lp);
 		put32(r, GSS_UNAUTHORIZED);
@@ -369,10 +374,130 @@ do_accept(struct buf *a, struct buf *r)
 	put32(r, lifetime == GSS_C_INDEFINITE ? 86400 : lifetime);
 	put32(r, uid);
 	put32(r, gid);
+	putbytes(r, name.value, name.length);
+	gss_release_buffer(&m, &name);
 	put32(r, ngroups);
 	for (n = 0; n < ngroups; n++)
 		put32(r, groups[n]);
 	gss_krb5_free_lucid_sec_context(&m, lp);
+}
+
+/*
+ * The other end of a context, for a callback, RFC 7530 s3.3.3: as the
+ * server's own principal from the keytab, to the principal that made
+ * the client.  Replies as to ACCEPT, with no user at the end.
+ */
+static void
+do_init(struct buf *a, struct buf *r)
+{
+	uint32_t hi = get32(a), lo = get32(a), nlen = get32(a), tlen;
+	uint64_t id = (uint64_t)hi << 32 | lo;
+	gss_buffer_desc nb, in = GSS_C_EMPTY_BUFFER, out = GSS_C_EMPTY_BUFFER;
+	gss_ctx_id_t ctx = GSS_C_NO_CONTEXT;
+	gss_name_t target = GSS_C_NO_NAME;
+	OM_uint32 major, minor, m, lifetime = 0;
+	struct pending *slot = NULL;
+	gss_krb5_lucid_context_v1_t *lc;
+	const gss_krb5_lucid_key_t *key;
+	void *lp = NULL;
+	size_t i;
+
+	nb.value = __UNCONST(getbytes(a, nlen));
+	nb.length = nlen;
+	tlen = get32(a);
+	in.value = __UNCONST(getbytes(a, tlen));
+	in.length = tlen;
+	if (a->b_bad)
+		return;
+	if (id != 0) {
+		for (i = 0; i < GSSD_MAXPENDING; i++)
+			if (pending[i].p_id == id)
+				slot = &pending[i];
+		if (slot == NULL)
+			goto fail;
+		ctx = slot->p_ctx;
+		slot->p_id = 0;
+		slot->p_ctx = GSS_C_NO_CONTEXT;
+	}
+	major = gss_import_name(&minor, &nb, GSS_KRB5_NT_PRINCIPAL_NAME,
+	    &target);
+	if (major != GSS_S_COMPLETE) {
+		log_gss("gss_import_name", major, minor);
+		goto fail;
+	}
+	major = gss_init_sec_context(&minor, initiator, &ctx, target,
+	    GSS_KRB5_MECHANISM, GSS_C_MUTUAL_FLAG | GSS_C_INTEG_FLAG |
+	    GSS_C_CONF_FLAG, 0, GSS_C_NO_CHANNEL_BINDINGS, &in, NULL, &out,
+	    NULL, &lifetime);
+	gss_release_name(&m, &target);
+	if (GSS_ERROR(major)) {
+		log_gss("gss_init_sec_context", major, minor);
+		goto fail;
+	}
+	if (major == GSS_S_CONTINUE_NEEDED) {
+		slot = &pending[0];
+		for (i = 0; i < GSSD_MAXPENDING; i++) {
+			if (pending[i].p_id == 0) {
+				slot = &pending[i];
+				break;
+			}
+		}
+		if (slot->p_id != 0)
+			gss_delete_sec_context(&m, &slot->p_ctx,
+			    GSS_C_NO_BUFFER);
+		id = ++nextid;
+		slot->p_id = id;
+		slot->p_ctx = ctx;
+		slot->p_when = time(NULL);
+		put32(r, GSS_CONTINUE);
+		put32(r, minor);
+		put32(r, (uint32_t)(id >> 32));
+		put32(r, (uint32_t)id);
+		putbytes(r, out.value, out.length);
+		gss_release_buffer(&m, &out);
+		return;
+	}
+	major = gss_krb5_export_lucid_sec_context(&minor, &ctx, 1, &lp);
+	if (major != GSS_S_COMPLETE) {
+		log_gss("gss_krb5_export_lucid_sec_context", major, minor);
+		gss_release_buffer(&m, &out);
+		goto fail;
+	}
+	lc = lp;
+	if (lc->protocol == 1)
+		key = lc->cfx_kd.have_acceptor_subkey ?
+		    &lc->cfx_kd.acceptor_subkey : &lc->cfx_kd.ctx_key;
+	else
+		key = &lc->rfc1964_kd.ctx_key;
+	syslog(LOG_INFO, "callback context to %.*s, enctype %u", (int)nlen,
+	    (char *)nb.value, key->type);
+	put32(r, GSS_S_COMPLETE);
+	put32(r, 0);
+	put32(r, 0);
+	put32(r, 0);
+	putbytes(r, out.value, out.length);
+	gss_release_buffer(&m, &out);
+	put32(r, key->type);
+	putbytes(r, key->data, key->length);
+	put32(r, lc->protocol == 1);
+	put32(r, lc->protocol == 1 && lc->cfx_kd.have_acceptor_subkey);
+	put32(r, (uint32_t)(lc->send_seq >> 32));
+	put32(r, (uint32_t)lc->send_seq);
+	put32(r, lifetime == GSS_C_INDEFINITE ? 86400 : lifetime);
+	put32(r, 0);
+	put32(r, 0);
+	put32(r, 0);		/* name<> */
+	put32(r, 0);		/* groups<> */
+	gss_krb5_free_lucid_sec_context(&m, lp);
+	return;
+fail:
+	if (ctx != GSS_C_NO_CONTEXT)
+		gss_delete_sec_context(&m, &ctx, GSS_C_NO_BUFFER);
+	put32(r, GSS_S_FAILURE);
+	put32(r, 0);
+	put32(r, 0);
+	put32(r, 0);
+	putbytes(r, NULL, 0);
 }
 
 static bool
@@ -439,6 +564,9 @@ serve(int fd)
 	case GSSD_ACCEPT:
 		do_accept(&a, &r);
 		break;
+	case GSSD_INIT:
+		do_init(&a, &r);
+		break;
 	default:
 		return;
 	}
@@ -467,6 +595,11 @@ acquire(const char *service)
 	}
 	major = gss_acquire_cred(&minor, name, GSS_C_INDEFINITE,
 	    GSS_C_NO_OID_SET, GSS_C_ACCEPT, &acceptor, NULL, NULL);
+	/* For callbacks only: without it the server just has none. */
+	if (major == GSS_S_COMPLETE &&
+	    GSS_ERROR(gss_acquire_cred(&m, name, GSS_C_INDEFINITE,
+	    GSS_C_NO_OID_SET, GSS_C_INITIATE, &initiator, NULL, NULL)))
+		syslog(LOG_WARNING, "no initiator credential for callbacks");
 	gss_release_name(&m, &name);
 	if (major != GSS_S_COMPLETE) {
 		log_gss("gss_acquire_cred", major, minor);

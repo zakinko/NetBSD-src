@@ -91,6 +91,7 @@ struct oncrpc_gss_ctx {
 	struct oncrpc_gss_seq gx_seq;
 	struct gss_krb5_ctx *gx_krb;
 	kauth_cred_t	gx_cred;
+	char		gx_name[ONCRPC_GSSD_MAXNAME];
 	bool		gx_used;	/* gx_initres is not needed any more */
 	void		*gx_initres;	/* for a retransmitted request */
 	size_t		gx_initreslen;
@@ -400,6 +401,7 @@ gss_ctx_complete(struct oncrpc_gss_ctx *gx, struct oncrpc_gssd_accept_res *ar)
 		kauth_cred_setgroups(cred, gids, ar->ar_ngroups, -1,
 		    UIO_SYSSPACE);
 	gx->gx_cred = cred;
+	memcpy(gx->gx_name, ar->ar_name, ar->ar_namelen);
 	oncrpc_gss_seq_init(&gx->gx_seq);
 	gx->gx_dh = 0;
 	gx->gx_complete = true;
@@ -752,6 +754,7 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 
 	/* Each request its own, as a program may change it. */
 	rq->rq_cred = kauth_cred_dup(gx->gx_cred);
+	rq->rq_principal = gx->gx_name;
 	rq->rq_secflavor = gc->gc_service == RPCSEC_GSS_SVC_NONE ?
 	    RPCSEC_GSS_KRB5 : gc->gc_service == RPCSEC_GSS_SVC_INTEGRITY ?
 	    RPCSEC_GSS_KRB5I : RPCSEC_GSS_KRB5P;

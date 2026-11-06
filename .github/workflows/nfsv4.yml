@@ -147,6 +147,7 @@ jobs:
           cd "$HOME/pynfs/nfs4.0"
           { python3 ./more.py attrs /export/acl
             python3 ./more.py attrs /tank/x
+            python3 ./more.py quota /export/quota
             python3 ./more.py fair /export/pynfs
             python3 ./more.py moved /export/mig
             sh "$c/cbgetattr.sh"

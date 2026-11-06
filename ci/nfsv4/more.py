@@ -43,6 +43,22 @@ if what == 'attrs':
         r = c.compound([op.putfh(fh), op.setattr(sid, {a: v})])
         want('SETATTR %d' % a, r.status, NFS4_OK)
         want('GETATTR %d' % a, c.do_getattr(a, path), v)
+elif what == 'quota':
+    c = client(b'quota', export)
+    path = export + [b'q%d' % os.getpid()]
+    fh, sid = c.create_confirm(b'o', path, access=OPEN4_SHARE_ACCESS_BOTH,
+                               deny=OPEN4_SHARE_DENY_NONE)
+    sup = c.do_getattr(FATTR4_SUPPORTED_ATTRS, path)
+    want('in supported_attrs', FATTR4_QUOTA_USED in sup, True)
+    r = c.compound([op.putfh(fh), op.write(sid, 0, FILE_SYNC4, b'x' * 65536)])
+    want('WRITE', r.status, NFS4_OK)
+    used = c.do_getattr(FATTR4_QUOTA_USED, path)
+    hard = c.do_getattr(FATTR4_QUOTA_AVAIL_HARD, path)
+    soft = c.do_getattr(FATTR4_QUOTA_AVAIL_SOFT, path)
+    print('used', used, 'hard', hard, 'soft', soft)
+    subprocess.call(['ssh', 'netbsd', 'repquota', '-u', arg])
+    want('used is bytes of the write or more', used >= 65536, True)
+    want('hard is soft + 1000 blocks', hard - soft, 1000 * 512, 1000 * 1024)
 elif what == 'fair':
     c1, c2, c3 = client(b'f1', export), client(b'f2', export), client(b'f3', export)
     path = export + [b'fair%d' % os.getpid()]

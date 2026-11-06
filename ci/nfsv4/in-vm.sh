@@ -36,6 +36,15 @@ newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
 vnconfig vnd1 /var/tmp/acl.img
 mount -o nfs4acls /dev/vnd1d /export/acl
 chmod 1777 /export/acl
+# FFS with quotas.
+mkdir -p /export/quota
+dd if=/dev/zero of=/var/tmp/quota.img bs=1m count=64
+newfs -O 2 -q user -F -s 64m /var/tmp/quota.img | tail -1
+vnconfig vnd2 /var/tmp/quota.img
+mount /dev/vnd2d /export/quota
+chmod 1777 /export/quota
+edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
+repquota -u /export/quota || :
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
 modload zfs
 # The port installs its libraries in /lib, outside the default search.
@@ -53,6 +62,7 @@ cat >/etc/exports <<EOF
 /export/acl -maproot=root -noresvport
 /export/ref -maproot=root -noresvport
 /export/mig -maproot=root -noresvport
+/export/quota -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf

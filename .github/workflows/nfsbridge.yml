@@ -107,14 +107,15 @@ jobs:
   atf:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 170
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
         with:
           path: nb/tools
           key: nfsbridge-tools-${{ hashFiles('ci/nfsv4/base') }}
-      - uses: actions/cache@v4
+      # Saved by hand: the post step of actions/cache skips a failed job.
+      - uses: actions/cache/restore@v4
         id: dest
         with:
           path: out-dest
@@ -123,6 +124,11 @@ jobs:
         run: |
           sh ci/nfsbridge/atf-build.sh "$PWD/nb" "$PWD/out-dest"
           rm -f out-dest/atf-build.log
+      - uses: actions/cache/save@v4
+        if: steps.dest.outputs.cache-hit != 'true'
+        with:
+          path: out-dest
+          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh') }}
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'

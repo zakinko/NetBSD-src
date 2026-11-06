@@ -132,8 +132,8 @@ if r.status == NFS4_OK:
     r = c.compound([op.putfh(lfh), op.getattr(nfs4lib.list2bitmap([FATTR4_TYPE]))])
     want('PUTFH of it, gone', r.status, NFS4ERR_STALE)
 
-r = c.compound([op.putfh(afh), op.savefh(), op.putfh(fh), op.lookupp(),
-                op.link(b'nalink')])
+r = c.compound([op.putfh(afh), op.savefh()] + c.use_obj(path[:-1]) +
+               [op.link(b'nalink')])
 want('LINK of a named attribute, s16.9.5', r.status, NFS4ERR_XDEV)
 r = c.compound([op.putfh(fh), op.savefh(), op.putfh(adir), op.link(b'nalink')])
 want('LINK into the directory, s16.9.5', r.status, NFS4ERR_XDEV)

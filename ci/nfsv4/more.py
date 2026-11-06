@@ -134,8 +134,9 @@ elif what == 'indirect':
     ino = c.do_getattr(FATTR4_FILEID, path)
     def fib():
         o = subprocess.run(['ssh', 'netbsd', '/var/tmp/nfsv4/fib /dev/rvnd2d %d' % ino],
-                           capture_output=True, text=True).stdout
-        print(o.strip())
+                           capture_output=True, text=True)
+        print(o.stdout.strip(), o.stderr.strip()[-100:])
+        o = o.stdout
         return int(o.split()[-1])
     r = c.compound([op.putfh(fh), op.write(sid, 4 << 20, UNSTABLE4, b'x' * 4096)])
     want('WRITE', r.status, NFS4_OK)
@@ -189,7 +190,7 @@ elif what == 'aclmode':
     r = c.create_obj(d)
     want('mkdir', r.status, NFS4_OK)
     dr = c.compound(c.use_obj(d) + [op.setattr(b'\0' * 0 and None or c.stateid0 if hasattr(c, 'stateid0') else nfs4lib.stateid4(0, b'\0' * 12),
-        {FATTR4_ACL: base + [nfsace4(A, ACE4_FILE_INHERIT_ACE, ACE4_READ_DATA, b'EVERYONE@')]})])
+        {FATTR4_ACL: base + [nfsace4(A, ACE4_FILE_INHERIT_ACE, ACE4_READ_DATA, b'1234')]})])
     want('inheritable ACE', dr.status, NFS4_OK)
     r = c.create_file(b'o2', d + [b'f'], attrs={FATTR4_MODE: 0o640}, access=OPEN4_SHARE_ACCESS_BOTH,
                       deny=OPEN4_SHARE_DENY_NONE)

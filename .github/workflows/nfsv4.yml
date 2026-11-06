@@ -161,7 +161,7 @@ jobs:
             python3 ./more.py indirect /export/quota
             python3 ./more.py utf8 /tank/u
             python3 ./more.py aclmode /export/acl
-            python3 ./more.py aclmode /tank/x
+            python3 ./more.py aclmode /tank/r
             python3 ./more.py movedtime /export/mig2
             python3 ./more.py moved /export/mig
             sh "$c/cbgetattr.sh"

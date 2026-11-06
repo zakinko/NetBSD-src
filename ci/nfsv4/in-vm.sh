@@ -59,6 +59,9 @@ zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
 chmod 1777 /tank/x
 zfs create -o utf8only=on tank/u
 chmod 1777 /tank/u
+# The default aclinherit, as passthrough takes no notice of a mode.
+zfs create tank/r
+chmod 1777 /tank/r
 zfs list
 mount | grep /export/
 # pynfs comes from a high port through the tunnel.
@@ -70,6 +73,7 @@ cat >/etc/exports <<EOF
 /export/mig -maproot=root -noresvport
 /export/mig2 -maproot=root -noresvport
 /tank/u -maproot=root -noresvport
+/tank/r -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF

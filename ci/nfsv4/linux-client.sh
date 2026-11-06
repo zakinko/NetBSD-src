@@ -163,7 +163,10 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 		# The connection goes, and with it the backchannel, s2.10.13.1.2.
 		t sudo pkill -f 'ssh -f -N .*2049:127.0.0.1:2049'
 		t ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
-		    -L 2049:127.0.0.1:2049 netbsd
+		    -L 2049:127.0.0.1:2049 \
+		    -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
+		    -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 \
+		    -R 40100:127.0.0.1:40100 netbsd
 		sleep 2
 		t sh -c "cat $m/dg/a >/dev/null"
 		sleep 5
@@ -178,7 +181,7 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 	fi
 	t mv "$m/dg/a" "$m/dg/b"
 	t sudo rm -rf "$m/dg"
-	grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -4
+	grep -E 'DELEGRETURN|OPEN:|BIND_CONN_TO_SESSION|CREATE_SESSION' /proc/self/mountstats | tail -4
 	t sudo umount "$m"
 }
 {

@@ -82,7 +82,12 @@ static const uint64_t attr_supported =
     BIT(FATTR4_TIME_ACCESS) | BIT(FATTR4_TIME_ACCESS_SET) |
     BIT(FATTR4_TIME_CREATE) | BIT(FATTR4_TIME_DELTA) |
     BIT(FATTR4_TIME_METADATA) | BIT(FATTR4_TIME_MODIFY) |
-    BIT(FATTR4_TIME_MODIFY_SET) | BIT(FATTR4_MOUNTED_ON_FILEID);
+    BIT(FATTR4_TIME_MODIFY_SET) | BIT(FATTR4_MOUNTED_ON_FILEID) |
+    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS);
+
+/* Of those, the ones that version 4.0 has no number for. */
+static const uint64_t attr_v41 =
+    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS);
 
 /* RFC 7530 s5.7, those with access W */
 static const uint64_t attr_setonly =
@@ -103,7 +108,8 @@ static const uint64_t attr_delegated =
 /* What an absent file system has, s8.3.1. */
 static const uint64_t attr_absent =
     BIT(FATTR4_FS_LOCATIONS) | BIT(FATTR4_FSID) | BIT(FATTR4_RDATTR_ERROR) |
-    BIT(FATTR4_MOUNTED_ON_FILEID);
+    BIT(FATTR4_MOUNTED_ON_FILEID) | BIT(FATTR4_CHANGE_POLICY) |
+    BIT(FATTR4_FS_STATUS);
 
 /* Those needing VOP_GETATTR, and those needing VFS_STATVFS. */
 static const uint64_t attr_vattr =
@@ -199,8 +205,10 @@ const uint64_t nfsv4_attr_exclcreat =
     BIT(FATTR4_ACL) | BIT(FATTR4_MODE) | BIT(FATTR4_OWNER) |
     BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_TIME_MODIFY_SET);
 
-/* The bit of suppattr_exclcreat in the third word; nothing else is there. */
+/* The bits of the third word, all of version 4.1. */
 #define	W2_EXCLCREAT	(1U << (FATTR4_SUPPATTR_EXCLCREAT - 64))
+#define	W2_CHARSET	(1U << (FATTR4_FS_CHARSET_CAP - 64))
+#define	W2_ALL		(W2_EXCLCREAT | W2_CHARSET)
 
 /* Words past two that this minor version has nothing to say of. */
 static inline bool
@@ -210,7 +218,7 @@ attr_more(const struct nfsv4_bitmap *bm, uint32_t minor)
 
 	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
 	if (minor != 0)
-		w2 &= ~W2_EXCLCREAT;
+		w2 &= ~W2_ALL;
 	return bm->bm_more || w2 != 0;
 }
 
@@ -247,8 +255,11 @@ nfsv4_attr_supported(const struct nfsv4_compound *c,
     const struct nfsv4_bitmap *bm, struct vnode *vp)
 {
 
-	return !attr_more(bm, c->c_minor) &&
-	    (attr_mask(bm) & ~attr_supported_full(vp)) == 0;
+	uint64_t m = attr_supported_full(vp);
+
+	if (c->c_minor == 0)
+		m &= ~attr_v41;
+	return !attr_more(bm, c->c_minor) && (attr_mask(bm) & ~m) == 0;
 }
 
 static uint32_t
@@ -511,9 +522,9 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	struct vattr va;
 	struct timespec boot;
 	uint64_t m, out, id, maxsize, sup;
-	uint32_t st;
+	uint32_t st, w2;
 	u_int n;
-	bool ok, exclcreat;
+	bool ok;
 	XDR x;
 	int error;
 
@@ -521,6 +532,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	if ((attr_mask(want) & (BIT(FATTR4_SUPPORTED_ATTRS) | attr_stored |
 	    attr_quota)) != 0 && cf->cf_attr == 0)
 		sup = attr_supported_full(vp);
+	if (c->c_minor == 0)
+		sup &= ~attr_v41;
 	m = attr_mask(want) & sup & ~attr_setonly;
 	if (cf->cf_ref != NULL)
 		m &= attr_absent;
@@ -592,7 +605,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_u32(&x, c->c_minor != 0 ? 3 : 2) &&
 			    attr_u32(&x, W0(sup)) && attr_u32(&x, W1(sup));
 			if (ok && c->c_minor != 0)
-				ok = attr_u32(&x, W2_EXCLCREAT);
+				ok = attr_u32(&x, W2_ALL);
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
@@ -633,6 +646,20 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_fs_locations(&x, cf);
 			if (cf->cf_ref != NULL)
 				c->c_probed = true;	/* s9.14.3 */
+			break;
+		case FATTR4_CHANGE_POLICY:
+			/* s5.8.2.5: fs_locations moves with the generation. */
+			ok = attr_u64(&x, nfsv4_moved_gen()) &&
+			    attr_u64(&x, (cf->cf_exflags & MNT_EXRDONLY) != 0);
+			break;
+		case FATTR4_FS_STATUS:
+			/* s11.18: no image history to tell, so no strings. */
+			ok = attr_u32(&x, cf->cf_ref != NULL) &&
+			    attr_u32(&x, cf->cf_ref != NULL ?
+			    STATUS4_REFERRAL : STATUS4_WRITABLE) &&
+			    attr_u32(&x, 0) && attr_u32(&x, 0) &&
+			    attr_u32(&x, 0) && attr_u64(&x, 0) &&
+			    attr_u32(&x, 0);
 			break;
 		case FATTR4_ARCHIVE:
 			ok = attr_u32(&x, nfsv4_xstore_bool(vp, "nfsv4.archive"));
@@ -780,14 +807,21 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		}
 	}
 
-	/* Attribute 75 comes after all the others, RFC 8881 s5.8.1.14. */
-	exclcreat = ok && rderr == NFS4_OK && c->c_minor != 0 &&
-	    want->bm_n > 2 && (want->bm_w[2] & W2_EXCLCREAT) != 0;
-	if (exclcreat) {
+	/* The third word comes after all the others, s5.8.1.14. */
+	w2 = 0;
+	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2 &&
+	    cf->cf_ref == NULL)
+		w2 = want->bm_w[2] & W2_ALL;
+	if ((w2 & W2_EXCLCREAT) != 0) {
 		sup = nfsv4_attr_exclcreat & attr_supported_by(vp);
 		ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
 		    attr_u32(&x, W1(sup));
 	}
+	/* s14.4; what local programs left in a directory is not looked at. */
+	if (ok && (w2 & W2_CHARSET) != 0)
+		ok = attr_u32(&x, nfsv4_utf8_only ?
+		    FSCHARSET_CAP4_ALLOWS_ONLY_UTF8 :
+		    FSCHARSET_CAP4_CONTAINS_NON_UTF8);
 
 	if (sb != NULL)
 		kmem_free(sb, sizeof(*sb));
@@ -795,10 +829,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		acl_free(acl);
 	if (!ok)
 		return NFS4ERR_TOOSMALL;
-	got->bm_n = exclcreat ? 3 : 2;
+	got->bm_n = w2 != 0 ? 3 : 2;
 	got->bm_w[0] = W0(out);
 	got->bm_w[1] = W1(out);
-	got->bm_w[2] = exclcreat ? W2_EXCLCREAT : 0;
+	got->bm_w[2] = w2;
 	got->bm_more = false;
 	*lenp = xdr_getpos(&x);
 	return NFS4_OK;

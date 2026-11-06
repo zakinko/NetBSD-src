@@ -275,6 +275,7 @@ extern kmutex_t nfsv4_state_lock;
 extern kcondvar_t nfsv4_state_cv;
 extern uint32_t nfsv4_boot;
 extern int nfsv4_deleg_mode;
+extern int nfsv4_dirdeleg;
 
 /* What to do with a request after looking at its seqid, s9.1.7. */
 enum nfsv4_seq {
@@ -410,6 +411,8 @@ int	nfsv4_cb_getattr(const struct nfsv4_client *, const struct nfsv4_fh *,
 uint32_t nfsv4_deleg_break(struct vnode *, const struct nfsv4_client *,
 	    uint64_t, u_int);
 uint32_t nfsv4_deleg_break_name(const struct nfsv4_cfh *, const char *);
+uint32_t nfsv4_deleg_break_dir(const struct nfsv4_compound *,
+	    const struct nfsv4_cfh *);
 uint32_t nfsv4_open_denies_remove(const struct nfsv4_cfh *, const char *);
 
 #endif /* !_FS_NFSV4_NFSV4_STATE_H_ */

@@ -499,6 +499,13 @@ xdr_args_locku(XDR *x, struct nfsv4_args_locku *a)
 	    U64(x, &a->length);
 }
 
+bool
+nfsv4_xdr_u32(XDR *x, uint32_t v)
+{
+
+	return U32(x, &v);
+}
+
 /* openflag4 and open_claim4 are the variable parts of OPEN4args. */
 static bool
 xdr_args_open(XDR *x, struct nfsv4_args_open *a, uint32_t minor)
@@ -693,6 +700,15 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		    a->u32.value <= SECINFO_STYLE4_PARENT;
 	case NFSV4_OP_SEQUENCE:
 		return xdr_args_sequence(x, &a->sequence);
+	case NFSV4_OP_GET_DIR_DELEGATION: {
+		struct nfsv4_bitmap bm;
+
+		/* RFC 8881 s18.39.1: no notification is given to go by these. */
+		return U32(x, &a->get_dir_delegation.signal) &&
+		    nfsv4_xdr_bitmap(x, &bm) && nfsv4_xdr_skip(x, 12) &&
+		    nfsv4_xdr_skip(x, 12) && nfsv4_xdr_bitmap(x, &bm) &&
+		    nfsv4_xdr_bitmap(x, &bm);
+	}
 	case NFSV4_OP_WANT_DELEGATION:
 		/* RFC 8881 s18.49.1; of the claims only one has an argument. */
 		if (!U32(x, &a->want_delegation.want) ||

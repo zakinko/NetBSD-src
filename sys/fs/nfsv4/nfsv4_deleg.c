@@ -70,6 +70,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 /* vfs.nfsv4.delegations: 0 for none, 1 for read, 2 for read and write. */
 int nfsv4_deleg_mode = 2;
 
+/*
+ * vfs.nfsv4.dirdeleg.  Off to begin with, as a directory delegation
+ * promises that the directory does not change, and all that recalls one
+ * is an NFSv4 operation: a local process, or versions 2 and 3, can
+ * change it without the holder hearing, against s10.9.
+ */
+int nfsv4_dirdeleg = 0;
+
 /* Recalled and not yet back. */
 static LIST_HEAD(, nfsv4_state) deleg_recalled;
 static volatile u_int deleg_count;
@@ -196,6 +204,19 @@ nfsv4_deleg_break_name(const struct nfsv4_cfh *dir, const char *name)
 	st = nfsv4_deleg_break(vp, NULL, 0, NFSV4_DC_WRITE);
 	vrele(vp);
 	return st;
+}
+
+/*
+ * RFC 8881 s10.9: the directory dir is about to change.  No notification
+ * is offered, so the delegations of others are recalled, and the holder
+ * itself may do as it likes.  c_client is NULL under version 4.0.
+ */
+uint32_t
+nfsv4_deleg_break_dir(const struct nfsv4_compound *c,
+    const struct nfsv4_cfh *dir)
+{
+
+	return nfsv4_deleg_break(dir->cf_vp, c->c_client, 0, NFSV4_DC_WRITE);
 }
 
 /*
@@ -663,6 +684,83 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_exit(&nfsv4_state_lock);
 	nfsv4_reap_finish(&reap);
 	return status;
+}
+
+/*
+ * RFC 8881 s18.39.  gddr_notification is empty, which s18.39.3 allows: no
+ * CB_NOTIFY is ever sent, and any change by another is a recall.  The
+ * cookie verifier is that of READDIR here, which is zeros.  No "want" is
+ * kept, so s18.39.3 has gdda_signal_deleg_avail go unheeded by the error.
+ */
+uint32_t
+nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	struct nfsv4_cfh *cf = &c->c_cur;
+	struct vnode *vp = cf->cf_vp;
+	struct nfsv4_client *cl = c->c_client;
+	struct nfsv4_deleg_spare ds;
+	struct nfsv4_open_deleg od;
+	struct nfsv4_verifier verf;
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	uint32_t status = NFS4_OK;
+	bool held = false, ok;
+
+	if (vp != NULL && vp->v_type != VDIR)
+		return NFS4ERR_NOTDIR;
+	if (vp == NULL || cf->cf_attr != 0 || !nfsv4_dirdeleg)
+		return NFS4ERR_DIRDELEG_UNAVAIL;
+	if (nfsv4_grace_active() || !cl->cl_reclaimed)
+		return NFS4ERR_GRACE;		/* s18.51.3 */
+
+	memset(&ds, 0, sizeof(ds));
+	memset(&od, 0, sizeof(od));
+	ds.ds_st = kmem_zalloc(sizeof(*ds.ds_st), KM_SLEEP);
+	ds.ds_sw = kmem_zalloc(sizeof(*ds.ds_sw), KM_SLEEP);
+	ds.ds_f = kmem_zalloc(sizeof(*ds.ds_f), KM_SLEEP);
+	nfsv4_deleg_refer(c, &ds);
+	nfsv4_client_stable(cl);
+
+	mutex_enter(&nfsv4_state_lock);
+	f = nfsv4_file_find(vp);
+	if (f != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type == NFSV4_ST_DELEG &&
+			    st->st_owner->sw_client == cl)
+				held = true;
+		}
+	}
+	if (held)
+		/* below */;
+	else if (cl->cl_cbstate != NFSV4_CB_UP ||
+	    deleg_count >= NFSV4_DELEG_MAX || nfsv4_deleg_mode == 0)
+		status = NFS4ERR_DIRDELEG_UNAVAIL;
+	else
+		nfsv4_deleg_add(cl, vp, &cf->cf_fh, OPEN_DELEGATE_READ, &ds,
+		    &od);
+	mutex_exit(&nfsv4_state_lock);
+
+	if (ds.ds_st != NULL)
+		kmem_free(ds.ds_st, sizeof(*ds.ds_st));
+	if (ds.ds_sw != NULL)
+		kmem_free(ds.ds_sw, sizeof(*ds.ds_sw));
+	if (ds.ds_f != NULL)
+		kmem_free(ds.ds_f, sizeof(*ds.ds_f));
+	if (status != NFS4_OK)
+		return status;
+	if (held)			/* s18.39.3 */
+		return nfsv4_xdr_u32(c->c_rx, GDD4_UNAVAIL) &&
+		    nfsv4_xdr_u32(c->c_rx, 0) ? NFS4_OK : NFS4ERR_RESOURCE;
+
+	c->c_curst = od.od_stateid;
+	memset(&verf, 0, sizeof(verf));
+	ok = nfsv4_xdr_u32(c->c_rx, GDD4_OK) &&
+	    nfsv4_xdr_verifier(c->c_rx, &verf) &&
+	    nfsv4_xdr_stateid(c->c_rx, &od.od_stateid) &&
+	    nfsv4_xdr_u32(c->c_rx, 0) &&	/* gddr_notification */
+	    nfsv4_xdr_u32(c->c_rx, 0) &&	/* gddr_child_attributes */
+	    nfsv4_xdr_u32(c->c_rx, 0);		/* gddr_dir_attributes */
+	return ok ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
 /* The part of WANT_DELEGATION with the file known to be a good one. */

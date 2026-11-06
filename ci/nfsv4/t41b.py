@@ -3,8 +3,8 @@
 Run from pynfs's nfs4.1 directory: t41b.py EXPORT SECEXPORT.  SECEXPORT
 starts out open to any port; the script closes it with ssh to try the
 rules of NFS4ERR_WRONGSEC.  Failures are the measurement."""
-import subprocess, sys, time
-import nfs_ops, nfs4client
+import re, subprocess, sys, time, traceback
+import nfs_ops, nfs4client, nfs4lib
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import *
 from server41tests.environment import (create_file, close_file, check,
@@ -51,6 +51,17 @@ res = s.compound(use_obj(export) + [op.getfh()])
 check(res)
 dirfh = res.resarray[-1].object
 
+# One section going wrong in python is not to hide the rest.
+for sec in re.split(r'(?m)^(?=# s)', open(__file__).read().split('\n#--' + 'BODY\n')[1]):
+    try:
+        exec(sec, globals())
+    except Exception:
+        traceback.print_exc()
+        t("section " + sec.split('\n')[0], "exception", "none")
+print("failures:", fails)
+sys.exit(0)
+
+#--BODY
 # s14.5, s18.4.3 and the like
 bad = b"\xff\xfe" + stamp
 for name, o, want in (("LOOKUP", op.lookup(bad), NFS4ERR_INVAL),
@@ -87,7 +98,7 @@ res = open_file(s2, b"x", path=P(b"lk"), access=OPEN4_SHARE_ACCESS_BOTH)
 check(res)
 xs = res.resarray[-2].stateid
 t("s9.5 bytes of the closed open", s2.compound(nofh(fh, lockop(xs, b"x", 0, 5))).status, NFS4_OK)
-t("s9.5 bytes of the open left", s2.compound(nofh(fh, op.lockt(WRITE_LT, 0, 5, 10,
+t("s9.5 bytes of the open left", s2.compound(nofh(fh, op.lockt(WRITE_LT, 5, 10,
   lock_owner4(0, b"y")))).status, NFS4ERR_DENIED)
 
 # s8.2.6
@@ -127,23 +138,23 @@ t("s18.49.3 want nothing", wd(fh, 0).status, NFS4ERR_INVAL)
 t("s18.49.3 NO_DELEG", wd(fh, OPEN4_SHARE_ACCESS_WANT_NO_DELEG).status, NFS4ERR_INVAL)
 res = wd(fh, OPEN4_SHARE_ACCESS_WANT_CANCEL)
 t("s18.49.3 CANCEL", res.status, NFS4_OK)
-t("s18.49.3 why", res.resarray[-1].resok4.od_whynone.ond_why if res.status == 0 else None,
+t("s18.49.3 why", res.resarray[-1].wdr_resok4.od_whynone.ond_why if res.status == 0 else None,
   WND4_CANCELLED)
 res = wd(fh, OPEN4_SHARE_ACCESS_WANT_READ_DELEG | OPEN4_SHARE_ACCESS_READ)
 t("s18.49.3 READ ignored, read delegation", res.status, NFS4_OK)
-d = res.resarray[-1].resok4 if res.status == 0 else None
+d = res.resarray[-1].wdr_resok4 if res.status == 0 else None
 t("s18.49 type", d and d.delegation_type, OPEN_DELEGATE_READ)
 res = wd(fh, OPEN4_SHARE_ACCESS_WANT_WRITE_DELEG)
-t("s18.49 no upgrade", res.resarray[-1].resok4.od_whynone.ond_why if res.status == 0 else res.status,
+t("s18.49 no upgrade", res.resarray[-1].wdr_resok4.od_whynone.ond_why if res.status == 0 else res.status,
   WND4_NOT_SUPP_UPGRADE)
 res = wd(dirfh, OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
-t("s18.49 a directory", res.resarray[-1].resok4.od_whynone.ond_why if res.status == 0 else res.status,
+t("s18.49 a directory", res.resarray[-1].wdr_resok4.od_whynone.ond_why if res.status == 0 else res.status,
   WND4_IS_DIR)
 res = s.compound(nofh(dirfh, op.create(createtype4(NF4LNK, linkdata=b"x"), stamp + b"sl", {}),
     op.getfh()))
 check(res)
 res = wd(res.resarray[-1].object, OPEN4_SHARE_ACCESS_WANT_WRITE_DELEG)
-t("s18.49.3 a link", res.resarray[-1].resok4.od_whynone.ond_why if res.status == 0 else res.status,
+t("s18.49.3 a link", res.resarray[-1].wdr_resok4.od_whynone.ond_why if res.status == 0 else res.status,
   WND4_WRITE_DELEG_NOT_SUPP_FTYPE)
 
 # s8.2.2 the seqid of a recall, s2.10.6.3 what it refers to, with s18.49.4
@@ -178,6 +189,47 @@ ops = use_obj(export) + [op.open(0, OPEN4_SHARE_ACCESS_READ, 0, open_owner4(0, b
 res = s.compound(ops)
 t("s18.16.3 EXCLUSIVE4_1", res.status, NFS4_OK)
 t("s18.16.4 the same verifier", s.compound(ops).status, NFS4_OK)
+
+# s10.9, s18.39, with the attributes that came with it
+rc = subprocess.call(["ssh", "netbsd", "sudo sysctl -w vfs.nfsv4.dirdeleg=1"])
+res = s.compound(nofh(dirfh, op.create(createtype4(NF4DIR), stamp + b"dd", {}), op.getfh()))
+check(res)
+ddfh = res.resarray[-1].object
+gdd = lambda fh: s.compound(nofh(fh, op.get_dir_delegation(False, 0, nfstime4(0, 0),
+                                 nfstime4(0, 0), 0, 0)))
+t("s18.39.3 not a directory", gdd(fh).status, NFS4ERR_NOTDIR)
+res = gdd(ddfh)
+t("s18.39 GET_DIR_DELEGATION", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    r = res.resarray[-1].gddr_res_non_fatal4
+    t("s18.39 granted", r.gddrnf_status, GDD4_OK)
+    t("s18.39.3 no notifications", r.gddrnf_resok4.gddr_notification, (0, []))
+    dsid = r.gddrnf_resok4.gddr_stateid
+    r = gdd(ddfh).resarray[-1].gddr_res_non_fatal4
+    t("s18.39.3 held already", (r.gddrnf_status, r.gddrnf_will_signal_deleg_avail),
+      (GDD4_UNAVAIL, False))
+    n = op.create(createtype4(NF4DIR), stamp + b"in", {})
+    t("s10.9 the holder may change it", s.compound(nofh(ddfh, n)).status, NFS4_OK)
+    n = op.create(createtype4(NF4DIR), stamp + b"in2", {})
+    del recalled[:]
+    t("s10.9 another is held off", s2.compound(nofh(ddfh, n)).status, NFS4ERR_DELAY)
+    for i in range(20):
+        if recalled:
+            break
+        time.sleep(0.5)
+    t("s10.9 recall", recalled, [[0]])
+    t("s18.6 returned", s.compound(nofh(ddfh, op.delegreturn(dsid))).status, NFS4_OK)
+    t("s10.9 then it goes", s2.compound(nofh(ddfh, n)).status, NFS4_OK)
+rc = subprocess.call(["ssh", "netbsd", "sudo sysctl -w vfs.nfsv4.dirdeleg=0"])
+t("s18.39 off", gdd(ddfh).status, NFS4ERR_DIRDELEG_UNAVAIL)
+res = s.compound(nofh(dirfh, op.getattr(nfs4lib.list2bitmap([FATTR4_FS_STATUS,
+      FATTR4_CHANGE_POLICY, FATTR4_FS_CHARSET_CAP]))))
+t("s5.8.2 GETATTR", res.status, NFS4_OK)
+print("  attrs", res.resarray[-1].obj_attributes if res.status == NFS4_OK else None)
+if res.status == NFS4_OK:
+    a = res.resarray[-1].obj_attributes
+    t("s11.18 fs_status", a[FATTR4_FS_STATUS].fss_type, STATUS4_WRITABLE)
+    t("s14.4 fs_charset_cap", a[FATTR4_FS_CHARSET_CAP], FSCHARSET_CAP4_ALLOWS_ONLY_UTF8)
 
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
@@ -248,6 +300,3 @@ ws("OPEN to create", [op.putfh(secfh), cre], WS, OP_PUTFH)
 byfh = op.open(0, OPEN4_SHARE_ACCESS_READ, 0, open_owner4(0, b"ws"), openflag4(OPEN4_NOCREATE),
                open_claim4(CLAIM_FH))
 ws("OPEN by handle", [op.putfh(secfile), byfh], WS, OP_PUTFH)
-
-print("failures:", fails)
-sys.exit(0)

@@ -291,6 +291,8 @@ uint32_t nfsv4_op_reclaim_complete(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_secinfo_no_name(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_sequence(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_set_ssv(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_get_dir_delegation(struct nfsv4_compound *,
+	    union nfsv4_args *);
 uint32_t nfsv4_op_want_delegation(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_test_stateid(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_access(struct nfsv4_compound *, union nfsv4_args *);

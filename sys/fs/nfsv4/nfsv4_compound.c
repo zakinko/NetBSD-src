@@ -161,6 +161,8 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	[NFSV4_OP_DESTROY_SESSION] =
 				  { nfsv4_op_destroy_session, NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_FREE_STATEID]	= { nfsv4_op_free_stateid, 0 },
+	[NFSV4_OP_GET_DIR_DELEGATION] =
+				  { nfsv4_op_get_dir_delegation, NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO_NO_NAME] =
 				  { nfsv4_op_secinfo_no_name, NFSV4_OPF_FH },
 	[NFSV4_OP_SEQUENCE]	= { nfsv4_op_sequence,	NFSV4_OPF_NOSEQ },
@@ -851,6 +853,10 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "delegations", SYSCTL_DESCR("0 none, 1 read, 2 read and write"),
 	    NULL, 0, &nfsv4_deleg_mode, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "dirdeleg", SYSCTL_DESCR("Give directory delegations"),
+	    NULL, 0, &nfsv4_dirdeleg, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "utf8only", SYSCTL_DESCR("Version 4.1 takes only UTF-8 names"),

@@ -186,6 +186,10 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 	if ((cf->cf_exflags & MNT_EXRDONLY) != 0)
 		return NFS4ERR_ROFS;
+	/* For a name that exists, a recall of what it did not change. */
+	st = nfsv4_deleg_break_dir(c, cf);
+	if (st != NFS4_OK)
+		return st;
 	error = nfsv4_namei(&nd, dvp, oa->file.nm_str, CREATE,
 	    LOCKPARENT | LOCKLEAF, cf->cf_cred);
 	if (error != 0)

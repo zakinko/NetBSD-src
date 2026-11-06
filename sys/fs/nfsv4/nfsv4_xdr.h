@@ -394,6 +394,10 @@ struct nfsv4_args_u32 {			/* RECLAIM_COMPLETE, SECINFO_NO_NAME */
 	uint32_t	value;
 };
 
+struct nfsv4_args_get_dir_delegation {
+	uint32_t	signal;		/* gdda_signal_deleg_avail */
+};
+
 struct nfsv4_args_want_delegation {
 	uint32_t	want;
 	uint32_t	delegate_type;	/* CLAIM_PREVIOUS */
@@ -402,6 +406,7 @@ struct nfsv4_args_want_delegation {
 
 union nfsv4_args {
 	struct nfsv4_args_want_delegation want_delegation;
+	struct nfsv4_args_get_dir_delegation get_dir_delegation;
 	struct nfsv4_args_exchange_id	exchange_id;
 	struct nfsv4_args_create_session create_session;
 	struct nfsv4_args_backchannel_ctl backchannel_ctl;
@@ -439,6 +444,7 @@ union nfsv4_args {
 
 /* Pieces shared by several operations, or by the results. */
 bool	nfsv4_xdr_bitmap(XDR *, struct nfsv4_bitmap *);
+bool	nfsv4_xdr_u32(XDR *, uint32_t);
 bool	nfsv4_xdr_name(XDR *, struct nfsv4_name *);
 bool	nfsv4_xdr_link(XDR *, struct nfsv4_link *);
 bool	nfsv4_xdr_fh(XDR *, struct nfsv4_fh *);

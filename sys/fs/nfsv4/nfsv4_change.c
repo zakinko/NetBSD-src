@@ -118,6 +118,9 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 		return st;
 	if ((set & (1ULL << FATTR4_SIZE)) != 0)
 		return NFS4ERR_INVAL;	/* of no use on these types */
+	st = nfsv4_deleg_break_dir(c, cf);
+	if (st != NFS4_OK)
+		return st;
 
 	memset(&ci, 0, sizeof(ci));
 	error = nfsv4_namei(&nd, cf->cf_vp, ca->name.nm_str, CREATE,
@@ -234,6 +237,8 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
 	if (st == NFS4_OK && c->c_minor != 0)
 		st = nfsv4_open_denies_remove(cf, nm->nm_str);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_dir(c, cf);
 	if (st != NFS4_OK)
 		return st;
 
@@ -332,6 +337,10 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = nfsv4_deleg_break_name(tf, ra->newname.nm_str);
 	if (st == NFS4_OK && c->c_minor != 0)
 		st = nfsv4_open_denies_remove(tf, ra->newname.nm_str);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_dir(c, sf);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_dir(c, tf);
 	if (st != NFS4_OK)
 		return st;
 
@@ -464,6 +473,8 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_XDEV;
 	/* numlinks would change under the client; s10.4.4 lets it be asked. */
 	st = nfsv4_deleg_break(vp, NULL, 0, NFSV4_DC_WRITE);
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break_dir(c, cf);
 	if (st != NFS4_OK)
 		return st;
 

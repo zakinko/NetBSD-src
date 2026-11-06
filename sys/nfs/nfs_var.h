@@ -326,6 +326,14 @@ struct sys_nfssvc_args;
 int sys_getfh(struct lwp *, const struct sys_getfh_args *, register_t *);
 int sys_nfssvc(struct lwp *, const struct sys_nfssvc_args *, register_t *);
 int nfssvc_addsock(struct file *, struct mbuf *);
+#ifdef NFSSERVER_ONCRPC
+/* nfs_oncrpc.c */
+int nfs_oncrpc_init(void);
+void nfs_oncrpc_fini(void);
+int nfs_oncrpc_addsock(struct file *, struct mbuf *);
+int nfs_oncrpc_run(void);
+void nfs_oncrpc_closesocks(void);
+#endif
 void nfsrv_zapsock(struct nfssvc_sock *);
 void nfsrv_slpderef(struct nfssvc_sock *);
 void nfsrv_init(int);

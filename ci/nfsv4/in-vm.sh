@@ -26,6 +26,10 @@ chmod 1777 /export/tmpfs
 mkdir -p /export/ref
 mount_tmpfs -s 8m tmpfs /export/ref
 mkdir /export/ref/there
+# To be migrated, s9.14.
+mkdir -p /export/mig
+mount_tmpfs -s 8m tmpfs /export/mig
+chmod 1777 /export/mig
 mkdir -p /export/acl
 dd if=/dev/zero of=/var/tmp/acl.img bs=1m count=256
 newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
@@ -48,6 +52,7 @@ cat >/etc/exports <<EOF
 /export/tmpfs -maproot=root -noresvport
 /export/acl -maproot=root -noresvport
 /export/ref -maproot=root -noresvport
+/export/mig -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf

@@ -138,6 +138,17 @@ jobs:
           cp ci/nfsv4/owner.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
           python3 ./owner.py /export/pynfs 2>&1 | tee "$OLDPWD/out/owner.txt" || true
+      - name: The rest of the options
+        run: |
+          cp ci/nfsv4/more.py "$HOME/pynfs/nfs4.0/"
+          o="$PWD/out"; c="$PWD/ci/nfsv4"
+          cd "$HOME/pynfs/nfs4.0"
+          { python3 ./more.py attrs /export/acl
+            python3 ./more.py attrs /tank/x
+            python3 ./more.py fair /export/pynfs
+            python3 ./more.py moved /export/mig
+            sh "$c/cbgetattr.sh"
+          } 2>&1 | tee "$o/more.txt" || true
       - name: Named attributes and fs_locations
         run: |
           cp ci/nfsv4/named-attr.py "$HOME/pynfs/nfs4.0/"
@@ -175,5 +186,6 @@ jobs:
             out/named-attr.txt
             out/edge.txt
             out/owner.txt
+            out/more.txt
             out/kernel.txt
           retention-days: 30

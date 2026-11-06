@@ -197,6 +197,43 @@ check('BIND_CHANNEL: PREF_NOTSUPP, an empty list, a MIC', accepted(r, 0) and r.v
 ml = struct.unpack('>I', r.verf[8:12])[0]
 y.g.verify_signature(p32(y.seq, 0, 1, 0), r.verf[12:12 + ml])
 
+# Versions 2 and 3 of NFS, with a handle from MOUNT.
+def mnt(vers, path):
+    s = socket.create_connection((HOST, 4002)); s.settimeout(6)
+    b = p32(random.getrandbits(32), 0, 2, 100005, vers, 1, 0, 0, 0, 0) + opaque(path.encode())
+    s.sendall(p32(0x80000000 | len(b)) + b)
+    h = s.recv(4); n = struct.unpack('>I', h)[0] & 0x7fffffff
+    d = b''
+    while len(d) < n: d += s.recv(n - len(d))
+    s.close()
+    st = struct.unpack('>I', d[24:28])[0]
+    assert st == 0, f'MNT {path} {st}'
+    if vers == 1: return d[28:60]
+    l = struct.unpack('>I', d[28:32])[0]
+    fl = d[32 + l + (-l % 4):]
+    return d[32:32 + l], [struct.unpack('>I', fl[4 + 4 * i:8 + 4 * i])[0] for i in range(struct.unpack('>I', fl[:4])[0])]
+
+fh2 = mnt(1, ALL)
+fh3, fl = mnt(3, ALL)
+check('MOUNT 3 lists the flavors of the export', fl == [390005, 390004, 390003], str(fl))
+fh3p, fl = mnt(3, PONLY)
+check('MOUNT 3 lists krb5p alone', fl == [390005], str(fl))
+for v, arg, parg in ((2, fh2, mnt(1, PONLY)), (3, opaque(fh3), opaque(fh3p))):
+    VERS = v
+    z = Ctx()
+    for s, n in ((NONE, 'krb5'), (INTEG, 'krb5i'), (PRIV, 'krb5p')):
+        r = z.call(s)
+        check(f'v{v} NULL under {n}', accepted(r, 0))
+        r = z.call(s, 1, arg)
+        ok = accepted(r, 0)
+        check(f'v{v} GETATTR under {n}', ok and compstat(z.results(r)) == 0)
+    check(f'v{v} replay dropped', z.call(seq=z.seq) is None)
+    r = z.call(NONE, 1, parg)
+    check(f'v{v} krb5 on a krb5p export: AUTH_TOOWEAK', denied(r, 5), r and r.__dict__.get('why', r.b[:40].hex()))
+    r = z.call(PRIV, 1, parg)
+    check(f'v{v} krb5p there', accepted(r, 0) and compstat(z.results(r)) == 0)
+VERS = 4
+
 c = C()
 xid = random.getrandbits(32)
 c.send(header(xid, 0, cred(1, INIT, 0, NONE, b'')) + p32(0, 0) + opaque(b'not a token'))

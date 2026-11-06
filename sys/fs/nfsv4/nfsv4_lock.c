@@ -126,9 +126,103 @@ lock_denied(struct nfsv4_compound *c, const struct lf_query *q)
 }
 
 /*
- * Try the lock; the result for the reply goes in *rlen.  Waiting for it
- * is not done here even for READW_LT and WRITEW_LT: s9.4 has a client
- * poll, the blocking types being a hint.
+ * s9.4, for fairness: clients poll for a blocking lock, and the first of
+ * them denied has a lease to come back in.  Is someone before lo in the
+ * queue for a range that clashes with fl?
+ */
+#define	LOCKWAIT_MAX	64		/* of one file; a choice */
+
+static off_t
+fl_end(const struct flock *fl)
+{
+
+	return fl->l_len == 0 ? -1 : fl->l_start + fl->l_len - 1;
+}
+
+static bool
+lw_overlaps(const struct nfsv4_lockwait *lw, const struct flock *fl)
+{
+	off_t e = fl_end(fl);
+
+	return (e == -1 || lw->lw_start <= e) &&
+	    (lw->lw_end == -1 || fl->l_start <= lw->lw_end);
+}
+
+bool
+nfsv4_lock_fair(struct nfsv4_owner_s *lo, struct vnode *vp,
+    const struct flock *fl)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_lockwait *lw, *next;
+	bool write = fl->l_type == F_WRLCK, ok = true;
+
+	mutex_enter(&nfsv4_state_lock);
+	f = nfsv4_file_find(vp);
+	if (f != NULL) {
+		TAILQ_FOREACH_SAFE(lw, &f->f_waits, lw_list, next) {
+			if (time_uptime >= lw->lw_expire) {
+				TAILQ_REMOVE(&f->f_waits, lw, lw_list);
+				f->f_nwaits--;
+				kmem_free(lw, sizeof(*lw));
+				continue;
+			}
+			if (lw->lw_gen == lo->sw_gen)
+				break;
+			if ((write || lw->lw_write) && lw_overlaps(lw, fl)) {
+				ok = false;
+				break;
+			}
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return ok;
+}
+
+/*
+ * After the attempt: a blocking lock denied joins the queue or keeps its
+ * place, and anything granted, or a last try by a non-blocking one,
+ * leaves it, s9.4.
+ */
+void
+nfsv4_lock_waited(struct nfsv4_owner_s *lo, struct vnode *vp,
+    const struct flock *fl, bool blocking, bool denied)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_lockwait *lw;
+
+	mutex_enter(&nfsv4_state_lock);
+	f = nfsv4_file_find(vp);
+	if (f != NULL) {
+		TAILQ_FOREACH(lw, &f->f_waits, lw_list) {
+			if (lw->lw_gen == lo->sw_gen)
+				break;
+		}
+		if (blocking && denied) {
+			if (lw == NULL && f->f_nwaits < LOCKWAIT_MAX &&
+			    (lw = kmem_zalloc(sizeof(*lw), KM_NOSLEEP)) != NULL) {
+				lw->lw_gen = lo->sw_gen;
+				TAILQ_INSERT_TAIL(&f->f_waits, lw, lw_list);
+				f->f_nwaits++;
+			}
+			if (lw != NULL) {
+				lw->lw_start = fl->l_start;
+				lw->lw_end = fl_end(fl);
+				lw->lw_write = fl->l_type == F_WRLCK;
+				lw->lw_expire = time_uptime + NFSV4_LEASE;
+			}
+		} else if (lw != NULL) {
+			TAILQ_REMOVE(&f->f_waits, lw, lw_list);
+			f->f_nwaits--;
+			kmem_free(lw, sizeof(*lw));
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/*
+ * Try the lock; the result for the reply goes in *rlen.  It is not
+ * waited for even for READW_LT and WRITEW_LT: s9.4 has a client poll,
+ * and a server may answer at once.
  */
 static uint32_t
 lock_set(struct nfsv4_compound *c, struct nfsv4_owner_s *lo, struct flock *fl,
@@ -139,6 +233,12 @@ lock_set(struct nfsv4_compound *c, struct nfsv4_owner_s *lo, struct flock *fl,
 	struct flock t;
 	int error;
 
+	if (!nfsv4_lock_fair(lo, vp, fl)) {
+		q.lfq_fl = *fl;
+		q.lfq_id = NULL;
+		*rlen = lock_denied(c, &q);
+		return NFS4ERR_DENIED;
+	}
 	t = *fl;
 	error = VOP_ADVLOCK(vp, lo, F_SETLK, &t, 0);
 	if (error == 0)
@@ -300,6 +400,8 @@ have_owner:
 	if (status == NFS4_OK) {
 		fl.l_type = type;
 		status = lock_set(c, lo, &fl, &rlen);
+		nfsv4_lock_waited(lo, vp, &fl, la->type == READW_LT ||
+		    la->type == WRITEW_LT, status == NFS4ERR_DENIED);
 	}
 	if (status == NFS4_OK) {
 		mutex_enter(&nfsv4_state_lock);

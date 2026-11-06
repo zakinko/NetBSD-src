@@ -45,6 +45,7 @@
 #include <sys/mutex.h>
 #include <sys/queue.h>
 
+struct flock;
 struct nfsv4_owner_s;
 struct nfsv4_state;
 struct vnode;
@@ -98,6 +99,7 @@ struct nfsv4_owner_s {
 	u_int		sw_waiters;
 	bool		sw_confirmed;	/* open-owner, s9.1.11 */
 	uint32_t	sw_seqid;	/* L, s9.1.7 */
+	uint64_t	sw_gen;		/* to be known by, never reused */
 	uint32_t	sw_lastop;	/* of the reply below */
 	uint32_t	sw_laststat;
 	u_int		sw_rlen;
@@ -108,12 +110,24 @@ struct nfsv4_owner_s {
 	uint8_t		sw_data[NFS4_OPAQUE_LIMIT];
 };
 
+/* A blocking lock denied, in order, s9.4. */
+struct nfsv4_lockwait {
+	TAILQ_ENTRY(nfsv4_lockwait) lw_list;
+	uint64_t	lw_gen;		/* sw_gen */
+	off_t		lw_start;
+	off_t		lw_end;		/* -1 for EOF */
+	bool		lw_write;
+	time_t		lw_expire;
+};
+
 /* All the state on one vnode. */
 struct nfsv4_file {
 	LIST_ENTRY(nfsv4_file) f_list;
 	LIST_HEAD(, nfsv4_state) f_states;
 	struct vnode	*f_vp;		/* a reference */
 	struct nfsv4_fh	f_fh;		/* unless f_isattr, of an open file */
+	TAILQ_HEAD(, nfsv4_lockwait) f_waits;
+	u_int		f_nwaits;
 	bool		f_isattr;	/* opens of a named attribute */
 	char		f_aname[NFSV4_ANAME_MAX + 1];
 };
@@ -268,6 +282,13 @@ void	nfsv4_seq_cancel(struct nfsv4_owner_s *);
 void	nfsv4_reap_finish(struct nfsv4_reap *);
 void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 	    uint32_t, const char *, u_int);
+bool	nfsv4_lock_fair(struct nfsv4_owner_s *, struct vnode *,
+	    const struct flock *);
+void	nfsv4_lock_waited(struct nfsv4_owner_s *, struct vnode *,
+	    const struct flock *, bool, bool);
+uint32_t nfsv4_deleg_getattr(struct nfsv4_compound *);
+int	nfsv4_cb_getattr(const struct nfsv4_client *, const struct nfsv4_fh *,
+	    uint64_t *, uint64_t *);
 uint32_t nfsv4_deleg_break(struct vnode *, const struct nfsv4_client *,
 	    uint64_t, u_int);
 uint32_t nfsv4_deleg_break_name(const struct nfsv4_cfh *, const char *);

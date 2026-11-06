@@ -154,6 +154,7 @@ nfsv4_owner_add(struct nfsv4_client *cl, struct nfsv4_owner_s **spare,
 
 	*spare = NULL;
 	sw->sw_client = cl;
+	sw->sw_gen = ++nfsv4_counter;
 	sw->sw_type = type;
 	sw->sw_len = len;
 	memcpy(sw->sw_data, data, len);
@@ -425,6 +426,7 @@ nfsv4_state_add_attr(struct nfsv4_state **stp, struct nfsv4_owner_s *sw,
 			f->f_isattr = true;
 			strlcpy(f->f_aname, aname, sizeof(f->f_aname));
 		}
+		TAILQ_INIT(&f->f_waits);
 		vref(vp);
 		LIST_INIT(&f->f_states);
 		LIST_INSERT_HEAD(&nfsv4_file_hash[file_hash(vp)], f, f_list);
@@ -453,6 +455,7 @@ nfsv4_state_unlink(struct nfsv4_state *st, struct nfsv4_reap *reap, bool keep)
 {
 	struct nfsv4_file *f = st->st_file;
 	struct nfsv4_state *ls;
+	struct nfsv4_lockwait *lw;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
@@ -470,6 +473,10 @@ nfsv4_state_unlink(struct nfsv4_state *st, struct nfsv4_reap *reap, bool keep)
 		if (LIST_EMPTY(&f->f_states)) {
 			st->st_reapvp = f->f_vp;
 			LIST_REMOVE(f, f_list);
+			while ((lw = TAILQ_FIRST(&f->f_waits)) != NULL) {
+				TAILQ_REMOVE(&f->f_waits, lw, lw_list);
+				kmem_free(lw, sizeof(*lw));
+			}
 			kmem_free(f, sizeof(*f));
 		} else {
 			vref(f->f_vp);

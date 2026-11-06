@@ -6,6 +6,8 @@ D=/var/tmp/nfsv4
 kill "$(cat "$D/nfsv4d.pid")"
 sleep 1
 modunload nfsv4
+# A record that does not pass its check.
+[ "${1:-}" != damage ] || printf XXXX | dd of="$D/stable" bs=1 seek=20 conv=notrunc
 modload nfsv4
 cd "$D"
 ./nfsv4d "$D/stable" </dev/null >>nfsv4d.log 2>&1 &

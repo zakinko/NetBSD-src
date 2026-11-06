@@ -54,6 +54,10 @@ mount /dev/vnd2d /export/quota
 chmod 1777 /export/quota
 edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
 repquota -u /export/quota || :
+# The second to be migrated, for the end of the waiting.
+mkdir -p /export/mig2
+mount_tmpfs -s 8m tmpfs /export/mig2
+chmod 1777 /export/mig2
 # FFSv1, for the hole punch: fsck of it fresh is the control for what
 # fsck says after, the alternate superblocks in particular.  vnd3 is
 # the block layout's (pnfs-blk.sh), and /dev has no vnd4 of its own.
@@ -80,6 +84,8 @@ if [ -f "$D/modules/zfs.kmod" ] && zpool version >/dev/null 2>&1; then
 	zpool create -f tank /var/tmp/tank.img
 	zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x
 	chmod 1777 /tank/x
+	zfs create -o utf8only=on tank/u
+	chmod 1777 /tank/u
 	zfs list
 fi
 mount | grep /export/
@@ -92,6 +98,8 @@ cat >/etc/exports <<EOF
 /export/ref -maproot=root -noresvport
 /export/mig -maproot=root -noresvport
 /export/ffds -maproot=root -noresvport
+/export/mig2 -maproot=root -noresvport
+/tank/u -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
 /export/ffs1 -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
@@ -106,6 +114,7 @@ cc -g -Wall -o nfsv4d nfsv4d.c
 cc -g -Wall -o lockhold lockhold.c
 cc -g -Wall -o nfs3tcp nfs3tcp.c
 cc -g -Wall -o udp41 udp41.c
+cc -g -Wall -o fib fib.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1

@@ -195,6 +195,130 @@ nfsv4_xattr_list(const struct nfsv4_cfh *cf, char **bufp, size_t *lenp,
 	return error;
 }
 
+/*
+ * archive, hidden, system, mimetype and time_backup, RFC 7530 s5.8.2:
+ * NetBSD's file systems have nowhere of their own for these, so they
+ * are extended attributes too, in the namespace system, where named
+ * attributes do not go.  So they are there only where those are.  The
+ * credential is NOCRED, the check being VWRITE on the file by whoever
+ * sets them, and reading them being open to all as any attribute is.
+ */
+#define	XS_NS		EXTATTR_NAMESPACE_SYSTEM
+
+bool
+nfsv4_xstore_ok(struct vnode *vp)
+{
+	size_t size = 0;
+	int error;
+
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_LISTEXTATTR(vp, XS_NS, NULL, &size, 0, NOCRED);
+	VOP_UNLOCK(vp);
+	return error == 0;
+}
+
+static int
+xs_get(struct vnode *vp, const char *name, void *buf, size_t len, size_t *gotp)
+{
+	struct iovec iov;
+	struct uio uio;
+	int error;
+
+	xa_uio(&uio, &iov, buf, len, UIO_READ);
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_GETEXTATTR(vp, XS_NS, name, &uio, NULL, NOCRED);
+	VOP_UNLOCK(vp);
+	*gotp = len - uio.uio_resid;
+	return error;
+}
+
+static int
+xs_set(struct vnode *vp, const char *name, const void *buf, size_t len)
+{
+	struct iovec iov;
+	struct uio uio;
+	int error;
+
+	xa_uio(&uio, &iov, __UNCONST(buf), len, UIO_WRITE);
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	error = VOP_SETEXTATTR(vp, XS_NS, name, &uio, NOCRED);
+	VOP_UNLOCK(vp);
+	return error;
+}
+
+bool
+nfsv4_xstore_bool(struct vnode *vp, const char *name)
+{
+	uint8_t v = 0;
+	size_t got;
+
+	return xs_get(vp, name, &v, 1, &got) == 0 && got == 1 && v != 0;
+}
+
+u_int
+nfsv4_xstore_mime(struct vnode *vp, char *buf)
+{
+	size_t got = 0;
+
+	return xs_get(vp, "nfsv4.mimetype", buf, NFSV4_MIME_MAX, &got) == 0 ?
+	    (u_int)got : 0;
+}
+
+void
+nfsv4_xstore_time(struct vnode *vp, struct timespec *ts)
+{
+	int64_t v[2];
+	size_t got;
+
+	if (xs_get(vp, "nfsv4.time_backup", v, sizeof(v), &got) == 0 &&
+	    got == sizeof(v)) {
+		ts->tv_sec = v[0];
+		ts->tv_nsec = (long)v[1];
+	} else
+		timespecclear(ts);
+}
+
+uint32_t
+nfsv4_xstore_apply(struct nfsv4_compound *c, struct vnode *vp,
+    kauth_cred_t cred)
+{
+	struct nfsv4_xstore *xs = &c->c_xs;
+	uint64_t set = xs->xs_set;
+	uint8_t v;
+	int64_t t[2];
+	int error = 0;
+
+	xs->xs_set = 0;
+	if (set == 0)
+		return NFS4_OK;
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_ACCESS(vp, VWRITE, cred);
+	VOP_UNLOCK(vp);
+	if (error == 0 && (set & (1ULL << FATTR4_ARCHIVE)) != 0) {
+		v = xs->xs_archive != 0;
+		error = xs_set(vp, "nfsv4.archive", &v, 1);
+	}
+	if (error == 0 && (set & (1ULL << FATTR4_HIDDEN)) != 0) {
+		v = xs->xs_hidden != 0;
+		error = xs_set(vp, "nfsv4.hidden", &v, 1);
+	}
+	if (error == 0 && (set & (1ULL << FATTR4_SYSTEM)) != 0) {
+		v = xs->xs_system != 0;
+		error = xs_set(vp, "nfsv4.system", &v, 1);
+	}
+	if (error == 0 && (set & (1ULL << FATTR4_MIMETYPE)) != 0)
+		error = xs_set(vp, "nfsv4.mimetype", xs->xs_mime,
+		    xs->xs_mimelen);
+	if (error == 0 && (set & (1ULL << FATTR4_TIME_BACKUP)) != 0) {
+		t[0] = xs->xs_backup.tv_sec;
+		t[1] = xs->xs_backup.tv_nsec;
+		error = xs_set(vp, "nfsv4.time_backup", t, sizeof(t));
+	}
+	if (error == EOPNOTSUPP)
+		return NFS4ERR_ATTRNOTSUPP;
+	return nfsv4_errno(error);
+}
+
 /* s5.8.1.8: does the object have any? */
 bool
 nfsv4_xattr_any(const struct nfsv4_cfh *cf)

@@ -78,6 +78,24 @@ struct nfsv4_cfh {
 	const struct nfsv4_referral *cf_ref;	/* absent, s8.2 */
 };
 
+/* What SETATTR asked of the attributes of nfsv4_xattr.c. */
+#define	NFSV4_MIME_MAX		128	/* chosen */
+struct nfsv4_xstore {
+	uint64_t	xs_set;
+	uint32_t	xs_archive, xs_hidden, xs_system;
+	uint32_t	xs_mimelen;
+	char		xs_mime[NFSV4_MIME_MAX];
+	struct timespec	xs_backup;
+};
+
+/* What CB_GETATTR said, s10.4.3. */
+struct nfsv4_attrov {
+	bool		ao_valid;
+	uint64_t	ao_size;
+	uint64_t	ao_change;
+	struct timespec	ao_time;
+};
+
 /*
  * What is being done for one COMPOUND.  Its operations run in order in
  * one thread, so nothing here needs a lock.
@@ -92,6 +110,9 @@ struct nfsv4_compound {
 	char		*c_rbuf;	/* NFSV4_REPLAY_MAX, for seqid replies */
 	bool		c_drc;		/* an operation that the DRC keeps ran */
 	struct acl	*c_setacl;	/* parsed, not set yet; nfsv4_acl_set */
+	struct nfsv4_xstore c_xs;
+	struct nfsv4_attrov c_ov;	/* for the GETATTR going on */
+	bool		c_probed;	/* fs_locations of an absent fs, s9.14.3 */
 };
 
 /* A COMPOUND in the duplicate request cache's hands; see nfsv4_drc.c. */
@@ -156,6 +177,13 @@ uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 
 uint32_t nfsv4_errno(int);
 void	nfsv4_write_verf(struct nfsv4_verifier *);
+
+bool	nfsv4_xstore_ok(struct vnode *);
+uint32_t nfsv4_xstore_apply(struct nfsv4_compound *, struct vnode *,
+	    kauth_cred_t);
+bool	nfsv4_xstore_bool(struct vnode *, const char *);
+u_int	nfsv4_xstore_mime(struct vnode *, char *);
+void	nfsv4_xstore_time(struct vnode *, struct timespec *);
 
 void	nfsv4_idmap_init(void);
 void	nfsv4_idmap_fini(void);

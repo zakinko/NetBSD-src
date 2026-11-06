@@ -290,6 +290,11 @@ nfsv4_acl_parse(XDR *x, struct acl **aclp)
 uint32_t
 nfsv4_acl_set(struct nfsv4_compound *c, struct vnode *vp, kauth_cred_t cred)
 {
+	uint32_t st0;
+
+	st0 = nfsv4_xstore_apply(c, vp, cred);
+	if (st0 != NFS4_OK)
+		return st0;
 	struct acl *acl = c->c_setacl;
 	int error;
 

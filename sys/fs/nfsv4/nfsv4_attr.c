@@ -30,9 +30,9 @@
  * Attributes, RFC 7530 s5.
  *
  * Those that can be had from the file system or are fixed are given;
- * of the RECOMMENDED ones, archive, hidden, mimetype, quota_*, system and
- * time_backup are not, and so are left out of supported_attrs as s16.7.4
- * allows.  acl and aclsupport are in it only
+ * archive, hidden, mimetype, system and time_backup go where nfsv4_xattr.c
+ * keeps them, and quota_* to the file system's quota; a file system with
+ * neither has them left out of supported_attrs as s16.7.4 allows.  acl and aclsupport are in it only
  * where the file system has ACLs.
  */
 
@@ -44,6 +44,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/kauth.h>
 #include <sys/kmem.h>
 #include <sys/mount.h>
+#include <sys/quota.h>
+#include <sys/quotactl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/systm.h>
@@ -86,6 +88,14 @@ static const uint64_t attr_supported =
 static const uint64_t attr_setonly =
     BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_MODIFY_SET);
 
+/* Where they are kept is optional, so they are not always supported. */
+static const uint64_t attr_stored =
+    BIT(FATTR4_ARCHIVE) | BIT(FATTR4_HIDDEN) | BIT(FATTR4_MIMETYPE) |
+    BIT(FATTR4_SYSTEM) | BIT(FATTR4_TIME_BACKUP);
+static const uint64_t attr_quota =
+    BIT(FATTR4_QUOTA_AVAIL_HARD) | BIT(FATTR4_QUOTA_AVAIL_SOFT) |
+    BIT(FATTR4_QUOTA_USED);
+
 /* Those that a write delegation may change at the client, s10.4. */
 static const uint64_t attr_delegated =
     BIT(FATTR4_CHANGE) | BIT(FATTR4_SIZE) | BIT(FATTR4_TIME_MODIFY);
@@ -125,6 +135,59 @@ attr_supported_by(struct vnode *vp)
 	if (nfsv4_acl_supported(vp))
 		return attr_supported;
 	return attr_supported & ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
+}
+
+/* The same with the ones that cost a VOP to find out about. */
+static uint64_t
+attr_supported_full(struct vnode *vp)
+{
+	struct quotastat qs;
+	uint64_t m = attr_supported_by(vp);
+
+	if (vp == NULL)
+		return m;
+	if (nfsv4_xstore_ok(vp))
+		m |= attr_stored;
+	if (vfs_quotactl_stat(vp->v_mount, &qs) == 0)
+		m |= attr_quota;
+	return m;
+}
+
+/*
+ * s5.8.2.24 to 26, of the owner of the file.  The file system counts in
+ * blocks of DEV_BSIZE.  With no entry or no limit, the answer that is
+ * true is as much as can be said.
+ */
+static bool
+attr_quota_put(XDR *x, struct vnode *vp, uid_t uid, u_int n)
+{
+	struct quotakey key;
+	struct quotaval qv;
+	uint64_t v;
+
+	key.qk_idtype = QUOTA_IDTYPE_USER;
+	key.qk_id = uid;
+	key.qk_objtype = QUOTA_OBJTYPE_BLOCKS;
+	if (vfs_quotactl_get(vp->v_mount, &key, &qv) != 0) {
+		qv.qv_hardlimit = qv.qv_softlimit = QUOTA_NOLIMIT;
+		qv.qv_usage = 0;
+	}
+	switch (n) {
+	case FATTR4_QUOTA_USED:
+		v = qv.qv_usage;
+		break;
+	case FATTR4_QUOTA_AVAIL_HARD:
+		v = qv.qv_hardlimit == QUOTA_NOLIMIT ? UINT64_MAX / DEV_BSIZE :
+		    qv.qv_hardlimit > qv.qv_usage ?
+		    qv.qv_hardlimit - qv.qv_usage : 0;
+		break;
+	default:
+		v = qv.qv_softlimit == QUOTA_NOLIMIT ? UINT64_MAX / DEV_BSIZE :
+		    qv.qv_softlimit > qv.qv_usage ?
+		    qv.qv_softlimit - qv.qv_usage : 0;
+		break;
+	}
+	return xdr_u_int64_t(x, &(uint64_t){ v * DEV_BSIZE });
 }
 
 static inline uint64_t
@@ -429,6 +492,9 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	int error;
 
 	sup = attr_supported_by(vp);
+	if ((attr_mask(want) & (BIT(FATTR4_SUPPORTED_ATTRS) | attr_stored |
+	    attr_quota)) != 0 && cf->cf_attr == 0)
+		sup = attr_supported_full(vp);
 	m = attr_mask(want) & sup & ~attr_setonly;
 	if (cf->cf_ref != NULL)
 		m &= attr_absent;
@@ -528,6 +594,36 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			break;
 		case FATTR4_FS_LOCATIONS:
 			ok = attr_fs_locations(&x, cf);
+			if (cf->cf_ref != NULL)
+				c->c_probed = true;	/* s9.14.3 */
+			break;
+		case FATTR4_ARCHIVE:
+			ok = attr_u32(&x, nfsv4_xstore_bool(vp, "nfsv4.archive"));
+			break;
+		case FATTR4_HIDDEN:
+			ok = attr_u32(&x, nfsv4_xstore_bool(vp, "nfsv4.hidden"));
+			break;
+		case FATTR4_SYSTEM:
+			ok = attr_u32(&x, nfsv4_xstore_bool(vp, "nfsv4.system"));
+			break;
+		case FATTR4_MIMETYPE: {
+			char mime[NFSV4_MIME_MAX];
+			uint32_t l = nfsv4_xstore_mime(vp, mime);
+
+			ok = xdr_u_int32_t(&x, &l) && xdr_opaque(&x, mime, l);
+			break;
+		}
+		case FATTR4_TIME_BACKUP: {
+			struct timespec ts;
+
+			nfsv4_xstore_time(vp, &ts);
+			ok = attr_time(&x, &ts);
+			break;
+		}
+		case FATTR4_QUOTA_AVAIL_HARD:
+		case FATTR4_QUOTA_AVAIL_SOFT:
+		case FATTR4_QUOTA_USED:
+			ok = attr_quota_put(&x, vp, va.va_uid, n);
 			break;
 		case FATTR4_NAMED_ATTR:
 			ok = attr_u32(&x, vp != NULL && cf->cf_attr == 0 &&
@@ -781,7 +877,7 @@ static const uint64_t attr_settable =
     BIT(FATTR4_SIZE) | BIT(FATTR4_ACL) | BIT(FATTR4_MODE) |
     BIT(FATTR4_OWNER) | BIT(FATTR4_OWNER_GROUP) |
     BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_CREATE) |
-    BIT(FATTR4_TIME_MODIFY_SET);
+    BIT(FATTR4_TIME_MODIFY_SET) | attr_stored;
 
 /*
  * Read the fattr4 in the arguments into va, and the mask of what was
@@ -805,7 +901,9 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		acl_free(c->c_setacl);
 		c->c_setacl = NULL;
 	}
-	if (fa->fa_mask.bm_more || (m & ~attr_supported) != 0)
+	c->c_xs.xs_set = 0;
+	if (fa->fa_mask.bm_more ||
+	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	if ((m & ~attr_settable) != 0)
 		return NFS4ERR_INVAL;
@@ -831,6 +929,38 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 			break;
 		case FATTR4_ACL:
 			st = nfsv4_acl_parse(x, &c->c_setacl);
+			break;
+		case FATTR4_ARCHIVE:
+		case FATTR4_HIDDEN:
+		case FATTR4_SYSTEM:
+			if (!xdr_u_int32_t(x, &v) || v > 1)
+				st = NFS4ERR_BADXDR;
+			else {
+				if (n == FATTR4_ARCHIVE)
+					c->c_xs.xs_archive = v;
+				else if (n == FATTR4_HIDDEN)
+					c->c_xs.xs_hidden = v;
+				else
+					c->c_xs.xs_system = v;
+				c->c_xs.xs_set |= BIT(n);
+			}
+			break;
+		case FATTR4_MIMETYPE:
+			if (!xdr_u_int32_t(x, &v))
+				st = NFS4ERR_BADXDR;
+			else if (v > NFSV4_MIME_MAX)
+				st = NFS4ERR_INVAL;
+			else if (!xdr_opaque(x, c->c_xs.xs_mime, v))
+				st = NFS4ERR_BADXDR;
+			else {
+				c->c_xs.xs_mimelen = v;
+				c->c_xs.xs_set |= BIT(n);
+			}
+			break;
+		case FATTR4_TIME_BACKUP:
+			st = attr_parse_nfstime(x, &c->c_xs.xs_backup);
+			if (st == NFS4_OK)
+				c->c_xs.xs_set |= BIT(n);
 			break;
 		case FATTR4_MODE:
 			if (!xdr_u_int32_t(x, &v))

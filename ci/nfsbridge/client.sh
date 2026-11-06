@@ -64,8 +64,7 @@ main() {
 	t /var/tmp/rawrpc udp /export/ffs $G
 	nfsstat -s
 	# nfsd comes back on its ports.
-	pkill -x nfsd; sleep 3
-	ps -ax | grep '[n]fsd' || echo no nfsd
+	t sh $D/stopnfsd.sh
 	t /usr/sbin/nfsd -t -u -n 4
 	sleep 2
 	t mount_nfs -3 -U 127.0.0.1:/export/ffs /mnt/nbr

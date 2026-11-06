@@ -40,7 +40,7 @@
 .Nd NFS file locking daemon
 .Sh SYNOPSIS
 .Nm
-.Op Fl 46
+.Op Fl 46ku
 .Op Fl d Ar debug_level
 .Op Fl g Ar grace_period
 .Sh DESCRIPTION
@@ -55,6 +55,26 @@ typically operates in conjunction with
 Options and operands available for
 .Nm :
 .Bl -tag -width XgXgrace_periodXX
+.It Fl k
+Use the lock manager in the kernel, loading the
+.Nm nlm
+module if need be.
+This is the default, and without that module
+.Nm
+falls back on
+.Fl u .
+.Nm
+then only binds the sockets and hands them over.
+Locks belong to the kernel and survive
+.Nm
+exiting, and the grace period is the sysctl
+.Dv vfs.nlm.grace ,
+set by
+.Fl g .
+.It Fl u
+Keep the locks in this process, as whole-file
+.Xr flock 2
+locks.
 .It Fl 4
 Listen for requests using IPv4.
 Do not listen using IPv6 unless the

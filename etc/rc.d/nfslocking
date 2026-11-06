@@ -24,6 +24,8 @@ stop_precmd=$start_precmd
 status_precmd=$start_precmd
 load_rc_config $name
 load_rc_config_var nfsd nfs_server
+# The lock manager refuses monitored locks without the status monitor.
+checkyesno lockd && statd=YES
 run_rc_command "$arg"
 
 name="lockd"

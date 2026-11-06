@@ -46,9 +46,14 @@ __RCSID("$NetBSD: lockd.c,v 1.13 2019/08/15 08:34:19 kamil Exp $");
  */
 
 #include <sys/types.h>
+#include <sys/module.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
+
+#include <netinet/in.h>
 
 #include <err.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -76,6 +81,8 @@ void	nlm_prog_1(struct svc_req *, SVCXPRT *);
 void	nlm_prog_3(struct svc_req *, SVCXPRT *);
 void	nlm_prog_4(struct svc_req *, SVCXPRT *);
 static void	usage(void) __dead;
+static bool	kernel_available(void);
+static void	kernel_lockd(bool, bool, int) __dead;
 
 static void sigalarm_handler(int);
 
@@ -86,15 +93,16 @@ main(int argc, char **argv)
 {
 	SVCXPRT *transp;
 	int ch, i, minindex, maxindex, s;
-	bool use_ipv4, use_ipv6;
+	bool use_ipv4, use_ipv6, use_kernel = true;
 	struct sigaction sigchild, sigalarm;
 	int grace_period = 30;
+	bool grace_given = false;
 	struct netconfig *nconf;
 	int maxrec = RPC_MAXDATASIZE;
 
 	(void)setprogname(*argv);
 	use_ipv4 = use_ipv6 = false;
-	while ((ch = getopt(argc, argv, "d:g:46")) != (-1)) {
+	while ((ch = getopt(argc, argv, "d:g:ku46")) != (-1)) {
 		switch (ch) {
 		case 'd':
 			debug_level = atoi(optarg);
@@ -109,6 +117,13 @@ main(int argc, char **argv)
 				usage();
 				/* NOTREACHED */
 			}
+			grace_given = true;
+			break;
+		case 'k':
+			use_kernel = true;
+			break;
+		case 'u':
+			use_kernel = false;
 			break;
 		case '4':
 			use_ipv4 = true;
@@ -137,6 +152,11 @@ main(int argc, char **argv)
 			use_ipv4 = use_ipv6 = true;
 		}
 	}
+	if (use_kernel && !kernel_available())
+		warnx("no lock manager in the kernel, doing without");
+	else if (use_kernel)
+		kernel_lockd(use_ipv4, use_ipv6, grace_given ? grace_period : 0);
+
 	if (use_ipv4)
 		minindex = 0;
 	else
@@ -231,10 +251,118 @@ sigalarm_handler(int s)
 	grace_expired = 1;
 }
 
+/*
+ * The sockets of the lock manager in the kernel: bind them, tell the port
+ * mapper and hand them to vfs.nlm.addsock, connections as they arrive,
+ * as nfsd(8) does.  The locks are the kernel's and stay when this exits.
+ */
+static void
+kernel_addsock(int s)
+{
+
+	if (sysctlbyname("vfs.nlm.addsock", NULL, NULL, &s, sizeof(s)) == -1)
+		syslog(LOG_ERR, "vfs.nlm.addsock: %m");
+	(void)close(s);
+}
+
+static bool
+kernel_available(void)
+{
+	modctl_load_t ml;
+
+	if (sysctlbyname("vfs.nlm.grace", NULL, NULL, NULL, 0) == 0)
+		return true;
+	memset(&ml, 0, sizeof(ml));
+	ml.ml_filename = "nlm";
+	return modctl(MODCTL_LOAD, &ml) == 0;
+}
+
+static void
+kernel_lockd(bool use_ipv4, bool use_ipv6, int grace)
+{
+	static const int versions[] = {
+	    NLM_SM, NLM_VERS, NLM_VERSX, NLM_VERS4
+	};
+	struct pollfd pfd[__arraycount(transports)];
+	struct sockaddr_storage ss;
+	struct sockaddr_in *sin = (struct sockaddr_in *)&ss;
+	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)&ss;
+	struct netconfig *nconf;
+	struct netbuf nb;
+	size_t i, j, n = 0;
+	socklen_t len;
+	int s, on = 1;
+
+	if (grace != 0 && sysctlbyname("vfs.nlm.grace", NULL, NULL, &grace,
+	    sizeof(grace)) == -1)
+		err(1, "vfs.nlm.grace");
+
+	for (i = 0; i < __arraycount(transports); i++) {
+		bool v6 = i >= 2, tcp = (i & 1) != 0;
+
+		if (v6 ? !use_ipv6 : !use_ipv4)
+			continue;
+		nconf = getnetconfigent(transports[i]);
+		if (nconf == NULL)
+			errx(1, "cannot get %s netconf.", transports[i]);
+		s = socket(v6 ? AF_INET6 : AF_INET,
+		    tcp ? SOCK_STREAM : SOCK_DGRAM, 0);
+		if (s == -1)
+			err(1, "socket");
+		memset(&ss, 0, sizeof(ss));
+		if (v6) {
+			(void)setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &on,
+			    sizeof(on));
+			sin6->sin6_len = sizeof(*sin6);
+			sin6->sin6_family = AF_INET6;
+		} else {
+			sin->sin_len = sizeof(*sin);
+			sin->sin_family = AF_INET;
+		}
+		if (bind(s, (struct sockaddr *)&ss, ss.ss_len) == -1)
+			err(1, "bind %s", transports[i]);
+		len = sizeof(ss);
+		if (getsockname(s, (struct sockaddr *)&ss, &len) == -1)
+			err(1, "getsockname");
+		nb.maxlen = nb.len = len;
+		nb.buf = &ss;
+		for (j = 0; j < __arraycount(versions); j++)
+			if (!rpcb_set(NLM_PROG, versions[j], nconf, &nb))
+				errx(1, "cannot register %s version %d",
+				    transports[i], versions[j]);
+		freenetconfigent(nconf);
+		if (tcp) {
+			if (listen(s, 64) == -1)
+				err(1, "listen");
+			pfd[n].fd = s;
+			pfd[n++].events = POLLIN;
+		} else if (sysctlbyname("vfs.nlm.addsock", NULL, NULL, &s,
+		    sizeof(s)) == -1)
+			err(1, "vfs.nlm.addsock");
+		else
+			(void)close(s);
+	}
+
+	if (daemon(0, 0) == -1)
+		err(1, "cannot fork");
+	(void)pidfile(NULL);
+	openlog("rpc.lockd", 0, LOG_DAEMON);
+	syslog(LOG_INFO, "Starting, kernel lock manager");
+
+	for (;;) {
+		if (poll(pfd, n, INFTIM) == -1)
+			continue;
+		for (i = 0; i < n; i++)
+			if (pfd[i].revents != 0 &&
+			    (s = accept(pfd[i].fd, NULL, NULL)) != -1)
+				kernel_addsock(s);
+	}
+}
+
 static void
 usage(void)
 {
-	(void)fprintf(stderr, "Usage: %s [-46] [-d debug_level] [-g grace_period]\n",
+	(void)fprintf(stderr, "Usage: %s [-46ku] [-d debug_level] [-g grace_period]\n",
 	    getprogname());
 	exit(1);
 }

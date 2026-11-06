@@ -227,6 +227,10 @@ bool nfsdsock_testbits(struct nfssvc_sock *, int);
 #define	NFS_SRTT(r)	(r)->r_nmp->nm_srtt[nfs_proct[(r)->r_procnum] - 1]
 #define	NFS_SDRTT(r)	(r)->r_nmp->nm_sdrtt[nfs_proct[(r)->r_procnum] - 1]
 
+struct lockf;
+struct vop_advlock_args;
+extern int (*nfs_advlock_nlm)(struct vop_advlock_args *, struct lockf **,
+    off_t);
 extern int nfsrtton;
 extern struct nfsrtt nfsrtt;
 extern const int nfs_proct[];

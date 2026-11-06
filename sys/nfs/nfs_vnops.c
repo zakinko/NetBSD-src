@@ -49,6 +49,7 @@ __KERNEL_RCSID(0, "$NetBSD: nfs_vnops.c,v 1.329 2026/08/08 00:09:25 riastradh Ex
 #include <sys/param.h>
 #include <sys/types.h>
 
+#include <sys/atomic.h>
 #include <sys/bitops.h>
 #include <sys/buf.h>
 #include <sys/condvar.h>
@@ -3255,8 +3256,11 @@ nfs_pathconf(void *v)
 }
 
 /*
- * NFS advisory byte-level locks.
+ * NFS advisory byte-level locks.  Without the lock manager they are local
+ * to this host; it installs itself here when told to, vfs.nlm.client.
  */
+int (*nfs_advlock_nlm)(struct vop_advlock_args *, struct lockf **, off_t);
+
 int
 nfs_advlock(void *v)
 {
@@ -3268,7 +3272,11 @@ nfs_advlock(void *v)
 		int  a_flags;
 	} */ *ap = v;
 	struct nfsnode *np = VTONFS(ap->a_vp);
+	int (*nlm)(struct vop_advlock_args *, struct lockf **, off_t);
 
+	nlm = atomic_load_acquire(&nfs_advlock_nlm);
+	if (nlm != NULL)
+		return (*nlm)(ap, &np->n_lockf, np->n_size);
 	return lf_advlock(ap, &np->n_lockf, np->n_size);
 }
 

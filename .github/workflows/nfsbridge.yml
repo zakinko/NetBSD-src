@@ -71,7 +71,7 @@ jobs:
       - run: |
           ssh netbsd 'mkdir -p /var/tmp/nfsbridge'
           tar -C out -cf - modules | ssh netbsd 'tar -C /var/tmp/nfsbridge -xf -'
-          scp ci/nfsbridge/server.sh ci/nfsbridge/client.sh ci/nfsbridge/rawrpc.c netbsd:/var/tmp/nfsbridge/
+          scp ci/nfsbridge/server.sh ci/nfsbridge/client.sh ci/nfsbridge/stopnfsd.sh ci/nfsbridge/rawrpc.c netbsd:/var/tmp/nfsbridge/
           ssh netbsd 'sh /var/tmp/nfsbridge/server.sh ${{ matrix.mode }}'
           # A panic leaves its backtrace in the buffer a warm boot keeps.
           ssh netbsd 'sysctl -w ddb.onpanic=1 ddb.tee_msgbuf=1; sysctl -w ddb.commandonenter="bt;show all locks;reboot"' || :

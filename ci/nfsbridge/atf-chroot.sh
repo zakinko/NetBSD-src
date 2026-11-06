@@ -1,5 +1,30 @@
 #!/bin/sh
 # Inside the chroot.  Nothing here is cut: the raw logs are the record.
+# What t_rquotad starts with, in the foreground, so that its end is seen.
+diag() {
+	echo "=== rump_server by hand: $1"
+	mkdir -p /var/tmp/diag; cd /var/tmp/diag
+	rm -f fsimage rs.log; newfs -q user -B be -O 1 -s 4000 -F fsimage >/dev/null
+	export RUMP_SERVER=unix://diagsock RUMP_VERBOSE=1
+	rump_server -s -v -lrumpvfs -lrumpdev -lrumpnet -lrumpnet_net \
+	    -lrumpnet_netinet -lrumpnet_netinet6 -lrumpnet_local \
+	    -lrumpnet_shmif -lrumpdev_disk -lrumpfs_ffs -lrumpfs_nfs \
+	    -lrumpfs_nfsserver -d key=/dk,hostpath=fsimage,size=host \
+	    $RUMP_SERVER >rs.log 2>&1 &
+	p=$!
+	sleep 3
+	for a in "create" "linkstr shmbus" "inet 10.1.1.1"; do
+		echo "\$ rump.ifconfig shmif0 $a"
+		rump.ifconfig shmif0 $a; echo "exit $?"
+		kill -0 $p 2>/dev/null && echo server alive || echo server gone
+	done
+	rump.halt 2>/dev/null
+	sleep 1; kill $p 2>/dev/null; wait $p; echo "server status $?"
+	cat rs.log
+	ls -la
+	unset RUMP_SERVER RUMP_VERBOSE
+}
+diag bridge
 cd /usr/tests/fs/nfs
 atf-run | tee /var/tmp/raw.bridge | atf-report
 echo '=== raw, bridge'

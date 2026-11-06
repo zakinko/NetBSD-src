@@ -149,8 +149,6 @@ jobs:
       - name: What failed at 4.2, in the log in case the job does not end
         run: |
           grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
-        run: grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
-        run: SUITE=nfs4.1 PYNFS_ARGS='--minorversion 2 sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
       - name: The 4.1 suite, with the write delegations the client test turned off
         run: |
           ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'

@@ -274,7 +274,7 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 	short type;
 	XDR rb;
 
-	status = nfsv4_file_check(&c->c_cur);
+	status = nfsv4_file_check(c, &c->c_cur);
 	if (status == NFS4_OK)
 		status = lock_type(la->type, &type);
 	if (status != NFS4_OK)
@@ -284,7 +284,7 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 	sst = kmem_zalloc(sizeof(*sst), KM_SLEEP);
 
 	if (la->newowner) {
-		status = nfsv4_seq_stateid(&la->open_stateid, la->open_seqid,
+		status = nfsv4_seq_stateid(c, &la->open_stateid, la->open_seqid,
 		    NFSV4_OP_LOCK, &ost, &seq);
 		if (status != NFS4_OK)
 			goto out;
@@ -297,7 +297,7 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 		mutex_enter(&nfsv4_state_lock);
 		status = nfsv4_stateid_check(&la->open_stateid, ost, vp,
 		    NFSV4_ST_OPEN);
-		if (status == NFS4_OK &&
+		if (status == NFS4_OK && c->c_minor == 0 &&
 		    oo->sw_client->cl_id != la->owner.ow_clientid)
 			status = NFS4ERR_BAD_STATEID;
 		if (status == NFS4_OK) {
@@ -338,7 +338,12 @@ nfsv4_op_lock(struct nfsv4_compound *c, union nfsv4_args *a)
 					if (t->st_open == ost)
 						st = t;
 				}
-				if (st != NULL && seq != NFSV4_SEQ_REPLAY)
+				/*
+				 * RFC 8881 s18.10.3 has this be for a client
+				 * that lost the stateid: it is the same state.
+				 */
+				if (st != NULL && seq != NFSV4_SEQ_REPLAY &&
+				    c->c_minor == 0)
 					seq = NFSV4_SEQ_BAD;
 				else if (seq == NFSV4_SEQ_REPLAY && st == NULL)
 					seq = NFSV4_SEQ_BAD;
@@ -352,7 +357,7 @@ have_owner:
 			goto out;
 		}
 	} else {
-		status = nfsv4_seq_stateid(&la->lock_stateid, la->lock_seqid,
+		status = nfsv4_seq_stateid(c, &la->lock_stateid, la->lock_seqid,
 		    NFSV4_OP_LOCK, &st, &seq);
 		if (status != NFS4_OK)
 			goto out;
@@ -392,8 +397,11 @@ have_owner:
 
 	/* s9.6.2 */
 	if (status == NFS4_OK && la->reclaim)
-		status = nfsv4_reclaim_check(lo->sw_client);
-	else if (status == NFS4_OK && nfsv4_grace_active())
+		status = c->c_minor != 0 && c->c_client->cl_reclaimed ?
+		    NFS4ERR_NO_GRACE : nfsv4_reclaim_check(lo->sw_client);
+	/* RFC 8881 s18.51.3 */
+	else if (status == NFS4_OK && (nfsv4_grace_active() ||
+	    (c->c_minor != 0 && !c->c_client->cl_reclaimed)))
 		status = NFS4ERR_GRACE;
 	if (status == NFS4_OK)
 		status = lock_range(la->offset, la->length, &fl);
@@ -412,6 +420,7 @@ have_owner:
 		} else
 			st->st_seqid++;
 		nfsv4_stateid_out(st, &si);
+		c->c_curst = si;
 		mutex_exit(&nfsv4_state_lock);
 		xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 		(void)nfsv4_xdr_stateid(&rb, &si);
@@ -445,7 +454,7 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int rlen;
 	int error;
 
-	status = nfsv4_file_check(&c->c_cur);
+	status = nfsv4_file_check(c, &c->c_cur);
 	if (status == NFS4_OK)
 		status = lock_type(la->type, &type);
 	if (status == NFS4_OK)
@@ -456,7 +465,7 @@ nfsv4_op_lockt(struct nfsv4_compound *c, union nfsv4_args *a)
 		return status;
 
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_client_get(la->owner.ow_clientid, &cl);
+	status = nfsv4_client_cur(c, la->owner.ow_clientid, &cl);
 	lo = NULL;
 	if (status == NFS4_OK)
 		lo = nfsv4_owner_find(cl, NFSV4_OWNER_LOCK, la->owner.ow_data,
@@ -502,13 +511,13 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 	int error;
 	XDR rb;
 
-	status = nfsv4_file_check(&c->c_cur);
+	status = nfsv4_file_check(c, &c->c_cur);
 	if (status == NFS4_OK)
 		status = lock_type(la->type, &type);
 	if (status != NFS4_OK)
 		return status;
 
-	status = nfsv4_seq_stateid(&la->stateid, la->seqid, NFSV4_OP_LOCKU,
+	status = nfsv4_seq_stateid(c, &la->stateid, la->seqid, NFSV4_OP_LOCKU,
 	    &st, &seq);
 	if (status != NFS4_OK)
 		return status;
@@ -535,6 +544,7 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 		mutex_enter(&nfsv4_state_lock);
 		st->st_seqid++;
 		nfsv4_stateid_out(st, &si);
+		c->c_curst = si;
 		mutex_exit(&nfsv4_state_lock);
 		xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 		(void)nfsv4_xdr_stateid(&rb, &si);

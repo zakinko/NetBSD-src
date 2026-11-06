@@ -32,6 +32,9 @@
  *
  * A client finds out by NFS4ERR_STALE_CLIENTID that the server restarted
  * and it lost everything, s9.6.2.  nfsv4_stable.c has what remains.
+ *
+ * Under version 4.1 the same records serve, by RFC 8881 s8: seqids are
+ * ignored and the owners are serialized only to hold state still.
  */
 
 #include <sys/cdefs.h>
@@ -92,8 +95,8 @@ lease_end(void)
 	return time_uptime + NFSV4_LEASE;
 }
 
-static uid_t
-client_principal(const struct nfsv4_compound *c)
+uid_t
+nfsv4_client_principal(const struct nfsv4_compound *c)
 {
 	kauth_cred_t cred = c->c_rq->rq_cred;
 
@@ -115,7 +118,7 @@ nfsv4_client_get(uint64_t id, struct nfsv4_client **clp)
 	if ((uint32_t)(id >> 32) != nfsv4_boot)
 		return NFS4ERR_STALE_CLIENTID;
 	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
-		if (cl->cl_id == id && cl->cl_confirmed)
+		if (cl->cl_id == id && cl->cl_confirmed && cl->cl_minor == 0)
 			break;
 	}
 	if (cl == NULL)
@@ -125,6 +128,27 @@ nfsv4_client_get(uint64_t id, struct nfsv4_client **clp)
 	cl->cl_expire = lease_end();
 	if (nfsv4_lease_moved(cl))
 		return NFS4ERR_LEASE_MOVED;
+	*clp = cl;
+	return NFS4_OK;
+}
+
+/*
+ * The client of a request.  Under a session it is the session's, and
+ * the id in the arguments means nothing, RFC 8881 s18.16.3 and s18.10.3.
+ */
+uint32_t
+nfsv4_client_cur(struct nfsv4_compound *c, uint64_t id,
+    struct nfsv4_client **clp)
+{
+	struct nfsv4_client *cl = c->c_client;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (c->c_minor == 0)
+		return nfsv4_client_get(id, clp);
+	if (cl->cl_expired)
+		return NFS4ERR_EXPIRED;
+	cl->cl_expire = lease_end();
 	*clp = cl;
 	return NFS4_OK;
 }
@@ -219,6 +243,9 @@ nfsv4_seq_check(const struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op)
 {
 	uint32_t next;
 
+	/* RFC 8881 s18.16.3 and the like: seqids are ignored. */
+	if (sw->sw_client->cl_minor != 0)
+		return NFSV4_SEQ_GO;
 	next = sw->sw_seqid + 1;
 	if (next == 0)
 		next = 1;
@@ -262,6 +289,14 @@ nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
 	char *buf = NULL, *old = NULL;
 	u_int oldlen = 0;
 	bool keep;
+
+	/* RFC 8881 s2.10.6: the slot replays, the owner has nothing to. */
+	if (sw->sw_client->cl_minor != 0) {
+		mutex_enter(&nfsv4_state_lock);
+		nfsv4_owner_idle(sw);
+		mutex_exit(&nfsv4_state_lock);
+		return;
+	}
 
 	switch (status) {
 	case NFS4ERR_STALE_CLIENTID:
@@ -586,7 +621,8 @@ nfsv4_stateid_out(const struct nfsv4_state *st, struct nfsv4_stateid *si)
 
 /* The state a stateid names, with no regard to its seqid or its file. */
 uint32_t
-nfsv4_stateid_lookup(const struct nfsv4_stateid *si, struct nfsv4_state **stp)
+nfsv4_stateid_lookup(const struct nfsv4_compound *c,
+    const struct nfsv4_stateid *si, struct nfsv4_state **stp)
 {
 	struct nfsv4_state *st;
 	uint64_t other;
@@ -603,9 +639,13 @@ nfsv4_stateid_lookup(const struct nfsv4_stateid *si, struct nfsv4_state **stp)
 		    (be32dec(si->si_other) == UINT32_MAX &&
 		    other == UINT64_MAX))
 			return NFS4ERR_BAD_STATEID;
-		return NFS4ERR_STALE_STATEID;
+		/* RFC 8881 s15.1.16.5: the error is moot under a session. */
+		return c->c_minor != 0 ? NFS4ERR_BAD_STATEID :
+		    NFS4ERR_STALE_STATEID;
 	}
-	if ((st = nfsv4_state_byother(other)) != NULL) {
+	/* RFC 8881 s8.2.4: another client's is unknown. */
+	if ((st = nfsv4_state_byother(other)) != NULL &&
+	    (c->c_minor == 0 || st->st_owner->sw_client == c->c_client)) {
 		*stp = st;
 		return NFS4_OK;
 	}
@@ -680,6 +720,21 @@ client_release(struct nfsv4_client *cl, struct nfsv4_reap *reap)
 	}
 }
 
+/* Does cl hold anything, or have a stateid left to give back. */
+bool
+nfsv4_client_has_state(const struct nfsv4_client *cl)
+{
+	const struct nfsv4_owner_s *sw;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+		if (!LIST_EMPTY(&sw->sw_states))
+			return true;
+	}
+	return false;
+}
+
 /* Forget cl.  Its owners must be idle. */
 static void
 client_free(struct nfsv4_client *cl)
@@ -689,7 +744,9 @@ client_free(struct nfsv4_client *cl)
 	struct nfsv4_state *st;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
+	KASSERT(cl->cl_refs == 0);
 
+	nfsv4_session_drop_all(cl);
 	SLIST_INIT(&reap);
 	while ((sw = LIST_FIRST(&cl->cl_owners)) != NULL) {
 		while ((st = LIST_FIRST(&sw->sw_states)) != NULL) {
@@ -774,7 +831,7 @@ lease_thread(void *arg)
 				}
 				if (time_uptime <= cl->cl_expire)
 					continue;
-				if (!client_owners_idle(cl))
+				if (cl->cl_refs != 0 || !client_owners_idle(cl))
 					continue;
 				if (!cl->cl_confirmed ||
 				    time_uptime > cl->cl_expire +
@@ -828,6 +885,7 @@ nfsv4_state_init(void)
 	nfsv4_counter = 0;
 	nfsv4_dying = false;
 	nfsv4_deleg_init();
+	nfsv4_session_init();
 	/*
 	 * Each load is a new instance of the server: stale stateids and
 	 * client IDs must be seen as such, s9.1.1.  A second would do, as
@@ -854,6 +912,7 @@ nfsv4_state_fini(void)
 	while ((cl = LIST_FIRST(&nfsv4_clients)) != NULL)
 		client_free(cl);
 	mutex_exit(&nfsv4_state_lock);
+	nfsv4_session_fini();
 	cv_destroy(&nfsv4_state_cv);
 	mutex_destroy(&nfsv4_state_lock);
 }
@@ -865,17 +924,78 @@ client_newverf(struct nfsv4_client *cl)
 	be64enc(cl->cl_confirm.v_data, ++nfsv4_counter);
 }
 
-static struct nfsv4_client *
-client_find(const uint8_t *id, uint32_t len, bool confirmed)
+struct nfsv4_client *
+nfsv4_client_find(const uint8_t *id, uint32_t len, bool confirmed,
+    uint32_t minor)
 {
 	struct nfsv4_client *cl;
 
 	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
 		if (cl->cl_confirmed == confirmed && cl->cl_idlen == len &&
+		    (cl->cl_minor != 0) == (minor != 0) &&
 		    memcmp(cl->cl_idstr, id, len) == 0)
 			return cl;
 	}
 	return NULL;
+}
+
+/* By client ID, whether confirmed or not, for version 4.1. */
+struct nfsv4_client *
+nfsv4_client_byid41(uint64_t id)
+{
+	struct nfsv4_client *cl;
+
+	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
+		if (cl->cl_id == id && cl->cl_minor != 0 && !cl->cl_retired)
+			return cl;
+	}
+	return NULL;
+}
+
+uint64_t
+nfsv4_clientid_new(void)
+{
+
+	return ((uint64_t)nfsv4_boot << 32) | (uint32_t)++nfsv4_counter;
+}
+
+/* Enter a record the caller filled in, with a lease. */
+struct nfsv4_client *
+nfsv4_client_insert(struct nfsv4_client *n)
+{
+
+	n->cl_expire = lease_end();
+	LIST_INIT(&n->cl_owners);
+	LIST_INIT(&n->cl_sessions);
+	LIST_INSERT_HEAD(&nfsv4_clients, n, cl_list);
+	return n;
+}
+
+/*
+ * RFC 8881 s18.35.4: end a record that something replaced.  Nothing finds
+ * it from now on, its sessions go at once, and its locks once its owners
+ * are idle.  The lease scan frees the rest.
+ */
+void
+nfsv4_client_retire(struct nfsv4_client *cl)
+{
+	struct nfsv4_reap reap;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	cl->cl_retired = true;
+	cl->cl_idlen = UINT32_MAX;
+	cl->cl_expired = true;
+	cl->cl_expire = time_uptime - NFSV4_TOMB_TIME - 1;
+	cl->cl_refs++;
+	nfsv4_session_drop_all(cl);
+	client_wait_idle(cl);
+	SLIST_INIT(&reap);
+	client_release(cl, &reap);
+	mutex_exit(&nfsv4_state_lock);
+	nfsv4_reap_finish(&reap);
+	mutex_enter(&nfsv4_state_lock);
+	cl->cl_refs--;
 }
 
 /*
@@ -890,15 +1010,15 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_setclientid *sa = &a->setclientid;
 	struct nfsv4_client *conf, *unconf, *n, *dead = NULL;
 	struct nfsv4_clientaddr ca;
-	uid_t uid = client_principal(c);
+	uid_t uid = nfsv4_client_principal(c);
 	uint64_t id;
 	struct nfsv4_verifier verf;
 
 	n = kmem_zalloc(sizeof(*n), KM_SLEEP);
 
 	mutex_enter(&nfsv4_state_lock);
-	conf = client_find(sa->id, sa->idlen, true);
-	unconf = client_find(sa->id, sa->idlen, false);
+	conf = nfsv4_client_find(sa->id, sa->idlen, true, 0);
+	unconf = nfsv4_client_find(sa->id, sa->idlen, false, 0);
 
 	/* What expired is of no use to compare with. */
 	if (conf != NULL && (conf->cl_expired ||
@@ -932,7 +1052,7 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (dead != NULL) {
 		client_wait_idle(dead);
 		/* client_free() drops the lock; it is still ours to free. */
-		if (client_find(sa->id, sa->idlen, true) == dead)
+		if (nfsv4_client_find(sa->id, sa->idlen, true, 0) == dead)
 			client_free(dead);
 	}
 
@@ -948,11 +1068,9 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	n->cl_connid = c->c_rq->rq_connid;
 	n->cl_idlen = sa->idlen;
 	memcpy(n->cl_idstr, sa->id, sa->idlen);
-	n->cl_expire = lease_end();
-	LIST_INIT(&n->cl_owners);
 	client_newverf(n);
 	verf = n->cl_confirm;
-	LIST_INSERT_HEAD(&nfsv4_clients, n, cl_list);
+	(void)nfsv4_client_insert(n);
 	mutex_exit(&nfsv4_state_lock);
 
 	return xdr_u_int64_t(c->c_rx, &id) &&
@@ -967,7 +1085,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	    &a->setclientid_confirm;
 	struct nfsv4_client *cl, *conf = NULL, *unconf = NULL, *old;
 	struct nfsv4_owner_s *spare;
-	uid_t uid = client_principal(c);
+	uid_t uid = nfsv4_client_principal(c);
 	uint32_t st;
 
 	spare = kmem_zalloc(sizeof(*spare), KM_SLEEP);
@@ -1004,7 +1122,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 			goto out;
 		}
 		/* { *, x, c, k, s }, and any { *, x, d, *, t } goes. */
-		old = client_find(unconf->cl_idstr, unconf->cl_idlen, true);
+		old = nfsv4_client_find(unconf->cl_idstr, unconf->cl_idlen, true, 0);
 		if (old != NULL) {
 			struct nfsv4_reap reap;
 
@@ -1014,8 +1132,8 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 			 * finds.
 			 */
 			client_wait_idle(old);
-			if (client_find(unconf->cl_idstr, unconf->cl_idlen,
-			    true) == old) {
+			if (nfsv4_client_find(unconf->cl_idstr,
+			    unconf->cl_idlen, true, 0) == old) {
 				old->cl_idlen = UINT32_MAX;
 				old->cl_expired = true;
 				old->cl_expire = time_uptime;
@@ -1059,7 +1177,7 @@ nfsv4_op_renew(struct nfsv4_compound *c, union nfsv4_args *a)
 		cl->cl_movedack = nfsv4_moved_gen();
 	st = nfsv4_client_get(a->clientid.clientid, &cl);
 	/* s16.28.5: only the principal; open files are not looked for. */
-	if (st == NFS4_OK && cl->cl_uid != client_principal(c))
+	if (st == NFS4_OK && cl->cl_uid != nfsv4_client_principal(c))
 		st = NFS4ERR_ACCESS;
 	if (st == NFS4_OK) {
 		cl->cl_connid = c->c_rq->rq_connid;

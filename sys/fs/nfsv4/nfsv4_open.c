@@ -58,14 +58,28 @@ __KERNEL_RCSID(0, "$NetBSD$");
 				 (a) <= OPEN4_SHARE_ACCESS_BOTH)
 #define	OPEN4_DENY_OK(d)	((d) <= OPEN4_SHARE_DENY_BOTH)
 
-/* s16.23.4 and s16.36: what READ, WRITE and COMMIT say of other types. */
+/* RFC 8881 s18.16.1: what share_access may hold beside the access. */
+#define	OPEN4_WANT_FLAGS	\
+	(OPEN4_SHARE_ACCESS_WANT_SIGNAL_DELEG_WHEN_RESRC_AVAIL | \
+	 OPEN4_SHARE_ACCESS_WANT_PUSH_DELEG_WHEN_UNCONTENDED)
+
+/*
+ * s16.23.4 and s16.36: what READ, WRITE and COMMIT say of other types.
+ * RFC 8881 s18.22.3 and the like: a symbolic link has an error of its
+ * own, and the rest NFS4ERR_WRONG_TYPE, s15.1.2.9.
+ */
 uint32_t
-nfsv4_file_check(const struct nfsv4_cfh *cf)
+nfsv4_file_check(const struct nfsv4_compound *c, const struct nfsv4_cfh *cf)
 {
 
 	if (cf->cf_vp == NULL || cf->cf_vp->v_type == VDIR)
 		return NFS4ERR_ISDIR;
-	return cf->cf_vp->v_type == VREG ? NFS4_OK : NFS4ERR_INVAL;
+	if (cf->cf_vp->v_type == VREG)
+		return NFS4_OK;
+	if (c->c_minor == 0)
+		return NFS4ERR_INVAL;
+	return cf->cf_vp->v_type == VLNK ? NFS4ERR_SYMLINK :
+	    NFS4ERR_WRONG_TYPE;
 }
 
 /* The change attribute of a locked directory, for change_info4. */
@@ -125,6 +139,10 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 			if (st != NFS4_OK)
 				return st;
 		}
+		/* RFC 8881 s18.16.3 */
+		if (oa->createmode == EXCLUSIVE4_1 &&
+		    (set & ~nfsv4_attr_exclcreat) != 0)
+			return NFS4ERR_INVAL;
 	} else if (dvp == NULL)
 		/*
 		 * All that a pseudo file system holds is directories,
@@ -162,7 +180,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		VOP_ABORTOP(nd.ni_dvp, &nd.ni_cnd);
 		if (error == 0 && oa->createmode == GUARDED4)
 			error = EEXIST;
-		if (error == 0 && oa->createmode == EXCLUSIVE4) {
+		if (error == 0 && (oa->createmode == EXCLUSIVE4 ||
+		    oa->createmode == EXCLUSIVE4_1)) {
 			verf_to_time(&oa->createverf, &ts);
 			error = VOP_GETATTR(vp, &cva, cf->cf_cred);
 			if (error == 0 && timespeccmp(&cva.va_atime, &ts, !=))
@@ -210,10 +229,11 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	*createdp = true;
 
 	/* The rest of what was asked for, s16.16.5. */
-	if (oa->createmode == EXCLUSIVE4) {
-		vattr_null(&sva);
+	if (oa->createmode == EXCLUSIVE4 || oa->createmode == EXCLUSIVE4_1) {
+		if (oa->createmode == EXCLUSIVE4)
+			vattr_null(&sva);
 		verf_to_time(&oa->createverf, &sva.va_atime);
-		set = 1ULL << FATTR4_TIME_ACCESS_SET;
+		set |= 1ULL << FATTR4_TIME_ACCESS_SET;
 	}
 	if (sva.va_size != VNOVAL || sva.va_uid != VNOVAL ||
 	    sva.va_gid != VNOVAL || sva.va_atime.tv_sec != VNOVAL ||
@@ -241,13 +261,17 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 /* s16.16.5, on a file that exists: what it is, and may it be opened. */
 static uint32_t
-open_access(const struct nfsv4_cfh *cf, struct vnode *vp, uint32_t access)
+open_access(const struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
+    struct vnode *vp, uint32_t access)
 {
 	struct nfsv4_cfh t;
 	int error;
 
 	if (vp->v_type == VDIR)
 		return NFS4ERR_ISDIR;
+	/* RFC 8881 s18.16.4 */
+	if (c->c_minor != 0 && vp->v_type != VREG && vp->v_type != VLNK)
+		return NFS4ERR_WRONG_TYPE;
 	if (vp->v_type != VREG)
 		return NFS4ERR_SYMLINK;
 	t = *cf;
@@ -502,38 +526,58 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		if (cf->cf_attr != 0)
 			return open_attr(c, oa, sw, spare, sparef, rlen);
 		break;
+	case CLAIM_FH:
+		if (nfsv4_grace_active())
+			return NFS4ERR_GRACE;
+		break;
 	case CLAIM_PREVIOUS:
 		return open_previous(c, oa, sw, spare, sparef, ds, rlen);
 	case CLAIM_DELEGATE_CUR:
 	case CLAIM_DELEGATE_PREV:
 		break;
-	default:
+	case CLAIM_DELEG_CUR_FH:
+		return NFS4ERR_BAD_STATEID;
+	default:			/* s16.16.5 */
 		return NFS4ERR_NOTSUPP;
 	}
-	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
+	/* RFC 8881 s18.51.3 */
+	if (c->c_minor != 0 && !sw->sw_client->cl_reclaimed)
+		return NFS4ERR_GRACE;
+	if (oa->claim == CLAIM_FH) {
+		/* RFC 8881 s18.16.3: to create takes a name. */
+		if (oa->opentype == OPEN4_CREATE)
+			return NFS4ERR_INVAL;
+		if (cf->cf_vp == NULL)
+			return NFS4ERR_ISDIR;
+	} else if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
 		return cf->cf_vp->v_type == VLNK ? NFS4ERR_SYMLINK :
 		    NFS4ERR_NOTDIR;
 	if (!OPEN4_ACCESS_OK(oa->share_access) ||
 	    !OPEN4_DENY_OK(oa->share_deny))
 		return NFS4ERR_INVAL;	/* s16.16.6 */
-	st = nfsv4_name_check(&oa->file);
-	if (st != NFS4_OK)
-		return st;
 
-	st = open_vnode(c, oa, &vp, &ci, &set, &created);
-	if (st != NFS4_OK)
-		return st;
+	if (oa->claim == CLAIM_FH) {
+		vp = cf->cf_vp;
+		vref(vp);
+	} else {
+		st = nfsv4_name_check(&oa->file);
+		if (st != NFS4_OK)
+			return st;
+		st = open_vnode(c, oa, &vp, &ci, &set, &created);
+		if (st != NFS4_OK)
+			return st;
+	}
 	trunc = !created && set != 0;
 	if (trunc)
 		set = 0;
 
 	if (!created) {
-		st = open_access(cf, vp, oa->share_access);
+		st = open_access(c, cf, vp, oa->share_access);
 		if (st != NFS4_OK)
 			goto bad;
 	}
 	if (oa->claim == CLAIM_DELEGATE_CUR)
-		st = nfsv4_deleg_claim_cur(sw->sw_client,
+		st = nfsv4_deleg_claim_cur(c, sw->sw_client,
 		    &oa->delegate_stateid, vp);
 	else if (oa->claim == CLAIM_DELEGATE_PREV) {
 		st = nfsv4_deleg_claim_prev(sw->sw_client, vp, &od);
@@ -588,6 +632,14 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	nfsv4_cfh_copy(cf, &fc);
 	nfsv4_cfh_clear(&fc);
 	vrele(vp);
+	/* RFC 8881 s18.16.3 */
+	if (oa->want != 0 && od.od_type == OPEN_DELEGATE_NONE) {
+		od.od_type = OPEN_DELEGATE_NONE_EXT;
+		od.od_why = oa->want == OPEN4_SHARE_ACCESS_WANT_NO_DELEG ?
+		    WND4_NOT_WANTED :
+		    oa->want == OPEN4_SHARE_ACCESS_WANT_CANCEL ?
+		    WND4_CANCELLED : WND4_RESOURCE;
+	}
 	return open_reply(c, sw, &si, &ci, set, &od, rlen);
 bad:
 	nfsv4_cfh_clear(&fc);
@@ -635,7 +687,7 @@ nfsv4_seq_replay(struct nfsv4_compound *c, struct nfsv4_owner_s *sw, bool fh)
 uint32_t
 nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 {
-	const struct nfsv4_args_open *oa = &a->open;
+	struct nfsv4_args_open *oa = &a->open;
 	struct nfsv4_owner_s *sw, *ssw;
 	struct nfsv4_client *cl;
 	struct nfsv4_state *sst, *st;
@@ -647,6 +699,19 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int rlen = 0;
 	bool want_deleg;
 
+	/* RFC 8881 s18.16.1: the want is not part of the share. */
+	oa->want = 0;
+	if (c->c_minor != 0) {
+		oa->want = oa->share_access &
+		    OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
+		if ((oa->share_access & ~(OPEN4_SHARE_ACCESS_MASK |
+		    OPEN4_SHARE_ACCESS_WANT_DELEG_MASK |
+		    OPEN4_WANT_FLAGS)) != 0 ||
+		    oa->want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
+			return NFS4ERR_INVAL;
+		oa->share_access &= OPEN4_SHARE_ACCESS_MASK;
+	}
+
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
 	sst = kmem_zalloc(sizeof(*sst), KM_SLEEP);
 	sf = kmem_zalloc(sizeof(*sf), KM_SLEEP);
@@ -654,7 +719,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 	SLIST_INIT(&reap);
 
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_client_get(oa->owner.ow_clientid, &cl);
+	status = nfsv4_client_cur(c, oa->owner.ow_clientid, &cl);
 	if (status != NFS4_OK) {
 		mutex_exit(&nfsv4_state_lock);
 		goto out;
@@ -666,6 +731,7 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (sw == NULL) {
 		sw = nfsv4_owner_add(cl, &ssw, NFSV4_OWNER_OPEN,
 		    oa->owner.ow_data, oa->owner.ow_len);
+		sw->sw_confirmed = cl->cl_minor != 0;	/* no OPEN_CONFIRM */
 		nfsv4_owner_busy(sw);
 		seq = NFSV4_SEQ_GO;
 	} else {
@@ -729,14 +795,15 @@ out:
  * NFS4_OK with nothing more to do but send the old reply.
  */
 uint32_t
-nfsv4_seq_stateid(const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
+nfsv4_seq_stateid(const struct nfsv4_compound *c,
+    const struct nfsv4_stateid *si, uint32_t seqid, uint32_t op,
     struct nfsv4_state **stp, enum nfsv4_seq *seqp)
 {
 	struct nfsv4_state *st;
 	uint32_t status;
 
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_stateid_lookup(si, &st);
+	status = nfsv4_stateid_lookup(c, si, &st);
 	/* It has no seqid to take up, and is not good for any of these. */
 	if (status == NFS4_OK && st->st_type == NFSV4_ST_DELEG)
 		status = NFS4ERR_BAD_STATEID;
@@ -771,7 +838,7 @@ nfsv4_op_open_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status;
 	XDR rb;
 
-	status = nfsv4_seq_stateid(&oa->stateid, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
+	status = nfsv4_seq_stateid(c, &oa->stateid, oa->seqid, NFSV4_OP_OPEN_CONFIRM,
 	    &st, &seq);
 	if (status != NFS4_OK)
 		return status;
@@ -844,7 +911,10 @@ nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status, access = oa->share_access, deny = oa->share_deny;
 	XDR rb;
 
-	status = nfsv4_seq_stateid(&oa->stateid, oa->seqid,
+	if (c->c_minor != 0)
+		access &= ~(OPEN4_SHARE_ACCESS_WANT_DELEG_MASK |
+		    OPEN4_WANT_FLAGS);
+	status = nfsv4_seq_stateid(c, &oa->stateid, oa->seqid,
 	    NFSV4_OP_OPEN_DOWNGRADE, &st, &seq);
 	if (status != NFS4_OK)
 		return status;
@@ -868,6 +938,7 @@ nfsv4_op_open_downgrade(struct nfsv4_compound *c, union nfsv4_args *a)
 		st->st_deny = deny;
 		st->st_seqid++;
 		nfsv4_stateid_out(st, &si);
+		c->c_curst = si;
 	}
 	mutex_exit(&nfsv4_state_lock);
 
@@ -896,8 +967,8 @@ nfsv4_op_close(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status;
 	XDR rb;
 
-	status = nfsv4_seq_stateid(&ca->stateid, ca->seqid, NFSV4_OP_CLOSE, &st,
-	    &seq);
+	status = nfsv4_seq_stateid(c, &ca->stateid, ca->seqid, NFSV4_OP_CLOSE,
+	    &st, &seq);
 	if (status != NFS4_OK)
 		return status;
 	sw = st->st_owner;
@@ -928,11 +999,22 @@ again:
 			nfsv4_state_unlink(ls, &reap, false);
 		if (sw->sw_closed != NULL)
 			nfsv4_state_unlink(sw->sw_closed, &reap, false);
-		st->st_seqid++;
-		nfsv4_stateid_out(st, &si);
-		nfsv4_state_unlink(st, &reap, true);
-		st->st_closed = true;
-		sw->sw_closed = st;
+		if (c->c_minor != 0) {
+			/*
+			 * RFC 8881 s18.2.4: nothing is left to resend to,
+			 * and the invalid special stateid is the answer.
+			 */
+			nfsv4_state_unlink(st, &reap, false);
+			si.si_seqid = UINT32_MAX;
+			memset(si.si_other, 0, sizeof(si.si_other));
+		} else {
+			st->st_seqid++;
+			nfsv4_stateid_out(st, &si);
+			nfsv4_state_unlink(st, &reap, true);
+			st->st_closed = true;
+			sw->sw_closed = st;
+		}
+		c->c_curst = si;
 	}
 	mutex_exit(&nfsv4_state_lock);
 	nfsv4_reap_finish(&reap);
@@ -975,7 +1057,7 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 		if (!write && si->si_seqid != 0)
 			goto out;
 	} else {
-		status = nfsv4_stateid_lookup(si, &st);
+		status = nfsv4_stateid_lookup(c, si, &st);
 		if (status != NFS4_OK)
 			goto out;
 		status = nfsv4_stateid_check(si, st, vp, 0);
@@ -1034,7 +1116,7 @@ nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st, count, n, eof;
 	int error;
 
-	st = nfsv4_file_check(cf);
+	st = nfsv4_file_check(c, cf);
 	if (st != NFS4_OK)
 		return st;
 	st = nfsv4_io_check(c, &ra->stateid, false);
@@ -1112,7 +1194,7 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int end;
 	int error, ioflags;
 
-	st = nfsv4_file_check(cf);
+	st = nfsv4_file_check(c, cf);
 	if (st != NFS4_OK)
 		return st;
 	if (wa->stable > FILE_SYNC4)
@@ -1188,7 +1270,7 @@ nfsv4_op_commit(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st;
 	int error;
 
-	st = nfsv4_file_check(cf);
+	st = nfsv4_file_check(c, cf);
 	if (st != NFS4_OK)
 		return st;
 	/* s16.3.4: a count of 0 is to the end of the file. */

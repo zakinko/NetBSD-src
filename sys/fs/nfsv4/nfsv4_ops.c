@@ -142,7 +142,8 @@ nfsv4_op_readlink(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	/* RFC 7530 s16.25.5 */
 	if (vp == NULL || vp->v_type != VLNK)
-		return NFS4ERR_INVAL;
+		/* RFC 8881 s18.24.3 */
+		return c->c_minor != 0 ? NFS4ERR_WRONG_TYPE : NFS4ERR_INVAL;
 
 	buf = kmem_alloc(MAXPATHLEN, KM_SLEEP);
 	iov.iov_base = buf;
@@ -534,6 +535,25 @@ nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 	nfsv4_cfh_clear(&to);
 	if (st != NFS4_OK)
 		return st;
+	/* RFC 8881 s18.29.3 */
+	if (c->c_minor != 0)
+		nfsv4_cfh_clear(cf);
+	return xdr_u_int32_t(c->c_rx, &n) && xdr_u_int32_t(c->c_rx, &sys) &&
+	    xdr_u_int32_t(c->c_rx, &none) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/* RFC 8881 s18.45.  The flavors are those of everything, as above. */
+uint32_t
+nfsv4_op_secinfo_no_name(struct nfsv4_compound *c, union nfsv4_args *a)
+{
+	uint32_t st, n = 2, sys = ONCRPC_AUTH_SYS, none = ONCRPC_AUTH_NONE;
+
+	if (a->u32.value == SECINFO_STYLE4_PARENT) {
+		st = nfsv4_op_lookupp(c, a);
+		if (st != NFS4_OK)
+			return st;
+	}
+	nfsv4_cfh_clear(&c->c_cur);
 	return xdr_u_int32_t(c->c_rx, &n) && xdr_u_int32_t(c->c_rx, &sys) &&
 	    xdr_u_int32_t(c->c_rx, &none) ? NFS4_OK : NFS4ERR_RESOURCE;
 }

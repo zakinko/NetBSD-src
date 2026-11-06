@@ -37,6 +37,9 @@
 
 struct mount;
 struct nameidata;
+struct nfsv4_client;
+struct nfsv4_session;
+struct nfsv4_slot;
 struct vattr;
 struct vnode;
 
@@ -99,7 +102,8 @@ struct nfsv4_attrov {
 
 /*
  * What is being done for one COMPOUND.  Its operations run in order in
- * one thread, so nothing here needs a lock.
+ * one thread, so nothing here needs a lock.  c_sess and c_client are
+ * held from SEQUENCE until the COMPOUND ends.
  */
 struct nfsv4_compound {
 	struct oncrpc_req *c_rq;
@@ -115,6 +119,21 @@ struct nfsv4_compound {
 	struct nfsv4_attrov c_ov;	/* for the GETATTR going on */
 	bool		c_probed;	/* fs_locations of an absent fs, s9.14.3 */
 	uint32_t	c_minor;
+	uint32_t	c_numops;
+	uint32_t	c_opi;		/* index of the current operation */
+	struct nfsv4_session *c_sess;
+	struct nfsv4_client *c_client;
+	struct nfsv4_slot *c_slot;	/* NULL for a retry, or no SEQUENCE */
+	bool		c_seqdone;	/* nfsv4_seq_begin() ran */
+	uint32_t	c_seqstatus;	/* and said this */
+	bool		c_cachethis;
+	bool		c_uncached;	/* a retry with no reply kept */
+	uint32_t	c_seqflags;	/* sr_status_flags */
+	uint32_t	c_maxslot;	/* sr_highest_slotid */
+	uint32_t	c_resmax;	/* size of reply allowed, or 0 */
+	uint32_t	c_cachemax;	/* and to be cached, if c_cachethis */
+	struct nfsv4_stateid c_curst;	/* RFC 8881 s16.2.3.1.2 */
+	struct nfsv4_stateid c_savest;
 };
 
 /* A COMPOUND in the duplicate request cache's hands; see nfsv4_drc.c. */
@@ -154,6 +173,13 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
  */
 #define	NFSV4_ATTRBUF		8192
 
+void	nfsv4_session_init(void);
+void	nfsv4_session_fini(void);
+void	nfsv4_session_drop_all(struct nfsv4_client *);
+uint32_t nfsv4_seq_begin(struct nfsv4_compound *,
+	    const struct nfsv4_args_sequence *, char **, u_int *);
+void	nfsv4_seq_end(struct nfsv4_compound *, bool);
+
 void	nfsv4_drc_init(void);
 void	nfsv4_drc_fini(void);
 bool	nfsv4_drc_start(struct oncrpc_req *, struct nfsv4_drc *);
@@ -173,7 +199,8 @@ uint32_t nfsv4_attr_parse(struct nfsv4_compound *,
 	    const struct nfsv4_fattr *, struct vattr *, uint64_t *);
 bool	nfsv4_attr_put_mask(XDR *, uint64_t);
 
-uint32_t nfsv4_file_check(const struct nfsv4_cfh *);
+uint32_t nfsv4_file_check(const struct nfsv4_compound *,
+	    const struct nfsv4_cfh *);
 int	nfsv4_dir_change(struct vnode *, kauth_cred_t, uint64_t *);
 uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
@@ -243,6 +270,18 @@ int	nfsv4_lookup_vp(struct vnode *, const char *, kauth_cred_t,
 int	nfsv4_pseudo_walk(struct nfsv4_compound *, const char *, size_t,
 	    int (*)(struct mount *, const char *, size_t, void *), void *);
 
+uint32_t nfsv4_op_backchannel_ctl(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_bind_conn(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_create_session(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_destroy_clientid(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_destroy_session(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_exchange_id(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_free_stateid(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_reclaim_complete(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_secinfo_no_name(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_sequence(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_set_ssv(struct nfsv4_compound *, union nfsv4_args *);
+uint32_t nfsv4_op_test_stateid(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_access(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_getattr(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_readdir(struct nfsv4_compound *, union nfsv4_args *);

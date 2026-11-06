@@ -27,7 +27,8 @@
  */
 
 /*
- * The two procedures of NFS version 4, RFC 7530 s15, and the module.
+ * The two procedures of NFS version 4, RFC 7530 s15 and RFC 8881 s16, and
+ * the module.
  *
  * Arguments are decoded one operation at a time, as each is reached,
  * which RFC 7530 s15.2.4 allows and which means a COMPOUND can do work
@@ -61,6 +62,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfs.h>
 #include <nfs/nfs_var.h>
 
+#include <oncrpc/oncrpc_xdr.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -75,16 +78,25 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	NFSV4_RES_LIMIT		(1024 * 1024)
 #define	NFSV4_RES_ROOM		(256 * 1024)
 
+/*
+ * Not from the RFC: below this much room under ca_maxresponsesize no
+ * operation is started, as the results of one that changes something
+ * cannot then be refused.  More than any of those has for results.
+ */
+#define	NFSV4_REP_ROOM		256
+
 /* flags of an operation */
 #define	NFSV4_OPF_FH		0x01	/* needs the current filehandle */
 #define	NFSV4_OPF_DRC		0x02	/* its reply is for the DRC */
+#define	NFSV4_OPF_V40		0x04	/* RFC 8881 s17: not in version 4.1 */
+#define	NFSV4_OPF_NOSEQ		0x08	/* RFC 8881 s18.46.3: can be first */
 
 struct nfsv4_opdesc {
 	nfsv4_op_t	od_func;	/* NULL for NFS4ERR_NOTSUPP */
 	u_int		od_flags;
 };
 
-static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
+static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
@@ -103,7 +115,8 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_NVERIFY]	= { nfsv4_op_nverify,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPEN]		= { nfsv4_op_open,	NFSV4_OPF_FH },
 	[NFSV4_OP_OPENATTR]	= { nfsv4_op_openattr,	NFSV4_OPF_FH },
-	[NFSV4_OP_OPEN_CONFIRM]	= { nfsv4_op_open_confirm, NFSV4_OPF_FH },
+	[NFSV4_OP_OPEN_CONFIRM]	= { nfsv4_op_open_confirm,
+				    NFSV4_OPF_FH | NFSV4_OPF_V40 },
 	[NFSV4_OP_OPEN_DOWNGRADE] =
 				  { nfsv4_op_open_downgrade, NFSV4_OPF_FH },
 	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	0 },
@@ -113,19 +126,38 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RELEASE_LOCKOWNER + 1] = {
 	[NFSV4_OP_READDIR]	= { nfsv4_op_readdir,	NFSV4_OPF_FH },
 	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
 	[NFSV4_OP_RELEASE_LOCKOWNER] =
-				  { nfsv4_op_release_lockowner, 0 },
+				  { nfsv4_op_release_lockowner, NFSV4_OPF_V40 },
 	[NFSV4_OP_REMOVE]	= { nfsv4_op_remove,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_RENAME]	= { nfsv4_op_rename,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
-	[NFSV4_OP_RENEW]	= { nfsv4_op_renew,	0 },
+	[NFSV4_OP_RENEW]	= { nfsv4_op_renew,	NFSV4_OPF_V40 },
 	[NFSV4_OP_RESTOREFH]	= { nfsv4_op_restorefh,	0 },
 	[NFSV4_OP_SAVEFH]	= { nfsv4_op_savefh,	NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO]	= { nfsv4_op_secinfo,	NFSV4_OPF_FH },
 	[NFSV4_OP_SETATTR]	= { nfsv4_op_setattr,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
-	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid, NFSV4_OPF_DRC },
+	[NFSV4_OP_SETCLIENTID]	= { nfsv4_op_setclientid,
+				    NFSV4_OPF_DRC | NFSV4_OPF_V40 },
 	[NFSV4_OP_SETCLIENTID_CONFIRM] =
-				  { nfsv4_op_setclientid_confirm, NFSV4_OPF_DRC },
+				  { nfsv4_op_setclientid_confirm,
+				    NFSV4_OPF_DRC | NFSV4_OPF_V40 },
 	[NFSV4_OP_VERIFY]	= { nfsv4_op_verify,	NFSV4_OPF_FH },
 	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_BACKCHANNEL_CTL] = { nfsv4_op_backchannel_ctl, 0 },
+	[NFSV4_OP_BIND_CONN_TO_SESSION] =
+				  { nfsv4_op_bind_conn,	NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_EXCHANGE_ID]	= { nfsv4_op_exchange_id, NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_CREATE_SESSION] =
+				  { nfsv4_op_create_session, NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_DESTROY_SESSION] =
+				  { nfsv4_op_destroy_session, NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_FREE_STATEID]	= { nfsv4_op_free_stateid, 0 },
+	[NFSV4_OP_SECINFO_NO_NAME] =
+				  { nfsv4_op_secinfo_no_name, NFSV4_OPF_FH },
+	[NFSV4_OP_SEQUENCE]	= { nfsv4_op_sequence,	NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_SET_SSV]	= { nfsv4_op_set_ssv,	0 },
+	[NFSV4_OP_TEST_STATEID]	= { nfsv4_op_test_stateid, 0 },
+	[NFSV4_OP_DESTROY_CLIENTID] =
+				  { nfsv4_op_destroy_clientid, NFSV4_OPF_NOSEQ },
+	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },
 };
 
 static struct oncrpc_svc *nfsv4_svc;
@@ -173,6 +205,80 @@ nfsv4_copy_tag(XDR *ax, u_int pos, uint32_t len, XDR *rx)
 	return nfsv4_xdr_pad(rx, len) && XDR_SETPOS(ax, end);
 }
 
+/* RFC 8881 s8.2.3: (1, 0) in an argument means the current stateid. */
+static uint32_t
+stateid_current(struct nfsv4_compound *c, struct nfsv4_stateid *si, bool seqid)
+{
+	static const uint8_t zero[NFS4_OTHER_SIZE];
+
+	if (si->si_seqid != 1 || memcmp(si->si_other, zero, sizeof(zero)) != 0)
+		return NFS4_OK;
+	if (memcmp(c->c_curst.si_other, zero, sizeof(zero)) == 0 ||
+	    nfsv4_stateid_special(&c->c_curst))
+		return NFS4ERR_BAD_STATEID;
+	*si = c->c_curst;
+	if (!seqid)
+		si->si_seqid = 0;
+	return NFS4_OK;
+}
+
+/* RFC 8881 s8.2.3: CLOSE and OPEN_DOWNGRADE keep the seqid of it. */
+static uint32_t
+stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
+{
+
+	switch (op) {
+	case NFSV4_OP_CLOSE:
+		return stateid_current(c, &a->close.stateid, true);
+	case NFSV4_OP_OPEN_DOWNGRADE:
+		return stateid_current(c, &a->open_downgrade.stateid, true);
+	case NFSV4_OP_LOCK:
+		return stateid_current(c, a->lock.newowner ?
+		    &a->lock.open_stateid : &a->lock.lock_stateid, false);
+	case NFSV4_OP_LOCKU:
+		return stateid_current(c, &a->locku.stateid, false);
+	case NFSV4_OP_READ:
+		return stateid_current(c, &a->read.stateid, false);
+	case NFSV4_OP_WRITE:
+		return stateid_current(c, &a->write.stateid, false);
+	case NFSV4_OP_SETATTR:
+		return stateid_current(c, &a->setattr.stateid, false);
+	case NFSV4_OP_FREE_STATEID:
+		return stateid_current(c, &a->stateid.stateid, false);
+	default:
+		return NFS4_OK;
+	}
+}
+
+/* What a retry with no reply kept answers, RFC 8881 s2.10.6.1.3. */
+static uint32_t
+retry_status(const struct nfsv4_opdesc *od)
+{
+
+	if (od->od_func == NULL || (od->od_flags & NFSV4_OPF_V40) != 0)
+		return NFS4ERR_NOTSUPP;
+	return NFS4ERR_RETRY_UNCACHED_REP;
+}
+
+/* The rules of RFC 8881 s18.46.3 on where an operation can be. */
+static uint32_t
+op_position(const struct nfsv4_compound *c, uint32_t op,
+    const struct nfsv4_opdesc *od)
+{
+
+	if ((od->od_flags & NFSV4_OPF_V40) != 0)
+		return NFS4ERR_NOTSUPP;
+	if (op == NFSV4_OP_SEQUENCE && c->c_opi != 0)
+		return NFS4ERR_SEQUENCE_POS;
+	if (c->c_opi == 0 && op != NFSV4_OP_SEQUENCE) {
+		if ((od->od_flags & NFSV4_OPF_NOSEQ) == 0)
+			return NFS4ERR_OP_NOT_IN_SESSION;
+		if (c->c_numops > 1)
+			return NFS4ERR_NOT_ONLY_OP;
+	}
+	return NFS4_OK;
+}
+
 /*
  * Evaluate one operation.  Whatever goes wrong before it starts is its
  * status, in the order: is it an operation, does it decode, is it
@@ -181,18 +287,30 @@ nfsv4_copy_tag(XDR *ax, u_int pos, uint32_t len, XDR *rx)
 static uint32_t
 nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 {
-	const struct nfsv4_opdesc *od;
+	const struct nfsv4_opdesc *od = &nfsv4_ops[op];
 	uint32_t st;
 
-	if (!nfsv4_xdr_args(c->c_ax, op, 0, a))
+	st = NFS4_OK;
+	if (c->c_minor != 0) {
+		if (c->c_uncached && c->c_opi == 1)
+			st = retry_status(od);
+		else
+			st = op_position(c, op, od);
+	}
+	if (st != NFS4_OK)
+		/* below */;
+	else if (!nfsv4_xdr_args(c->c_ax, op, c->c_minor, a))
 		st = NFS4ERR_BADXDR;
-	else if ((od = &nfsv4_ops[op])->od_func == NULL)
+	else if (od->od_func == NULL)
 		st = NFS4ERR_NOTSUPP;
 	else if ((od->od_flags & NFSV4_OPF_FH) != 0 && !c->c_cur.cf_set)
 		st = NFS4ERR_NOFILEHANDLE;
 	else if (c->c_cur.cf_set && c->c_cur.cf_ref != NULL &&
 	    !nfsv4_referral_allowed(op, a))
 		st = NFS4ERR_MOVED;		/* s8.2 */
+	else if (c->c_minor != 0 &&
+	    (st = stateid_args(c, op, a)) != NFS4_OK)
+		/* below */;
 	else {
 		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
 			c->c_drc = true;
@@ -207,6 +325,94 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	return st;
 }
 
+/*
+ * RFC 8881 s16.2.3.1.2: what the current stateid does when an operation
+ * has changed the filehandle.  Those returning a stateid have set it.
+ */
+static void
+stateid_track(struct nfsv4_compound *c, uint32_t op)
+{
+
+	switch (op) {
+	case NFSV4_OP_CREATE:
+	case NFSV4_OP_LOOKUP:
+	case NFSV4_OP_LOOKUPP:
+	case NFSV4_OP_PUTFH:
+	case NFSV4_OP_PUTPUBFH:
+	case NFSV4_OP_PUTROOTFH:
+		memset(&c->c_curst, 0, sizeof(c->c_curst));
+		break;
+	case NFSV4_OP_SAVEFH:
+		c->c_savest = c->c_curst;
+		break;
+	case NFSV4_OP_RESTOREFH:
+		c->c_curst = c->c_savest;
+		break;
+	default:
+		break;
+	}
+}
+
+/* The error for a reply over its bounds, RFC 8881 s2.10.6.4, or NFS4_OK. */
+static uint32_t
+reply_toobig(const struct nfsv4_compound *c, u_int len)
+{
+
+	if (c->c_resmax == 0)
+		return NFS4_OK;
+	if (len > c->c_resmax)
+		return NFS4ERR_REP_TOO_BIG;
+	if (c->c_cachethis && len > c->c_cachemax)
+		return NFS4ERR_REP_TOO_BIG_TO_CACHE;
+	return NFS4_OK;
+}
+
+/*
+ * RFC 8881 s18.46: SEQUENCE is looked at before anything is written, as
+ * a retry answers with nothing but the cached reply.  Afterwards the
+ * operation itself only reports what was found here.  True if rx now has
+ * the whole of the reply.
+ */
+static bool
+compound_sequence(struct nfsv4_compound *c, union nfsv4_args *a, bool *ok)
+{
+	XDR *ax = c->c_ax;
+	char *reply = NULL;
+	uint32_t op;
+	u_int pos, len = 0;
+
+	*ok = true;
+	pos = XDR_GETPOS(ax);
+	if (c->c_numops > 0 && xdr_u_int32_t(ax, &op) &&
+	    op == NFSV4_OP_SEQUENCE && nfsv4_xdr_args(ax, op, c->c_minor, a)) {
+		c->c_seqstatus = nfsv4_seq_begin(c, &a->sequence, &reply, &len);
+		c->c_seqdone = true;
+		if (reply != NULL) {
+			*ok = XDR_PUTBYTES(c->c_rx, reply, len) != 0;
+			kmem_free(reply, len);
+			return true;
+		}
+	}
+	*ok = XDR_SETPOS(ax, pos) != 0;
+	return !*ok;
+}
+
+/* The minor version of a COMPOUND, leaving its arguments unread. */
+static uint32_t
+compound_minor(XDR *ax)
+{
+	uint32_t taglen, minor;
+	u_int pos;
+
+	minor = 0;
+	pos = XDR_GETPOS(ax);
+	if (!xdr_u_int32_t(ax, &taglen) || !nfsv4_xdr_skip(ax, taglen) ||
+	    !xdr_u_int32_t(ax, &minor))
+		minor = 0;
+	(void)XDR_SETPOS(ax, pos);
+	return minor;
+}
+
 static enum oncrpc_dispatch
 nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 {
@@ -214,8 +420,10 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	union nfsv4_args *a;
 	XDR *ax = rq->rq_args, *rx = rq->rq_res;
 	uint32_t taglen, minor, numops, op, resop, status, i, n;
+	uint32_t maxop;
 	u_int tagpos, numpos, statpos;
 	enum oncrpc_dispatch disp;
+	bool ok;
 
 	if (!xdr_u_int32_t(ax, &taglen))
 		return ONCRPC_ERR_ARGS;
@@ -225,24 +433,38 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	    !xdr_u_int32_t(ax, &numops))
 		return ONCRPC_ERR_ARGS;
 
-	/* COMPOUND4res: status, tag, then the count of resarray. */
-	if (!nfsv4_put32(rx, NFS4_OK) ||
-	    !nfsv4_copy_tag(ax, tagpos, taglen, rx))
-		return ONCRPC_ERR_SYSTEM;
-	numpos = XDR_GETPOS(rx);
-	if (!nfsv4_put32(rx, 0))
-		return ONCRPC_ERR_SYSTEM;
-
-	/* RFC 7530 s15.2.4: no results at all for a minor version. */
-	if (minor != NFSV4_MINORVERSION)
-		return nfsv4_patch32(rx, 0, NFS4ERR_MINOR_VERS_MISMATCH) ?
-		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
-
 	memset(&c, 0, sizeof(c));
 	c.c_rq = rq;
 	c.c_ax = ax;
 	c.c_rx = rx;
+	c.c_minor = minor;
+	c.c_numops = numops;
 	a = kmem_alloc(sizeof(*a), KM_SLEEP);
+
+	if (minor >= 1 && minor <= NFSV4_MINORMAX &&
+	    compound_sequence(&c, a, &ok)) {
+		kmem_free(a, sizeof(*a));
+		return ok ? ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+	}
+
+	/* COMPOUND4res: status, tag, then the count of resarray. */
+	numpos = 0;
+	if (!nfsv4_put32(rx, NFS4_OK) ||
+	    !nfsv4_copy_tag(ax, tagpos, taglen, rx) ||
+	    (numpos = XDR_GETPOS(rx), !nfsv4_put32(rx, 0))) {
+		nfsv4_seq_end(&c, false);
+		kmem_free(a, sizeof(*a));
+		return ONCRPC_ERR_SYSTEM;
+	}
+
+	/* RFC 7530 s15.2.4: no results at all for a minor version. */
+	if (minor > NFSV4_MINORMAX) {
+		kmem_free(a, sizeof(*a));
+		return nfsv4_patch32(rx, 0, NFS4ERR_MINOR_VERS_MISMATCH) ?
+		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+	}
+	maxop = minor == 0 ? NFSV4_OP_RELEASE_LOCKOWNER :
+	    NFSV4_OP_RECLAIM_COMPLETE;
 	c.c_rbuf = kmem_alloc(NFSV4_REPLAY_MAX, KM_SLEEP);
 
 	/* As versions 2 and 3: the exports hold still for the whole call. */
@@ -264,7 +486,7 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 
 		/* RFC 7530 s15.2.4: outside the range, ILLEGAL is echoed. */
 		resop = op;
-		if (op < NFSV4_OP_ACCESS || op > NFSV4_OP_RELEASE_LOCKOWNER) {
+		if (op < NFSV4_OP_ACCESS || op > maxop) {
 			resop = NFSV4_OP_ILLEGAL;
 			if (status == NFS4_OK)
 				status = NFS4ERR_OP_ILLEGAL;
@@ -278,10 +500,30 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 		n++;
 
 		if (status == NFS4_OK) {
+			c.c_opi = i;
 			if (statpos > NFSV4_RES_LIMIT - NFSV4_RES_ROOM)
 				status = NFS4ERR_RESOURCE;
-			else
+			else if (i > 0 && (status = reply_toobig(&c,
+			    statpos + NFSV4_REP_ROOM)) != NFS4_OK)
+				/* not started */;
+			else {
 				status = nfsv4_one_op(&c, op, a);
+				/*
+				 * What is large only reads; the room above
+				 * was for the rest, RFC 8881 s2.10.6.4.
+				 */
+				if (status == NFS4_OK && i > 0 &&
+				    (status = reply_toobig(&c,
+				    XDR_GETPOS(rx))) != NFS4_OK)
+					oncrpc_xdrmbuf_truncate(rx, statpos + 4);
+			}
+			if (minor != 0 && status == NFS4_OK)
+				stateid_track(&c, op);
+			/* RFC 8881 s15.1.16.4; RESOURCE is not in 4.1. */
+			if (minor != 0 && status == NFS4ERR_RESTOREFH)
+				status = NFS4ERR_NOFILEHANDLE;
+			if (minor != 0 && status == NFS4ERR_RESOURCE)
+				status = NFS4ERR_REP_TOO_BIG;
 			if (status != NFS4_OK &&
 			    !nfsv4_patch32(rx, statpos, status))
 				goto out;
@@ -292,6 +534,7 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	if (nfsv4_patch32(rx, numpos, n) && nfsv4_patch32(rx, 0, status))
 		disp = ONCRPC_DONE;
 out:
+	nfsv4_seq_end(&c, disp == ONCRPC_DONE);
 	*drc = c.c_drc;
 	nfsv4_cfh_clear(&c.c_cur);
 	nfsv4_cfh_clear(&c.c_saved);
@@ -315,6 +558,9 @@ nfsv4_dispatch(struct oncrpc_req *rq)
 	case NFSV4_PROC_NULL:
 		return ONCRPC_DONE;
 	case NFSV4_PROC_COMPOUND:
+		/* RFC 8881 s2.10.6: the slots take the place of a cache. */
+		if (compound_minor(rq->rq_args) != NFSV4_MINORVERSION)
+			return nfsv4_compound(rq, &drc);
 		if (nfsv4_drc_start(rq, &d))
 			return nfsv4_drc_replay(rq, &d) ? ONCRPC_DONE :
 			    ONCRPC_ERR_SYSTEM;

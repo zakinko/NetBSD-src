@@ -30,7 +30,8 @@
 #define _FS_NFSV4_NFSV4_STATE_H_
 
 /*
- * Client, owner and open and lock state, RFC 7530 s9.
+ * Client, owner and open and lock state, RFC 7530 s9, and the sessions of
+ * RFC 8881 s2.10.
  *
  * nfsv4_state_lock covers all of it.  It is never held across a VOP or
  * an allocation that sleeps, and it is taken outside vnode locks.  What
@@ -55,11 +56,69 @@ struct vnode;
 #define	NFSV4_CB_UP		1
 #define	NFSV4_CB_DOWN		2
 
-/* RFC 7530 s16.33.5, a record { v, x, c, k, s } */
+/*
+ * How many connections a session remembers, a choice: the oldest goes
+ * first, and nothing tells a session that one has closed.  A connection
+ * forgotten that way is bound again by its next SEQUENCE, s2.10.3.1.
+ */
+#define	NFSV4_SES_CONNS		8
+
+struct nfsv4_sesconn {
+	uint64_t	sc_id;
+	uint32_t	sc_dir;		/* CDFS4_* */
+};
+
+/* s2.10.6.1.  sl_seq is what the last request carried. */
+struct nfsv4_slot {
+	uint32_t	sl_seq;
+	bool		sl_used;	/* no request yet: nothing to retry */
+	bool		sl_busy;	/* that request is still running */
+	char		*sl_reply;	/* its whole reply, if kept */
+	u_int		sl_len;
+};
+
+/* s2.10.  se_refs is one for the table and one for each COMPOUND on it. */
+struct nfsv4_session {
+	LIST_ENTRY(nfsv4_session) se_hash;
+	LIST_ENTRY(nfsv4_session) se_list;	/* on the client */
+	struct nfsv4_client *se_client;
+	struct nfsv4_sessionid se_id;
+	u_int		se_refs;
+	bool		se_gone;	/* out of the table */
+	uint32_t	se_maxreq;
+	uint32_t	se_maxresp;
+	uint32_t	se_maxcached;
+	uint32_t	se_maxops;
+	uint32_t	se_nslots;
+	uint32_t	se_cbprog;
+	size_t		se_cost;	/* of the reply cache budget */
+	size_t		se_size;
+	u_int		se_nconn;
+	struct nfsv4_sesconn se_conns[NFSV4_SES_CONNS];
+	struct nfsv4_slot se_slots[];
+};
+
+/* What the replay of a CREATE_SESSION needs, s18.36.4. */
+#define	NFSV4_CSREPLY_MAX	128
+
+/*
+ * RFC 7530 s16.33.5, a record { v, x, c, k, s }, or the 5-tuple of
+ * RFC 8881 s18.35.4 if cl_minor is not 0.  The two never match each
+ * other by name.
+ */
 struct nfsv4_client {
 	LIST_ENTRY(nfsv4_client) cl_list;
 	TAILQ_ENTRY(nfsv4_client) cl_cbq;	/* to be probed */
 	LIST_HEAD(, nfsv4_owner_s) cl_owners;
+	LIST_HEAD(, nfsv4_session) cl_sessions;
+	uint32_t	cl_minor;
+	u_int		cl_refs;	/* COMPOUNDs; the lease scan waits */
+	bool		cl_retired;	/* being forgotten; no name finds it */
+	bool		cl_reclaimed;	/* RECLAIM_COMPLETE was done, s18.51 */
+	uint32_t	cl_csseq;	/* the CREATE_SESSION slot, s18.36.4 */
+	uint32_t	cl_csstatus;
+	u_int		cl_cslen;
+	char		cl_csreply[NFSV4_CSREPLY_MAX];
 	uint64_t	cl_id;		/* c */
 	struct nfsv4_verifier cl_verf;	/* v */
 	struct nfsv4_verifier cl_confirm; /* s */
@@ -217,6 +276,17 @@ uint32_t nfsv4_reclaim_check(const struct nfsv4_client *);
 
 /* These want nfsv4_state_lock held. */
 uint32_t nfsv4_client_get(uint64_t, struct nfsv4_client **);
+uint32_t nfsv4_client_cur(struct nfsv4_compound *, uint64_t,
+	    struct nfsv4_client **);
+struct nfsv4_client *
+	nfsv4_client_find(const uint8_t *, uint32_t, bool, uint32_t);
+struct nfsv4_client *
+	nfsv4_client_byid(uint64_t);
+struct nfsv4_client *
+	nfsv4_client_insert(struct nfsv4_client *);
+void	nfsv4_client_retire(struct nfsv4_client *);
+bool	nfsv4_client_has_state(const struct nfsv4_client *);
+uint64_t nfsv4_clientid_new(void);
 struct nfsv4_owner_s *
 	nfsv4_owner_find(struct nfsv4_client *, u_int, const uint8_t *,
 	    uint32_t);
@@ -237,8 +307,8 @@ struct nfsv4_state *
 	    struct nfsv4_file **, struct vnode *, u_int, const char *);
 void	nfsv4_state_unlink(struct nfsv4_state *, struct nfsv4_reap *, bool);
 void	nfsv4_owner_free(struct nfsv4_owner_s *, struct nfsv4_reap *);
-uint32_t nfsv4_stateid_lookup(const struct nfsv4_stateid *,
-	    struct nfsv4_state **);
+uint32_t nfsv4_stateid_lookup(const struct nfsv4_compound *,
+	    const struct nfsv4_stateid *, struct nfsv4_state **);
 uint32_t nfsv4_stateid_check(const struct nfsv4_stateid *,
 	    const struct nfsv4_state *, struct vnode *, u_int);
 bool	nfsv4_stateid_special(const struct nfsv4_stateid *);
@@ -248,7 +318,7 @@ struct nfsv4_file *
 struct nfsv4_file *
 	nfsv4_file_find_attr(struct vnode *, const char *);
 struct nfsv4_client *
-	nfsv4_client_byid(uint64_t);
+	nfsv4_client_byid41(uint64_t);
 void	nfsv4_client_renew(struct nfsv4_client *);
 bool	nfsv4_lease_moved(const struct nfsv4_client *);
 struct nfsv4_state *
@@ -267,7 +337,8 @@ void	nfsv4_deleg_add(struct nfsv4_client *, struct vnode *,
 	    const struct nfsv4_fh *, uint32_t, struct nfsv4_deleg_spare *,
 	    struct nfsv4_open_deleg *);
 void	nfsv4_deleg_gone(struct nfsv4_state *);
-uint32_t nfsv4_deleg_claim_cur(struct nfsv4_client *,
+uint32_t nfsv4_deleg_claim_cur(const struct nfsv4_compound *,
+	    struct nfsv4_client *,
 	    const struct nfsv4_stateid *, struct vnode *);
 uint32_t nfsv4_deleg_claim_prev(struct nfsv4_client *, struct vnode *,
 	    struct nfsv4_open_deleg *);
@@ -279,7 +350,8 @@ bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 
 /* These do not. */
 struct vnode *nfsv4_file_vp_byfh(const struct nfsv4_fh *);
-uint32_t nfsv4_seq_stateid(const struct nfsv4_stateid *, uint32_t, uint32_t,
+uint32_t nfsv4_seq_stateid(const struct nfsv4_compound *,
+	    const struct nfsv4_stateid *, uint32_t, uint32_t,
 	    struct nfsv4_state **, enum nfsv4_seq *);
 uint32_t nfsv4_seq_reply(struct nfsv4_compound *, struct nfsv4_owner_s *,
 	    uint32_t, uint32_t, uint32_t, u_int);
@@ -287,6 +359,7 @@ uint32_t nfsv4_seq_replay(struct nfsv4_compound *, struct nfsv4_owner_s *,
 	    bool);
 void	nfsv4_seq_cancel(struct nfsv4_owner_s *);
 void	nfsv4_reap_finish(struct nfsv4_reap *);
+uid_t	nfsv4_client_principal(const struct nfsv4_compound *);
 void	nfsv4_owner_replay_save(struct nfsv4_owner_s *, uint32_t, uint32_t,
 	    uint32_t, const char *, u_int);
 bool	nfsv4_lock_fair(struct nfsv4_owner_s *, struct vnode *,

@@ -411,14 +411,14 @@ nfsv4_deleg_path_down(struct nfsv4_client *cl)
  * client holds of the file.
  */
 uint32_t
-nfsv4_deleg_claim_cur(struct nfsv4_client *cl, const struct nfsv4_stateid *si,
-    struct vnode *vp)
+nfsv4_deleg_claim_cur(const struct nfsv4_compound *c, struct nfsv4_client *cl,
+    const struct nfsv4_stateid *si, struct vnode *vp)
 {
 	struct nfsv4_state *st;
 	uint32_t status;
 
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_stateid_lookup(si, &st);
+	status = nfsv4_stateid_lookup(c, si, &st);
 	if (status == NFS4_OK)
 		status = nfsv4_stateid_check(si, st, vp, NFSV4_ST_DELEG);
 	if (status == NFS4_OK && st->st_owner->sw_client != cl)
@@ -553,7 +553,7 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_INVAL;
 	SLIST_INIT(&reap);
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_stateid_lookup(si, &st);
+	status = nfsv4_stateid_lookup(c, si, &st);
 	if (status == NFS4_OK)
 		status = nfsv4_stateid_check(si, st, c->c_cur.cf_vp,
 		    NFSV4_ST_DELEG);

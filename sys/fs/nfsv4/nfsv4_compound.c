@@ -48,6 +48,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
+#include <sys/hash.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
 #include <sys/module.h>
@@ -84,6 +85,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * cannot then be refused.  More than any of those has for results.
  */
 #define	NFSV4_REP_ROOM		256
+#define	NFSV4_ARGSUM_WORDS	64
 
 /* flags of an operation */
 #define	NFSV4_OPF_FH		0x01	/* needs the current filehandle */
@@ -369,6 +371,26 @@ reply_toobig(const struct nfsv4_compound *c, u_int len)
 }
 
 /*
+ * A sum of what follows SEQUENCE, for RFC 8881 s18.46.3 to tell a retry
+ * from another request on the slot.  How much of it, a choice as for the
+ * DRC: the first words are where two requests differ.
+ */
+static uint32_t
+compound_sum(XDR *ax)
+{
+	uint32_t words[NFSV4_ARGSUM_WORDS];
+	u_int n, pos;
+
+	pos = XDR_GETPOS(ax);
+	for (n = 0; n < NFSV4_ARGSUM_WORDS; n++) {
+		if (!xdr_u_int32_t(ax, &words[n]))
+			break;
+	}
+	(void)XDR_SETPOS(ax, pos);
+	return hash32_buf(words, n * sizeof(words[0]), HASH32_BUF_INIT);
+}
+
+/*
  * RFC 8881 s18.46: SEQUENCE is looked at before anything is written, as
  * a retry answers with nothing but the cached reply.  Afterwards the
  * operation itself only reports what was found here.  True if rx now has
@@ -386,6 +408,7 @@ compound_sequence(struct nfsv4_compound *c, union nfsv4_args *a, bool *ok)
 	pos = XDR_GETPOS(ax);
 	if (c->c_numops > 0 && xdr_u_int32_t(ax, &op) &&
 	    op == NFSV4_OP_SEQUENCE && nfsv4_xdr_args(ax, op, c->c_minor, a)) {
+		c->c_argsum = compound_sum(ax);
 		c->c_seqstatus = nfsv4_seq_begin(c, &a->sequence, &reply, &len);
 		c->c_seqdone = true;
 		if (reply != NULL) {
@@ -733,6 +756,14 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "stable", SYSCTL_DESCR("File of clients that can reclaim"),
 	    nfsv4_sysctl_stable, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "impl_domain", SYSCTL_DESCR("nii_domain of nfs_impl_id4"),
+	    NULL, 0, nfsv4_impl_domain, NFSV4_IMPL_MAX,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "impl_name", SYSCTL_DESCR("nii_name of nfs_impl_id4"),
+	    NULL, 0, nfsv4_impl_name, NFSV4_IMPL_MAX,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 }
 

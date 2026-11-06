@@ -73,6 +73,7 @@ struct nfsv4_slot {
 	uint32_t	sl_seq;
 	bool		sl_used;	/* no request yet: nothing to retry */
 	bool		sl_busy;	/* that request is still running */
+	uint32_t	sl_sum;		/* c_argsum of that request */
 	char		*sl_reply;	/* its whole reply, if kept */
 	u_int		sl_len;
 };

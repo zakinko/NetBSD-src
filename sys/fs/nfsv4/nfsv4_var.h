@@ -129,6 +129,7 @@ struct nfsv4_compound {
 	bool		c_cachethis;
 	bool		c_uncached;	/* a retry with no reply kept */
 	uint32_t	c_seqflags;	/* sr_status_flags */
+	uint32_t	c_argsum;	/* of what follows SEQUENCE */
 	uint32_t	c_maxslot;	/* sr_highest_slotid */
 	uint32_t	c_resmax;	/* size of reply allowed, or 0 */
 	uint32_t	c_cachemax;	/* and to be cached, if c_cachethis */
@@ -173,6 +174,8 @@ typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
  */
 #define	NFSV4_ATTRBUF		8192
 
+#define	NFSV4_IMPL_MAX		64
+extern char nfsv4_impl_domain[], nfsv4_impl_name[];
 bool	nfsv4_conn_alive(uint64_t);
 int	nfsv4_conn_call(uint64_t, const struct oncrpc_clnt_call *, int);
 void	nfsv4_session_init(void);

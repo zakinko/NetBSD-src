@@ -143,7 +143,7 @@ t("s18.37 destroyed", c.compound([op.destroy_session(s3.sessionid)], pipe=first)
 
 # s2.10.6.2: a retry of a call still running.  Timing decides, so tries.
 cl4 = c.new_client(stamp + b"delay")
-big = channel_attrs4(0, 512 * 1024, 8192, 8192, 16, 8, [])
+big = channel_attrs4(0, 512 * 1024, 8192, 8192, 128, 8, [])
 s4 = cl4.create_session(fore_attrs=big)
 s4.compound([op.reclaim_complete(FALSE)])
 res = create_file(s4, stamp + b"d", path=export + [stamp + b"d"])
@@ -152,18 +152,25 @@ fh = res.resarray[-1].object
 sid = res.resarray[-2].stateid
 r4 = Raw(s4, 1)
 q = c.connect(c.server_address)
-data = b"x" * 131072
+data = b"x" * 4096
 seen = {}
 for i in range(30):
     seqop = r4.op(True)
-    ops = [seqop, op.putfh(fh)] + [op.write(sid, 0, FILE_SYNC4, data)] * 3
+    ops = [seqop, op.putfh(fh)] + [op.write(sid, 0, FILE_SYNC4, data)] * 120
     xid = c.compound_async(ops)
-    res2 = c.compound([seqop, op.putfh(fh)], pipe=q)
+    res2 = c.compound(ops, pipe=q)
     seen[res2.status] = seen.get(res2.status, 0) + 1
     res1 = c.listen(xid)
     if res1.status != NFS4_OK:
         print("  original", res1.status)
 print("  retry answers", seen)
+seqop = r4.op(True)
+t("new request", c.compound([seqop, op.putfh(fh), op.getfh()]).status, NFS4_OK)
+t("s18.46.3 SEQ_FALSE_RETRY", c.compound([seqop, op.putrootfh()]).status,
+  NFS4ERR_SEQ_FALSE_RETRY)
+impl = r1.eir_server_impl_id
+print("  impl id", impl)
+t("s18.35.3 impl id", len(impl), 1)
 t("s2.10.6.2 DELAY seen", NFS4ERR_DELAY in seen, True)
 close_file(s4, fh, sid)
 
@@ -179,9 +186,11 @@ lsid = res.resarray[-1].lock_stateid
 s6 = sess_of(b"idle")		# with no state to lose
 print("  waiting out the lease"); sys.stdout.flush()
 time.sleep(112)
-res = s5.compound([])
+r5 = Raw(s5, 1)
+res = c.compound([r5.op()])
 t("s18.46.3 SEQUENCE", res.status, NFS4_OK)
-flags = res.resarray[0].sr_status_flags if res.resarray else None
+flags = res.resarray[0].sr_status_flags
+print("  flags", hex(flags))
 t("s18.46.2 EXPIRED_ALL_STATE_REVOKED", bool(flags & SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED), True)
 res = s5.compound([op.test_stateid([sid, lsid])])
 t("s18.48 EXPIRED", list(res.resarray[-1].tsr_status_codes),
@@ -189,14 +198,14 @@ t("s18.48 EXPIRED", list(res.resarray[-1].tsr_status_codes),
 t("s8.2.4 READ", s5.compound([op.putfh(fh), op.read(sid, 0, 10)]).status, NFS4ERR_EXPIRED)
 t("s18.38.3 free lock", s5.compound([op.free_stateid(lsid)]).status, NFS4_OK)
 t("s18.38.3 free open", s5.compound([op.free_stateid(sid)]).status, NFS4_OK)
-res = s5.compound([])
+res = c.compound([r5.op()])
 t("s18.46.2 flag gone", bool(res.resarray[0].sr_status_flags &
   SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED), False)
 res = create_file(s5, stamp + b"l2", path=export + [stamp + b"l2"])
 t("OPEN after", res.status, NFS4_OK)
-res = s6.compound([])
+res = c.compound([Raw(s6, 1).op()])
 t("no state, no flag", bool(res.resarray[0].sr_status_flags &
-  SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED) if res.resarray else res.status, False)
+  SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED), False)
 
 print("failures:", fails)
 sys.exit(0)

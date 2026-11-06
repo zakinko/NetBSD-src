@@ -99,6 +99,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 	(CREATE_SESSION4_FLAG_PERSIST | CREATE_SESSION4_FLAG_CONN_BACK_CHAN | \
 	 CREATE_SESSION4_FLAG_CONN_RDMA)
 
+/* A choice, like the bound on them. */
+char nfsv4_impl_domain[NFSV4_IMPL_MAX] = "netbsd.org";
+char nfsv4_impl_name[NFSV4_IMPL_MAX] = "NetBSD NFSv4 server";
+
 static LIST_HEAD(, nfsv4_session) nfsv4_ses_hash[NFSV4_SES_HASH];
 static size_t nfsv4_ses_cost;
 static uint64_t nfsv4_ses_counter;
@@ -344,6 +348,11 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 	sl = &se->se_slots[sa->slotid];
 
 	if (sa->sequenceid == sl->sl_seq && sl->sl_used) {
+		/* s18.46.3, a MAY: the client reused the slot and sequence. */
+		if (sl->sl_sum != c->c_argsum) {
+			mutex_exit(&nfsv4_state_lock);
+			return NFS4ERR_SEQ_FALSE_RETRY;
+		}
 		/* s2.10.6.2 */
 		if (sl->sl_busy) {
 			mutex_exit(&nfsv4_state_lock);
@@ -370,6 +379,7 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 		sl->sl_seq = sa->sequenceid;
 		sl->sl_used = true;
 		sl->sl_busy = true;
+		sl->sl_sum = c->c_argsum;
 		old = sl->sl_reply;
 		oldlen = sl->sl_len;
 		sl->sl_reply = NULL;
@@ -478,19 +488,40 @@ put_hostname(XDR *x)
 	    put_opaque(x, "netbsd", 6);
 }
 
-/* EXCHANGE_ID4resok, s18.35.2.  No nfs_impl_id4 is given. */
+/*
+ * nfs_impl_id4<1>, s18.35.3, which a system manager can change or empty
+ * with sysctl, as that section requires.  The date is left as zero.
+ */
+static bool
+put_impl(XDR *x)
+{
+	char domain[NFSV4_IMPL_MAX], name[NFSV4_IMPL_MAX];
+	uint32_t zero = 0, one = 1;
+	uint64_t zero64 = 0;
+
+	strlcpy(domain, nfsv4_impl_domain, sizeof(domain));
+	strlcpy(name, nfsv4_impl_name, sizeof(name));
+	if (domain[0] == '\0' && name[0] == '\0')
+		return xdr_u_int32_t(x, &zero);
+	return xdr_u_int32_t(x, &one) &&
+	    put_opaque(x, domain, strlen(domain)) &&
+	    put_opaque(x, name, strlen(name)) &&
+	    xdr_u_int64_t(x, &zero64) && xdr_u_int32_t(x, &zero);
+}
+
+/* EXCHANGE_ID4resok, s18.35.2. */
 static uint32_t
 exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
     uint32_t flags)
 {
 	uint64_t minor = 0;
-	uint32_t none = SP4_NONE, zero = 0;
+	uint32_t none = SP4_NONE;
 	XDR *x = c->c_rx;
 
 	return xdr_u_int64_t(x, &id) && xdr_u_int32_t(x, &seq) &&
 	    xdr_u_int32_t(x, &flags) && xdr_u_int32_t(x, &none) &&
 	    xdr_u_int64_t(x, &minor) && put_hostname(x) && put_hostname(x) &&
-	    xdr_u_int32_t(x, &zero) ? NFS4_OK : NFS4ERR_RESOURCE;
+	    put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
 /* The numbered cases of s18.35.4 are marked. */

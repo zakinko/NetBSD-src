@@ -86,6 +86,8 @@ struct nfsv4_drc {
  * nothing for an error, unless the error has an arm of its own in the
  * result's union, because the COMPOUND cannot take bytes back.
  */
+extern const struct oncrpc_rdma_ulb nfsv4_ulb;
+
 typedef uint32_t (*nfsv4_op_t)(struct nfsv4_compound *, union nfsv4_args *);
 
 /*

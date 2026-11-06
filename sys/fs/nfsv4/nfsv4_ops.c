@@ -159,9 +159,15 @@ nfsv4_op_readlink(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_errno(error);
 	if (st == NFS4_OK) {
 		len = MAXPATHLEN - uio.uio_resid;
-		if (!xdr_u_int32_t(c->c_rx, &len) ||
-		    !xdr_opaque(c->c_rx, buf, len))
+		if (!xdr_u_int32_t(c->c_rx, &len))
 			st = NFS4ERR_RESOURCE;
+		else {
+			/* RFC 8267 s6.1 */
+			oncrpc_req_ddp_result(c->c_rq, XDR_GETPOS(c->c_rx),
+			    len);
+			if (!xdr_opaque(c->c_rx, buf, len))
+				st = NFS4ERR_RESOURCE;
+		}
 	}
 	kmem_free(buf, MAXPATHLEN);
 	return st;

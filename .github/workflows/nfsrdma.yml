@@ -1,0 +1,137 @@
+name: nfsrdma
+on:
+  push:
+    branches: [nfsrdma]
+    paths:
+      - 'sys/oncrpc/**'
+      - 'sys/modules/oncrpc/**'
+      - 'sys/fs/nfsv4/**'
+      - 'sys/modules/nfsv4/**'
+      - 'tests/modules/t_oncrpc_rdma.c'
+      - 'tests/fs/nfsv4/**'
+      - 'ci/nfsv4/nfsv4d.c'
+      - 'ci/nfsrdma/**'
+      - '.github/workflows/nfsrdma.yml'
+  workflow_dispatch:
+concurrency:
+  group: nfsrdma-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            sys/oncrpc
+            sys/fs/nfsv4
+            tests/modules
+            tests/fs/nfsv4
+      - run: |
+          sudo apt-get install -y -q libtirpc-dev >/dev/null
+          mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs && ln -s "$PWD/sys/oncrpc" t.inc/oncrpc
+          cc -g -fsanitize=address,undefined -Wall -Wno-unused -Wno-sign-compare -I/usr/include/tirpc -It.inc -o t tests/modules/t_oncrpc_rdma.c -ltirpc
+          ./t
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t2 tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
+          ./t2
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/cache/restore@v4
+        id: tools
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/restore@v4
+        id: kernel
+        with:
+          path: nb/netbsd
+          key: nfsrdma-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
+      - uses: actions/cache/save@v4
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/save@v4
+        if: steps.kernel.outputs.cache-hit != 'true'
+        with:
+          path: nb/netbsd
+          key: nfsrdma-kernel-${{ hashFiles('ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nfsv4
+            ci/nfsrdma
+            ci/oncrpc/swap.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
+          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+      - name: Tunnel to the server
+        run: |
+          sudo ip link add dummy0 type dummy
+          sudo ip addr add 192.0.2.1/24 dev dummy0
+          sudo ip link set dummy0 up
+          ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+              -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 netbsd
+          sleep 2
+      - name: A peer that misbehaves
+        timeout-minutes: 5
+        shell: bash
+        run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
+      - name: The Linux client on siw
+        timeout-minutes: 15
+        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
+      - name: pynfs on TCP, the path that the transport split went through
+        timeout-minutes: 40
+        run: |
+          sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee out/summary.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Result
+        if: always()
+        run: |
+          cat out/linux-client.txt || true
+          ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -30" | tee out/kernel.txt || echo no answer
+          grep -q 'FAILURES: 0' out/linux-client.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result
+          path: |
+            out/linux-client.txt
+            out/kernel.txt
+            out/rdma.pcap
+            out/badpeer.txt
+            out/summary.txt
+          retention-days: 14

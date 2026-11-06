@@ -86,6 +86,8 @@ struct file;
 struct mbuf;
 struct oncrpc_svc;
 struct oncrpc_req;
+struct oncrpc_xprt;
+struct oncrpc_rdma_ulb;
 
 /* What a program's dispatch wants done with the request. */
 enum oncrpc_dispatch {
@@ -109,6 +111,7 @@ struct oncrpc_program {
 	enum oncrpc_dispatch
 			(*op_dispatch)(struct oncrpc_req *);
 	void		*op_arg;
+	const struct oncrpc_rdma_ulb *op_ulb;	/* NULL: nothing is DDP-eligible */
 };
 
 /*
@@ -126,6 +129,8 @@ struct oncrpc_req {
 	void		*rq_arg;	/* op_arg */
 	XDR		*rq_args;
 	XDR		*rq_res;
+	struct oncrpc_xprt *rq_xprt;
+	void		*rq_xctx;	/* the transport's, of this call */
 };
 
 int	oncrpc_svc_create(const char *, u_int, struct oncrpc_svc **);
@@ -135,5 +140,7 @@ void	oncrpc_svc_unregister(struct oncrpc_svc *,
 	    const struct oncrpc_program *);
 int	oncrpc_svc_addsock(struct oncrpc_svc *, struct file *, struct mbuf *);
 u_int	oncrpc_svc_nxprt(struct oncrpc_svc *);
+int	oncrpc_svc_addrdma(struct oncrpc_svc *, struct file *, struct mbuf *);
+void	oncrpc_req_ddp_result(struct oncrpc_req *, u_int, u_int);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

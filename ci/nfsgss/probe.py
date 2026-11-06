@@ -4,7 +4,9 @@ do.  Every line is a case from RFC 2203 or 5403.  probe.py HOST EXPORTS..."""
 import random, socket, struct, sys
 import gssapi
 
+import os, time
 HOST, ALL, PONLY, SYSONLY = sys.argv[1:5]
+MODE = os.environ.get('PROBE', '')
 PROG, VERS = 100003, 4
 GSS = 6
 DATA, INIT, CONT, DESTROY, BIND = 0, 1, 2, 3, 4
@@ -34,6 +36,14 @@ class C:
             o += d
         return o
 
+class U:
+    """The same over UDP, RFC 5531 s10 having no record marks."""
+    def __init__(self):
+        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.s.connect((HOST, 2049)); self.s.settimeout(6)
+    def send(self, b): self.s.send(b)
+    def recv(self): return self.s.recv(65536)
+
 class Reply:
     def __init__(self, b):
         self.b = b
@@ -53,8 +63,8 @@ def cred(vers, gproc, seq, svc, handle):
     return p32(vers, gproc, seq, svc) + opaque(handle)
 
 class Ctx:
-    def __init__(self, vers=1):
-        self.c = C(); self.vers = vers; self.seq = random.randrange(1, 1000)
+    def __init__(self, vers=1, udp=False):
+        self.c = U() if udp else C(); self.vers = vers; self.seq = random.randrange(1, 1000)
         self.g = gssapi.SecurityContext(name=gssapi.Name('nfs@' + HOST,
             gssapi.NameType.hostbased_service), usage='initiate',
             flags=[gssapi.RequirementFlag.mutual_authentication,
@@ -130,6 +140,24 @@ def lookup(path):
 def compstat(res):
     return struct.unpack('>I', res[:4])[0]
 
+if MODE == 'refused':
+    c = C()
+    g = gssapi.SecurityContext(name=gssapi.Name('nfs@' + HOST, gssapi.NameType.hostbased_service),
+                               usage='initiate')
+    c.send(header(1, 0, cred(1, INIT, 0, NONE, b'')) + p32(0, 0) + opaque(g.step()))
+    r = Reply(c.recv())
+    hl, ma = struct.unpack('>II', r.res[:8])
+    check('a principal with no account: GSS_S_UNAUTHORIZED, no handle',
+          accepted(r, 0) and hl == 0 and ma == 0xf0000, hex(ma))
+    sys.exit(1 if fails else 0)
+if MODE == 'expiry':
+    x = Ctx()
+    r = x.call()
+    check('a context in its time', accepted(r, 0))
+    time.sleep(130)
+    check('past the ticket: CTXPROBLEM, s5.3.3.3', denied(x.call(), CTXPROBLEM))
+    sys.exit(1 if fails else 0)
+
 x = Ctx()
 check('INIT gives a handle, GSS_S_COMPLETE, the window MIC verified',
       x.major == 0 and len(x.handle) > 0, f'window {x.window}')
@@ -164,6 +192,13 @@ r = x.call()
 check('a gap is fine', accepted(r, 0))
 r = x.call(seq=x.seq - 3)
 check('late, in the window, and not seen', accepted(r, 0))
+OP_SETATTR = 34
+def setowner(owner):
+    return p32(OP_SETATTR) + b'\0' * 16 + p32(2, 0, 1 << 4) + opaque(opaque(owner))
+PUTROOT_ALL = [ROOT, *lookup(ALL)]
+r = x.call(NONE, 1, compound(*PUTROOT_ALL, setowner(b'2097')))
+st = compstat(x.results(r))
+check('a numeric owner under GSS: NFS4ERR_BADOWNER', accepted(r, 0) and st == 10039, str(st))
 flip = lambda h, m, b: (h, bytes([m[0] ^ 1]) + m[1:], b)
 check('bad header MIC: CREDPROBLEM, s5.3.3.4.2', denied(x.call(mutate=flip), CREDPROBLEM))
 def badb(h, m, b): return h, m, b[:-1] + bytes([b[-1] ^ 1])
@@ -232,6 +267,11 @@ for v, arg, parg in ((2, fh2, mnt(1, PONLY)), (3, opaque(fh3), opaque(fh3p))):
     check(f'v{v} krb5 on a krb5p export: AUTH_TOOWEAK', denied(r, 5), r and r.__dict__.get('why', r.b[:40].hex()))
     r = z.call(PRIV, 1, parg)
     check(f'v{v} krb5p there', accepted(r, 0) and compstat(z.results(r)) == 0)
+    u = Ctx(udp=True)
+    for s, n in ((NONE, 'krb5'), (INTEG, 'krb5i'), (PRIV, 'krb5p')):
+        r = u.call(s, 1, arg)
+        check(f'v{v} UDP GETATTR under {n}', accepted(r, 0) and compstat(u.results(r)) == 0)
+    check(f'v{v} UDP replay dropped', u.call(seq=u.seq) is None)
 VERS = 4
 
 c = C()

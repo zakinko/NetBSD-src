@@ -51,7 +51,7 @@
  * The results of ACCEPT:
  *	major, minor, dh, token<>, and if major is 0:
  *	enctype, key<32>, cfx, acceptor_subkey, send_seq (hi, lo), lifetime,
- *	mapped, uid, gid, groups<16>
+ *	uid, gid, groups<16>
  */
 struct oncrpc_gssd_accept_res {
 	uint32_t	ar_major;
@@ -61,7 +61,6 @@ struct oncrpc_gssd_accept_res {
 	uint8_t		ar_token[ONCRPC_GSSD_MAXTOKEN];
 	struct gss_krb5_import ar_import;
 	uint32_t	ar_lifetime;	/* seconds from now */
-	uint32_t	ar_mapped;
 	uint32_t	ar_uid;
 	uint32_t	ar_gid;
 	uint32_t	ar_ngroups;

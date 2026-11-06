@@ -88,7 +88,6 @@ gssd_accept_dec(XDR *x, void *arg)
 	    !xdr_u_int32_t(x, &cfx) || !xdr_u_int32_t(x, &subkey) ||
 	    !xdr_u_int32_t(x, &hi) || !xdr_u_int32_t(x, &lo) ||
 	    !xdr_u_int32_t(x, &ar->ar_lifetime) ||
-	    !xdr_u_int32_t(x, &ar->ar_mapped) ||
 	    !xdr_u_int32_t(x, &ar->ar_uid) ||
 	    !xdr_u_int32_t(x, &ar->ar_gid) ||
 	    !xdr_u_int32_t(x, &ar->ar_ngroups) ||

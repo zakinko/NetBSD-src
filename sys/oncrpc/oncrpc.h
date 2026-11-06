@@ -152,6 +152,8 @@ int	oncrpc_svc_run(struct oncrpc_svc *);
 int	oncrpc_svc_addsock_tag(struct oncrpc_svc *, struct file *,
 	    struct mbuf *, const void *);
 void	oncrpc_svc_closesocks(struct oncrpc_svc *, const void *);
+void	oncrpc_svc_closesocks_for(struct oncrpc_svc *, const void *,
+	    const struct oncrpc_program *);
 
 /* For a program that parses the mbufs of a call itself. */
 void	oncrpc_req_takemsg(struct oncrpc_req *, struct mbuf **, struct mbuf **,

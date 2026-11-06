@@ -48,11 +48,11 @@ t() {
 	t flock -n /mnt/v4/lc/a true
 	# The last nfsd goes: the version 4 connection stays and works.
 	c() { ssh netbsd 'netstat -an -f inet' 2>/dev/null | grep '127.0.0.1.2049 .*ESTABLISHED' | sort; }
-	# Which connection is which, by traffic while only one mount is used.
+
 	echo '$ connections, both up'
 	c | tee "$OUT/conn0"
 	t sudo sh -c 'echo before >/mnt/v4/lc/k'
-	ssh netbsd 'pkill -x nfsd; sleep 3; ps -ax | grep "[n]fsd" || echo no nfsd'
+	t ssh netbsd 'sh /var/tmp/nfsbridge/stopnfsd.sh'
 	echo '$ connections, nfsd gone'
 	c | tee "$OUT/conn1"
 	t test "$(wc -l <"$OUT/conn1")" -ge 1

@@ -57,6 +57,10 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: nfs_serv.c,v 1.185 2026/06/18 19:58:17 christos Exp $");
 
+#ifdef _KERNEL_OPT
+#include "opt_nfs_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -89,7 +93,11 @@ __KERNEL_RCSID(0, "$NetBSD: nfs_serv.c,v 1.185 2026/06/18 19:58:17 christos Exp 
 #include <nfs/nfsm_subs.h>
 #include <nfs/nfs_var.h>
 
+#ifdef NFSSERVER_ONCRPC
+MODULE(MODULE_CLASS_MISC, nfsserver, "nfs,oncrpc");
+#else
 MODULE(MODULE_CLASS_MISC, nfsserver, "nfs");
+#endif
 
 /* Global vars */
 extern u_int32_t nfs_xdrneg1;
@@ -126,6 +134,11 @@ nfsserver_modcmd(modcmd_t cmd, void *arg)
 		nfsrv_init(0);		/* Init server data structures */
 		vfs_hooks_attach(&nfs_export_hooks);
 		nfs_timer_srvinit(nfsrv_timer);
+#ifdef NFSSERVER_ONCRPC
+		error = nfs_oncrpc_init();
+		if (error != 0)
+			panic("nfs_oncrpc_init: %d", error);
+#endif
 		return 0;
 	case MODULE_CMD_FINI:
 		error = syscall_disestablish(NULL, nfsserver_syscalls);
@@ -139,6 +152,9 @@ nfsserver_modcmd(modcmd_t cmd, void *arg)
 		netexport_fini();
 		vfs_hooks_detach(&nfs_export_hooks);
 
+#ifdef NFSSERVER_ONCRPC
+		nfs_oncrpc_fini();
+#endif
 		/* Kill timer before server goes away. */
 		nfs_timer_srvfini();
 		nfsrv_fini();

@@ -122,7 +122,7 @@ def test_s15_2_copy(t, env):
         fail("count %d" % r.cr_response.wr_count)
     if len(r.cr_response.wr_callback_id) != 0:
         fail("async")
-    if not (r.cr_requirements.cr_consecutive and r.cr_requirements.cr_synchronous):
+    if not (r.cr_resok4.cr_requirements.cr_consecutive and r.cr_resok4.cr_requirements.cr_synchronous):
         fail("requirements")
     if rd(sess, fh2, st2, 5, 32768) != data[10:10 + 32768]:
         fail("data")

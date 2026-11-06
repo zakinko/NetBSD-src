@@ -161,10 +161,12 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 		echo "DELEGRETURN before $r0 after $(dreturns "$m")"
 		t test "$(dreturns "$m")" -gt "$r0"
 		# The connection goes, and with it the backchannel, s2.10.13.1.2.
-		t sudo ss -K dst 127.0.0.1 dport = 2049
-		sleep 5
-		t cat "$m/dg/a"
+		t sudo pkill -f 'ssh -f -N .*2049:127.0.0.1:2049'
+		t ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+		    -L 2049:127.0.0.1:2049 netbsd
 		sleep 2
+		t sh -c "cat $m/dg/a >/dev/null"
+		sleep 5
 		r0=$(dreturns "$m")
 		exec 3<"$m/dg/a"
 		sleep 1

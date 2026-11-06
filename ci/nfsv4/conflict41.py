@@ -24,4 +24,9 @@ for i in range(30):
     delays += 1
     time.sleep(1)
 print("open", res.status, "after", delays, "delays")
-sys.exit(0 if res.status == NFS4_OK and delays > 0 else 1)
+if res.status == NFS4_OK:
+    # Left open, it would keep the holder from the next delegation.
+    sid = res.resarray[-1].stateid
+    close = use_obj(exp + name.split(b'/')) + [op.close(0, sid)]
+    print("close", s.compound(close).status)
+sys.exit(0 if res.status == NFS4_OK else 1)

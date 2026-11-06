@@ -59,6 +59,33 @@ elif what == 'quota':
     subprocess.call(['ssh', 'netbsd', 'repquota', '-u', arg])
     want('used is bytes of the write or more', used >= 65536, True)
     want('hard is soft + 1000 blocks', hard - soft, 1000 * 512, 1000 * 1024)
+elif what == 'prev':
+    # s10.2.1: a client restarts, and takes its delegation back.
+    time.sleep(0)
+    cid = b'prev%d' % os.getpid()
+    c = nfs4lib.NFS4Client(cid, host=b'127.0.0.1', port=2049, homedir=export,
+                           sec_list=[rpc.SecAuthSys(0, b'x', 0, 0, [])])
+    c.init_connection(cid, cb_ident=0)
+    time.sleep(2)
+    path = export + [b'pv%d' % os.getpid()]
+    r = c.create_file(b'o', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE)
+    fh, sid = c.confirm(b'o', r)
+    r = c.open_file(b'o', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE)
+    d = r.resarray[-2].switch.switch.delegation
+    want('a read delegation', d.delegation_type, OPEN_DELEGATE_READ)
+    c.verifier = b'restart1'
+    c.init_connection(cid, cb_ident=0)
+    r = c.open_file(b'o2', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE,
+                    claim_type=CLAIM_DELEGATE_PREV)
+    want('CLAIM_DELEGATE_PREV', r.status, NFS4_OK)
+    if r.status == NFS4_OK:
+        want('it came back', r.resarray[-2].switch.switch.delegation.delegation_type,
+             OPEN_DELEGATE_READ)
+    r = c.compound([op.delegpurge(c.clientid)])
+    want('DELEGPURGE', r.status, NFS4_OK)
+    r = c.open_file(b'o3', path, access=OPEN4_SHARE_ACCESS_READ, deny=OPEN4_SHARE_DENY_NONE,
+                    claim_type=CLAIM_DELEGATE_PREV)
+    want('after DELEGPURGE, s16.16.5', r.status, NFS4ERR_INVAL)
 elif what == 'fair':
     c1, c2, c3 = client(b'f1', export), client(b'f2', export), client(b'f3', export)
     path = export + [b'fair%d' % os.getpid()]

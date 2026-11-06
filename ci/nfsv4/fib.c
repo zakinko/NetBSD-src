@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 int
@@ -25,6 +26,7 @@ main(int argc, char **argv)
 	static char sbuf[SBLOCKSIZE];
 	struct fs *fs = (struct fs *)sbuf;
 	struct ufs2_dinode di;
+	char *blk;
 	int64_t *ib;
 	off_t off;
 	ino_t ino;
@@ -40,10 +42,13 @@ main(int argc, char **argv)
 		err(1, "sb");
 	if (fs->fs_magic != FS_UFS2_MAGIC)
 		errx(1, "magic %x", fs->fs_magic);
-	off = (off_t)FFS_FSBTODB(fs, ino_to_fsba(fs, ino)) * DEV_BSIZE +
-	    ino_to_fsbo(fs, ino) * sizeof(di);
-	if (pread(fd, &di, sizeof(di), off) != sizeof(di))
+	/* A raw device reads whole sectors. */
+	if ((blk = malloc(fs->fs_bsize)) == NULL)
+		err(1, "malloc");
+	off = (off_t)FFS_FSBTODB(fs, ino_to_fsba(fs, ino)) * DEV_BSIZE;
+	if (pread(fd, blk, fs->fs_bsize, off) != fs->fs_bsize)
 		err(1, "inode");
+	memcpy(&di, blk + ino_to_fsbo(fs, ino) * sizeof(di), sizeof(di));
 	printf("ib %lld ", (long long)di.di_ib[0]);
 	if (di.di_ib[0] != 0) {
 		cnt = fs->fs_bsize / sizeof(*ib);

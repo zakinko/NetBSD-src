@@ -86,6 +86,9 @@ if [ -f "$D/modules/zfs.kmod" ] && zpool version >/dev/null 2>&1; then
 	chmod 1777 /tank/x
 	zfs create -o utf8only=on tank/u
 	chmod 1777 /tank/u
+	# The default aclinherit, as passthrough takes no notice of a mode.
+	zfs create tank/r
+	chmod 1777 /tank/r
 	zfs list
 fi
 mount | grep /export/
@@ -100,6 +103,7 @@ cat >/etc/exports <<EOF
 /export/ffds -maproot=root -noresvport
 /export/mig2 -maproot=root -noresvport
 /tank/u -maproot=root -noresvport
+/tank/r -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
 /export/ffs1 -maproot=root -noresvport
 /tank/x -maproot=root -noresvport

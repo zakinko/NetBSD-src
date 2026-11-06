@@ -29,8 +29,12 @@
 #ifndef _ONCRPC_ONCRPC_GSS_H_
 #define _ONCRPC_ONCRPC_GSS_H_
 
+#include <rpc/types.h>
+#include <rpc/xdr.h>
+
 #define	RPCSEC_GSS		6	/* RFC 2203 s3, the flavor */
 #define	RPCSEC_GSS_VERS_1	1	/* RFC 2203 s5 */
+#define	RPCSEC_GSS_VERS_2	2	/* RFC 5403 s3.2 */
 #define	RPCSEC_GSS_MAXSEQ	0x80000000U	/* RFC 2203 s5, MAXSEQ */
 
 /* RFC 2203 s5, enum rpc_gss_proc_t */
@@ -38,6 +42,21 @@
 #define	RPCSEC_GSS_INIT		1
 #define	RPCSEC_GSS_CONTINUE_INIT 2
 #define	RPCSEC_GSS_DESTROY	3
+#define	RPCSEC_GSS_BIND_CHANNEL	4	/* RFC 5403 s3.2 */
+
+/* RFC 2203 s5, enum rpc_gss_service_t; RFC 5403 s3.2 */
+#define	RPCSEC_GSS_SVC_NONE	1
+#define	RPCSEC_GSS_SVC_INTEGRITY 2
+#define	RPCSEC_GSS_SVC_PRIVACY	3
+#define	RPCSEC_GSS_SVC_CHANNEL	4
+
+/* RFC 2623 s4.2, the pseudo flavors */
+#define	RPCSEC_GSS_KRB5		390003
+#define	RPCSEC_GSS_KRB5I	390004
+#define	RPCSEC_GSS_KRB5P	390005
+
+/* RFC 2203 App. A */
+#define	RPCSEC_GSS_S_CONTINUE_NEEDED 1
 
 /* RFC 2203 s4, the auth_stat values it adds */
 #define	RPCSEC_GSS_CREDPROBLEM	13
@@ -45,6 +64,9 @@
 
 /* Chosen, RFC 2203 s5.3.3.1 suggesting about the number of threads. */
 #define	RPCSEC_GSS_WINDOW	128
+
+/* A verifier: GSS_KRB5_MAXMIC, or an rgss2_bind_chan_verf_res with one. */
+#define	ONCRPC_GSS_MAXVERF	128
 
 struct oncrpc_gss_cred {
 	uint32_t	gc_vers;
@@ -61,8 +83,44 @@ struct oncrpc_gss_seq {
 	bool		gs_any;
 };
 
-bool	oncrpc_gss_cred_decode(XDR *, struct oncrpc_gss_cred *);
+uint32_t oncrpc_gss_cred_decode(XDR *, struct oncrpc_gss_cred *);
 void	oncrpc_gss_seq_init(struct oncrpc_gss_seq *);
 bool	oncrpc_gss_seq_accept(struct oncrpc_gss_seq *, uint32_t);
+
+#ifdef _KERNEL
+struct mbuf;
+struct oncrpc_call;
+struct oncrpc_gss_ctx;
+struct oncrpc_req;
+struct oncrpc_xdrmbuf;
+
+/* What a request under RPCSEC_GSS is to get. */
+enum oncrpc_gss_verdict {
+	ONCRPC_GSS_DISPATCH,	/* on to the program */
+	ONCRPC_GSS_REPLY,	/* a control message; *resp is the result */
+	ONCRPC_GSS_GARBAGE,	/* GARBAGE_ARGS, with a verifier */
+	ONCRPC_GSS_DROP,	/* no reply at all */
+	ONCRPC_GSS_DENY		/* MSG_DENIED, for the auth_stat */
+};
+
+/* One call, from oncrpc_gss_accept() until oncrpc_gss_done(). */
+struct oncrpc_gss_call {
+	struct oncrpc_gss_ctx	*gg_ctx;	/* NULL if there is none */
+	struct oncrpc_gss_cred	gg_cred;
+	uint32_t		gg_verf;	/* the flavor of the reply's */
+	uint32_t		gg_verflen;
+	uint8_t			gg_verfbody[ONCRPC_GSS_MAXVERF];
+};
+
+void	oncrpc_gss_init(void);
+void	oncrpc_gss_fini(void);
+enum oncrpc_gss_verdict
+	oncrpc_gss_accept(struct oncrpc_gss_call *, const struct oncrpc_call *,
+	    struct oncrpc_xdrmbuf *, struct mbuf **, struct oncrpc_req *,
+	    struct mbuf **, uint32_t *);
+bool	oncrpc_gss_verifier(struct oncrpc_gss_call *);
+bool	oncrpc_gss_wrap_results(struct oncrpc_gss_call *, struct mbuf **);
+void	oncrpc_gss_done(struct oncrpc_gss_call *);
+#endif
 
 #endif /* !_ONCRPC_ONCRPC_GSS_H_ */

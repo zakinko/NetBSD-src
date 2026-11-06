@@ -130,6 +130,9 @@ struct dirlist {
 #define DP_HOSTSET	0x2
 #define DP_KERB		0x4
 #define DP_NORESMNT	0x8
+/* -sec, in the same place in dp_flag, ht_flag and the opt_flags. */
+#define	DP_SECSHIFT	20
+#define	DP_SECMASK	(NFS_EXSEC_MASK << DP_SECSHIFT)
 
 struct exportlist {
 	struct exportlist *ex_next;
@@ -762,6 +765,63 @@ xdr_dir(XDR *xdrsp, char *dirp)
 	return (xdr_string(xdrsp, &dirp, RPCMNT_PATHLEN));
 }
 
+/* RFC 1813 s5.2.1, auth_flavors, and RFC 2623 s4.2 for the numbers. */
+static const struct {
+	const char *sf_name;
+	int sf_bit;
+	long sf_flavor;
+} secflavors[] = {
+	{ "krb5p",	NFS_EXSEC_KRB5P,	390005 },
+	{ "krb5i",	NFS_EXSEC_KRB5I,	390004 },
+	{ "krb5",	NFS_EXSEC_KRB5,		390003 },
+	{ "sys",	NFS_EXSEC_SYS,		1 },
+	{ "none",	NFS_EXSEC_NONE,		0 },
+};
+
+static int
+xdr_secflavors(XDR *xdrsp, int flag)
+{
+	long len = 0, auth;
+	size_t i;
+
+	flag >>= DP_SECSHIFT;
+	for (i = 0; i < __arraycount(secflavors); i++)
+		if (flag & secflavors[i].sf_bit)
+			len++;
+	if (!xdr_long(xdrsp, &len))
+		return (0);
+	for (i = 0; i < __arraycount(secflavors); i++) {
+		if ((flag & secflavors[i].sf_bit) == 0)
+			continue;
+		auth = secflavors[i].sf_flavor;
+		if (!xdr_long(xdrsp, &auth))
+			return (0);
+	}
+	return (1);
+}
+
+/*
+ * The list of flavors of -sec=, separated by colons.  Their order is
+ * not kept: the list goes to clients with the strongest first.
+ */
+static int
+parse_sec(char *arg, int *exflagsp, int *opt_flagsp)
+{
+	char *f;
+	size_t i;
+
+	while ((f = strsep(&arg, ":")) != NULL) {
+		for (i = 0; i < __arraycount(secflavors); i++)
+			if (strcmp(f, secflavors[i].sf_name) == 0)
+				break;
+		if (i == __arraycount(secflavors))
+			return (-1);
+		*exflagsp |= secflavors[i].sf_bit;
+		*opt_flagsp |= secflavors[i].sf_bit << DP_SECSHIFT;
+	}
+	return (0);
+}
+
 /*
  * Xdr routine to generate file handle reply
  */
@@ -782,6 +842,8 @@ xdr_fhs(XDR *xdrsp, caddr_t cp)
 			return (0);
 		if (!xdr_opaque(xdrsp, (caddr_t)&fhrp->fhr_fh, len))
 			return (0);
+		if ((fhrp->fhr_flag & DP_SECMASK) != 0)
+			return (xdr_secflavors(xdrsp, fhrp->fhr_flag));
 		if (fhrp->fhr_flag & DP_KERB)
 			auth = RPCAUTH_KERB4;
 		else
@@ -1413,6 +1475,7 @@ hang_dirp(struct dirlist *dp, struct grouplist *grp, struct exportlist *ep,
 			ep->ex_defdir = dp;
 		if (grp == NULL) {
 			ep->ex_defdir->dp_flag |= DP_DEFSET;
+			ep->ex_defdir->dp_flag |= flags & DP_SECMASK;
 			if (flags & OP_KERB)
 				ep->ex_defdir->dp_flag |= DP_KERB;
 			if (flags & OP_NORESMNT)
@@ -1420,6 +1483,7 @@ hang_dirp(struct dirlist *dp, struct grouplist *grp, struct exportlist *ep,
 		} else
 			while (grp) {
 				hp = get_ht();
+				hp->ht_flag |= flags & DP_SECMASK;
 				if (flags & OP_KERB)
 					hp->ht_flag |= DP_KERB;
 				if (flags & OP_NORESMNT)
@@ -1477,6 +1541,7 @@ add_dlist(struct dirlist **dpp, struct dirlist *newdp, struct grouplist *grp,
 		 */
 		do {
 			hp = get_ht();
+			hp->ht_flag |= flags & DP_SECMASK;
 			if (flags & OP_KERB)
 				hp->ht_flag |= DP_KERB;
 			if (flags & OP_NORESMNT)
@@ -1488,6 +1553,7 @@ add_dlist(struct dirlist **dpp, struct dirlist *newdp, struct grouplist *grp,
 		} while (grp);
 	} else {
 		dp->dp_flag |= DP_DEFSET;
+		dp->dp_flag |= flags & DP_SECMASK;
 		if (flags & OP_KERB)
 			dp->dp_flag |= DP_KERB;
 		if (flags & OP_NORESMNT)
@@ -1787,6 +1853,14 @@ do_opt(const char *line, size_t lineno, char **cpp, char **endcpp,
 				opt_flags |= OP_MAPALL;
 			} else
 				opt_flags |= OP_MAPROOT;
+		} else if (cpoptarg && !strcmp(cpopt, "sec")) {
+			usedarg++;
+			if (parse_sec(cpoptarg, exflagsp, &opt_flags) != 0) {
+				syslog(LOG_ERR,
+				    "\"%s\", line %ld: Bad -sec flavor list",
+				    line, (unsigned long)lineno);
+				return (1);
+			}
 		} else if (!strcmp(cpopt, "kerb") || !strcmp(cpopt, "k")) {
 			*exflagsp |= MNT_EXKERB;
 			opt_flags |= OP_KERB;

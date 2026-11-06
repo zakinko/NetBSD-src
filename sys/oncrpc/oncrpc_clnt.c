@@ -50,6 +50,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/systm.h>
 #include <sys/time.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 
 #include <netinet/in.h>
 
@@ -197,4 +198,21 @@ oncrpc_clnt_call(const struct sockaddr *to,
 	sounlock(so);
 	soclose(so);
 	return error;
+}
+
+/* The same to a local socket, of a daemon on this machine. */
+int
+oncrpc_clnt_call_unix(const char *path, const struct oncrpc_clnt_call *cc,
+    int timeo)
+{
+	struct sockaddr_un sun;
+
+	memset(&sun, 0, sizeof(sun));
+	sun.sun_family = AF_LOCAL;
+	if (strlcpy(sun.sun_path, path, sizeof(sun.sun_path)) >=
+	    sizeof(sun.sun_path))
+		return ENAMETOOLONG;
+	sun.sun_len = offsetof(struct sockaddr_un, sun_path) +
+	    strlen(sun.sun_path) + 1;
+	return oncrpc_clnt_call((const struct sockaddr *)&sun, cc, timeo);
 }

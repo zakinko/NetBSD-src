@@ -27,11 +27,9 @@
  */
 
 /*
- * The pieces of RPCSEC_GSS, RFC 2203, that need no GSS-API: the credential
- * and the sequence window.  The kernel has no Kerberos and no way yet to
- * reach one in userland, so no context can come to exist, and flavor 6
- * still gets AUTH_REJECTEDCRED from oncrpc_auth_lookup().  Nothing here
- * sleeps or allocates, and tests/oncrpc runs it in userland.
+ * The pieces of RPCSEC_GSS, RFC 2203, that touch no context: the
+ * credential and the sequence window.  Nothing here sleeps or allocates,
+ * and tests/oncrpc runs it in userland.  The rest is oncrpc_gss_svc.c.
  */
 
 #include <sys/cdefs.h>
@@ -50,22 +48,37 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/oncrpc_gss.h>
 
-/* RFC 2203 s5, rpc_gss_cred_t.  False if it is not version 1 or is bad. */
-bool
+/* The values of ONCRPC_AUTH_*, as this is built without oncrpc.h too. */
+#define	ONCRPC_GSS_BADCRED	1
+#define	ONCRPC_GSS_REJECTEDCRED	2
+
+/*
+ * RFC 2203 s5, rpc_gss_cred_t, with the version of RFC 5403 s3.2.
+ * Returns an auth_stat: AUTH_REJECTEDCRED for a version not known,
+ * s5.1, and AUTH_BADCRED for a bad credential, s5.3.3.3.
+ */
+uint32_t
 oncrpc_gss_cred_decode(XDR *x, struct oncrpc_gss_cred *gc)
 {
 
-	if (!xdr_u_int32_t(x, &gc->gc_vers) ||
-	    gc->gc_vers != RPCSEC_GSS_VERS_1 ||
-	    !xdr_u_int32_t(x, &gc->gc_proc) ||
+	if (!xdr_u_int32_t(x, &gc->gc_vers))
+		return ONCRPC_GSS_BADCRED;
+	if (gc->gc_vers != RPCSEC_GSS_VERS_1 &&
+	    gc->gc_vers != RPCSEC_GSS_VERS_2)
+		return ONCRPC_GSS_REJECTEDCRED;
+	if (!xdr_u_int32_t(x, &gc->gc_proc) ||
 	    !xdr_u_int32_t(x, &gc->gc_seq) ||
 	    !xdr_u_int32_t(x, &gc->gc_service) ||
 	    !xdr_u_int32_t(x, &gc->gc_handlelen) ||
 	    gc->gc_handlelen > sizeof(gc->gc_handle))
-		return false;
-	if (gc->gc_proc > RPCSEC_GSS_DESTROY)
-		return false;
-	return xdr_opaque(x, (char *)gc->gc_handle, gc->gc_handlelen) != 0;
+		return ONCRPC_GSS_BADCRED;
+	if (gc->gc_proc > RPCSEC_GSS_BIND_CHANNEL ||
+	    (gc->gc_proc == RPCSEC_GSS_BIND_CHANNEL &&
+	    gc->gc_vers != RPCSEC_GSS_VERS_2))
+		return ONCRPC_GSS_BADCRED;
+	if (xdr_opaque(x, (char *)gc->gc_handle, gc->gc_handlelen) == 0)
+		return ONCRPC_GSS_BADCRED;
+	return 0;
 }
 
 void

@@ -178,6 +178,19 @@ extern int nfs_niothreads;              /* Number of async_daemons desired */
  * nfs_update_exports_30 function in nfs_export.c accordingly to convert
  * export_args to export_args30.
  */
+/*
+ * The flavors an export accepts, in ex_flags, as bits that no MNT_EX*
+ * uses, so that struct export_args stays as it is and a mountd that knows
+ * nothing of them means what it always did.  None set is the old
+ * behaviour: AUTH_SYS and AUTH_NONE.
+ */
+#define	NFS_EXSEC_NONE	0x01
+#define	NFS_EXSEC_SYS	0x02
+#define	NFS_EXSEC_KRB5	0x04
+#define	NFS_EXSEC_KRB5I	0x08
+#define	NFS_EXSEC_KRB5P	0x10
+#define	NFS_EXSEC_MASK	0x1f
+
 struct export_args {
 	int	ex_flags;		/* export related flags */
 	uid_t	ex_root;		/* mapping for root uid */

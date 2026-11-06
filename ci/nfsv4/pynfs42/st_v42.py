@@ -157,7 +157,7 @@ def test_s15_5_contradictory(t, env):
     print(res.resarray[-1].ior_hints)
 
 def test_s15_8_offload(t, env):
-    """s4.1.2 no stateid was given out, so none is found
+    """s4.8 a stateid never given out is not found
     FLAGS: v42
     CODE: V4208
     VERS: 2-
@@ -386,3 +386,76 @@ def test_s15_10_lock_range(t, env):
     sess2, fh2, st2 = mk(t, env, b"x", b"_n")
     check(write_file(sess2, fh2, b"y", 1 << 20, st2))
     print(sess2.compound([op.putfh(fh2), op.read_plus(st2, bs, bs)]).resarray[-1].rpr_eof)
+
+def poll(sess, fh, sid):
+    import time
+    for i in range(300):
+        res = sess.compound([op.putfh(fh), op.offload_status(sid)])
+        if res.status == NFS4ERR_BAD_STATEID:
+            return None         # it has been reported and is gone
+        check(res)
+        r = res.resarray[-1]
+        if r.osr_complete:
+            return r.osr_complete[0]
+        time.sleep(1)
+    fail("never finished")
+
+def test_s15_12_all_blocks(t, env):
+    """s15.12.3 all of adb_block_count, past where a COPY stops; s15.12.3.1
+    FLAGS: v42
+    CODE: V4221
+    VERS: 2-
+    """
+    sess, fh, st = mk(t, env)
+    n = 18000
+    adb = app_data_block4(0, 4096, n, 0, 0, NOVAL, b"")
+    res = sess.compound([op.putfh(fh), op.write_same(st, UNSTABLE4, adb)])
+    check(res)
+    r = res.resarray[-1]
+    if r.wr_callback_id:
+        print("async")
+        s = poll(sess, fh, r.wr_callback_id[0])
+        if s not in (None, NFS4_OK):
+            fail("status %d" % s)
+    elif r.wr_count != n * 4096:
+        fail("short %d" % r.wr_count)
+    b = rd(sess, fh, st, (n - 1) * 4096, 4096)
+    if b[:4] != (n - 1).to_bytes(4, "big"):
+        fail("last block %r" % b[:4])
+
+def test_s15_2_async(t, env):
+    """s15.2.3 a long COPY that may be asynchronous ends with all of it
+    FLAGS: v42
+    CODE: V4222
+    VERS: 2-
+    """
+    sess, fh, st = mk(t, env)
+    total = 70 << 20
+    check(write_file(sess, fh, b"end", total - 3, st))
+    fh2, st2 = mk2(sess, env, t)
+    res = sess.compound([op.putfh(fh), op.savefh(), op.putfh(fh2),
+                         op.copy(st, st2, 0, 0, 0, 0, 0, [])])
+    check(res)
+    r = res.resarray[-1]
+    if r.cr_response.wr_callback_id:
+        print("async")
+        sid = r.cr_response.wr_callback_id[0]
+        if sid.seqid == 0:
+            fail("s4.8: a seqid of zero")
+        s = poll(sess, fh2, sid)
+        if s not in (None, NFS4_OK):
+            fail("status %d" % s)
+        if rd(sess, fh2, st2, total - 3, 3) != b"end":
+            fail("data")
+    elif r.cr_response.wr_count == 0:
+        fail("nothing copied")
+
+def test_s4_cancel_other_user(t, env):
+    """s4.1.2 OFFLOAD_CANCEL of a stateid nothing runs under is BAD_STATEID
+    FLAGS: v42
+    CODE: V4223
+    VERS: 2-
+    """
+    sess, fh, st = mk(t, env)
+    bad = stateid4(1, b"\x55" * 12)
+    check(sess.compound([op.putfh(fh), op.offload_cancel(bad)]), NFS4ERR_BAD_STATEID)

@@ -56,6 +56,8 @@ struct vnode;
 #define	NFSV4_CB_UP		1
 #define	NFSV4_CB_DOWN		2
 
+#define	NFSV4_PRINCIPAL_MAX	128	/* ONCRPC_GSSD_MAXNAME */
+
 /*
  * How many connections a session remembers, a choice: the oldest goes
  * first, and nothing tells a session that one has closed.  A connection
@@ -134,6 +136,8 @@ struct nfsv4_client {
 	uint32_t	cl_cbident;
 	uid_t		cl_uid;		/* the principal */
 	gid_t		cl_gid;		/* and for callbacks, s3.3.3 */
+	uint32_t	cl_cbservice;	/* RPCSEC_GSS: of SETCLIENTID */
+	char		cl_principal[NFSV4_PRINCIPAL_MAX];
 	uint32_t	cl_flavor;
 	uint64_t	cl_connid;	/* last connection known to be its */
 	u_int		cl_cbstate;

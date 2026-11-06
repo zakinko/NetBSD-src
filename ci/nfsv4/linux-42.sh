@@ -155,8 +155,34 @@ punchfsck() {
 	t grep -q 'Phase 5' "$OUT/fsck-$v.txt"
 	n grep -E 'BAD|DUP|MISSING|UNREF|INCORRECT BLOCK' "$OUT/fsck-$v.txt"
 }
+# A file locked on the server, and flock from a client of version $1 with
+# vfs.nfsv4.delegations at $2.  Whether a delegation is what lets it by.
+flockab() {
+	p=/mnt/v42ab
+	sudo mkdir -p "$p"
+	ssh netbsd "sysctl -w vfs.nfsv4.delegations=$2"
+	t sudo mount -t nfs -o vers=$1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys 127.0.0.1:/export/pynfs "$p"
+	sleep 3
+	t sudo sh -c "echo x >$p/ab"
+	t sudo chmod 666 "$p/ab"
+	cat "$p/ab" >/dev/null
+	ssh netbsd "flock -n /export/pynfs/ab sleep 8" &
+	h=$!
+	sleep 3
+	echo "\$ flock -n, vers=$1 delegations=$2"
+	if flock -n "$p/ab" true; then echo "granted vers=$1 delegations=$2"; else echo "refused vers=$1 delegations=$2"; fi
+	wait $h
+	grep -E 'DELEGRETURN|  LOCK:' /proc/self/mountstats | sort -u | head -4
+	sudo rm -f "$p/ab"
+	sudo umount "$p"
+	ssh netbsd "sysctl -w vfs.nfsv4.delegations=2"
+}
 {
 	uname -a
+	flockab 4.1 2
+	flockab 4.2 2
+	flockab 4.1 0
+	flockab 4.2 0
 	echo '$ fsck of FFSv1 fresh from newfs, the control'
 	ssh netbsd cat /var/tmp/nfsv4/fsck-control.txt
 	grep -E 'READ_PLUS' "/boot/config-$(uname -r)" || :

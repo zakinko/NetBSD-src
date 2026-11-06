@@ -426,6 +426,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
 			nfsv4_stable_fini();
+			nfsv4_deleg_fini();
 			nfsv4_cb_fini();
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
@@ -443,6 +444,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		nfsv4_sysctl_init();
 		return 0;
 	case MODULE_CMD_FINI:
+		nfsv4_deleg_fini();
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
 		oncrpc_svc_destroy(nfsv4_svc);

@@ -38,9 +38,8 @@
  * Whether to give one is decided by what is known of the file here;
  * nothing tries to guess future conflicts.  A conflict is answered with
  * NFS4ERR_DELAY while the recall runs, s10.2, rather than holding up a
- * worker.  Local processes on the server do not recall delegations:
- * the VFS has no hook for that, so the promise of s10.4 holds among NFS
- * clients only.
+ * worker.  A local process recalls through vn_lease_break() and waits.
+ * What it has open already is seen only as v_writecount, below.
  *
  * Which client asks is not known for an operation with no stateid and
  * no client ID.  s10.4.4 cares for SETATTR, and s10.4.3 for GETATTR, so
@@ -67,17 +66,32 @@ __KERNEL_RCSID(0, "$NetBSD$");
 /* A choice, to bound what clients can make this keep. */
 #define	NFSV4_DELEG_MAX		65536
 
-/*
- * vfs.nfsv4.delegations: 0 for none, 1 for read, 2 for read and write.
- * Processes on the server do not recall anything, and a client with a
- * write delegation keeps its locks to itself, s10.4.2, so an export that
- * local processes share with clients wants less than 2.
- */
+/* vfs.nfsv4.delegations: 0 for none, 1 for read, 2 for read and write. */
 int nfsv4_deleg_mode = 2;
 
 /* Recalled and not yet back. */
 static LIST_HEAD(, nfsv4_state) deleg_recalled;
 static volatile u_int deleg_count;
+
+/*
+ * A local process wants to do what, see vn_lease_break().  It waits for
+ * the end of the recall, which is bounded, s10.4.6.  Unlike a client it
+ * has no NFS4ERR_DELAY to be told.
+ */
+static void
+deleg_lease_hook(struct vnode *vp, u_int what)
+{
+
+	CTASSERT(VN_LEASE_READ == NFSV4_DC_READ);
+	CTASSERT(VN_LEASE_WRITE == NFSV4_DC_WRITE);
+
+	if (atomic_load_relaxed(&deleg_count) == 0)
+		return;
+	mutex_enter(&nfsv4_state_lock);
+	while (nfsv4_deleg_conflict(vp, NULL, 0, what) != NFS4_OK)
+		(void)cv_timedwait(&nfsv4_state_cv, &nfsv4_state_lock, hz);
+	mutex_exit(&nfsv4_state_lock);
+}
 
 void
 nfsv4_deleg_init(void)
@@ -85,6 +99,14 @@ nfsv4_deleg_init(void)
 
 	LIST_INIT(&deleg_recalled);
 	deleg_count = 0;
+	vn_lease_set(deleg_lease_hook);
+}
+
+void
+nfsv4_deleg_fini(void)
+{
+
+	vn_lease_set(NULL);
 }
 
 /* The start of a recall.  Time for it to end is s10.4.6's. */
@@ -196,7 +218,8 @@ nfsv4_deleg_offer(struct nfsv4_owner_s *sw, struct vnode *vp,
 
 	if (cl->cl_cbstate != NFSV4_CB_UP || !sw->sw_confirmed ||
 	    ds->ds_st == NULL || deleg_count >= NFSV4_DELEG_MAX ||
-	    nfsv4_deleg_mode == 0 || (write && nfsv4_deleg_mode == 1))
+	    nfsv4_deleg_mode == 0 || (write && nfsv4_deleg_mode == 1) ||
+	    (write && ds->ds_nowrite) || vp->v_writecount != 0)
 		return;
 	f = nfsv4_file_find(vp);
 	KASSERT(f != NULL);

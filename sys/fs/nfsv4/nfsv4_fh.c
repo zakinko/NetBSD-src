@@ -239,7 +239,6 @@ nfsv4_cfh_setattr(struct nfsv4_cfh *cf, u_int kind, const char *name,
 		break;
 	default:
 		fh->fh_data[0] = NFSV4_FHT_REAL;
-		fh->fh_data[1] = 0;
 		break;
 	}
 	return NFS4_OK;

@@ -158,6 +158,7 @@ SLIST_HEAD(nfsv4_reap, nfsv4_state);
 
 /* Allocated beforehand for a delegation that may come of an OPEN. */
 struct nfsv4_deleg_spare {
+	bool		ds_nowrite;	/* locks on the file, of whoever */
 	struct nfsv4_state *ds_st;
 	struct nfsv4_owner_s *ds_sw;
 	struct nfsv4_file *ds_f;
@@ -184,6 +185,7 @@ void	nfsv4_state_fini(void);
 void	nfsv4_cb_init(void);
 void	nfsv4_cb_fini(void);
 void	nfsv4_deleg_init(void);
+void	nfsv4_deleg_fini(void);
 void	nfsv4_stable_init(void);
 void	nfsv4_stable_fini(void);
 void	nfsv4_grace_scan(void);

@@ -545,6 +545,17 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	 * The handle goes to the state before the current handle changes:
 	 * CB_RECALL and a PUTFH of a file now unlinked want the file's.
 	 */
+	if (ds->ds_st != NULL) {
+		struct flock fl;
+
+		/* s10.4.2 has the holder lock alone; nobody may have any. */
+		memset(&fl, 0, sizeof(fl));
+		fl.l_whence = SEEK_SET;
+		fl.l_type = F_WRLCK;
+		if (VOP_ADVLOCK(vp, ds, F_GETLK, &fl, 0) != 0 ||
+		    fl.l_type != F_UNLCK)
+			ds->ds_nowrite = true;
+	}
 	vref(vp);
 	st = nfsv4_cfh_setvp(c, &fc, vp);
 	if (st != NFS4_OK) {

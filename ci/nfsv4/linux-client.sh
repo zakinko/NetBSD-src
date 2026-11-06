@@ -125,12 +125,10 @@ acl() {
 	t sudo rm -rf "$m/f" "$m/d"
 	t sudo umount "$m"
 }
-# With write delegations, which the checks against processes on the
-# server in one() cannot have.  How many came back is the measurement.
+# With delegations in mind.  How many came back is the measurement.
 deleg() {
 	m=/mnt/nfsv4deleg
 	sudo mkdir -p "$m"
-	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'
 	t sudo mount -v -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard,timeo=100,retrans=2 \
 	    127.0.0.1:/export/pynfs "$m"
 	sleep 3
@@ -149,11 +147,9 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 	t sudo rm -rf "$m/dg"
 	grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -4
 	t sudo umount "$m"
-	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=1 || sysctl -w vfs.nfsv4.delegations=1'
 }
 {
 	uname -a
-	ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=1 || sysctl -w vfs.nfsv4.delegations=1'
 	deleg
 	one /export/pynfs
 	one /export/tmpfs

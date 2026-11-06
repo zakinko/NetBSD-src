@@ -47,5 +47,7 @@ setattr_('unknown name', FATTR4_OWNER, b'bob@example.org', NFS4ERR_BADOWNER)
 setattr_('other domain', FATTR4_OWNER, b'alice@example.com', NFS4ERR_BADOWNER)
 setattr_('bad label', FATTR4_OWNER, b'alice@-bad.org', NFS4ERR_INVAL)
 setattr_('bad UTF-8', FATTR4_OWNER, b'alice@\xc0\xaf.org', NFS4ERR_INVAL)
+# bücher.example = xn--bcher-kva.example, s12.6 by RFC 3492
+setattr_('bad Punycode', FATTR4_OWNER, b'alice@xn--a-.org', NFS4ERR_INVAL)
 print('failures: %d' % fails)
 sys.exit(1 if fails else 0)

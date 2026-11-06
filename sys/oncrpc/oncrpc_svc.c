@@ -61,6 +61,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/mutex.h>
 #include <sys/protosw.h>
 #include <sys/queue.h>
+#include <sys/signalvar.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/systm.h>
@@ -95,6 +96,11 @@ struct oncrpc_prog {
 	u_int			 pg_refs;
 };
 
+struct oncrpc_worker {
+	SLIST_ENTRY(oncrpc_worker) wk_list;
+	struct lwp		*wk_lwp;
+};
+
 struct oncrpc_svc {
 	kmutex_t		 svc_lock;
 	kcondvar_t		 svc_cv;	/* work for the workers */
@@ -102,14 +108,15 @@ struct oncrpc_svc {
 	TAILQ_HEAD(, oncrpc_xprt) svc_pending;
 	LIST_HEAD(, oncrpc_xprt) svc_xprts;
 	LIST_HEAD(, oncrpc_prog) svc_progs;
+	SLIST_HEAD(, oncrpc_worker) svc_workers;
 	u_int			 svc_nxprt;
-	u_int			 svc_nalloc;	/* of svc_workers */
 	u_int			 svc_nworkers;
 	bool			 svc_dying;
-	struct lwp		 *svc_workers[];
+	/* Under oncrpc_named_lock, for oncrpc_svc_hold(). */
+	LIST_ENTRY(oncrpc_svc)	 svc_named;
+	char			 svc_name[16];
+	u_int			 svc_refs;
 };
-
-#define	SVC_SIZE(n)	(sizeof(struct oncrpc_svc) + (n) * sizeof(struct lwp *))
 
 /* xp_flags */
 #define	XP_READABLE	0x01	/* the socket may have something */
@@ -123,6 +130,9 @@ struct oncrpc_xprt {
 	file_t			*xp_fp;
 	struct socket		*xp_so;
 	struct mbuf		*xp_nam;	/* the peer, if connected */
+	const void		*xp_tag;	/* for closesocks */
+	void			*xp_ctx;	/* see oncrpc_req_ctx() */
+	void			(*xp_ctxdtor)(void *);
 	u_int			 xp_refs;
 	u_int			 xp_flags;
 	u_int			 xp_nreqs;	/* calls in progress */
@@ -146,6 +156,9 @@ struct oncrpc_ireq {
 };
 
 static u_int oncrpc_nsvc;
+static kmutex_t oncrpc_named_lock;
+static LIST_HEAD(, oncrpc_svc) oncrpc_named =
+    LIST_HEAD_INITIALIZER(oncrpc_named);
 
 static void
 xprt_queue(struct oncrpc_xprt *xp)
@@ -193,6 +206,8 @@ xprt_rele(struct oncrpc_xprt *xp)
 
 	KASSERT((xp->xp_flags & XP_DEAD) != 0);
 	KASSERT(SIMPLEQ_EMPTY(&xp->xp_sendq));
+	if (xp->xp_ctx != NULL)
+		(*xp->xp_ctxdtor)(xp->xp_ctx);
 	oncrpc_rm_fini(&xp->xp_rm);
 	m_freem(xp->xp_nam);
 	closef(xp->xp_fp);
@@ -398,6 +413,25 @@ xprt_send(struct oncrpc_ireq *ir)
 		xprt_zap(xp);
 }
 
+/*
+ * A message a program made whole.  nfs_rephead() does not fill in the
+ * packet header, and a copy from a reply cache has a stale one.
+ */
+static void
+req_setraw(struct oncrpc_ireq *ir, struct mbuf *raw)
+{
+	struct mbuf *m;
+	u_int len;
+
+	KASSERT((raw->m_flags & M_PKTHDR) != 0);
+	len = 0;
+	for (m = raw; m != NULL; m = m->m_next)
+		len += m->m_len;
+	raw->m_pkthdr.len = len;
+	m_reset_rcvif(raw);
+	ir->ir_reply = raw;
+}
+
 static struct oncrpc_prog *
 svc_prog_hold(struct oncrpc_svc *svc, const struct oncrpc_call *c,
     uint32_t *lowp, uint32_t *highp, bool *known)
@@ -526,6 +560,17 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	case ONCRPC_NOREPLY:
 		XDR_DESTROY(rq->rq_res);
 		goto drop;
+	case ONCRPC_RAWREPLY:
+		XDR_DESTROY(rq->rq_res);
+		XDR_DESTROY(&hdr.xm_xdr);
+		req_setraw(ir, rq->rq_raw);
+		rq->rq_raw = NULL;
+		xprt_send(ir);
+		return;
+	case ONCRPC_DEFERRED:
+		/* ir may be gone already; oncrpc_req_finish() has it. */
+		XDR_DESTROY(&hdr.xm_xdr);
+		return;
 	case ONCRPC_ERR_PROC:
 		stat = ONCRPC_PROC_UNAVAIL;
 		break;
@@ -560,19 +605,40 @@ drop:
 	req_free(ir);
 }
 
-static void
-svc_worker(void *arg)
+/*
+ * Serve until the server goes.  With sig also until a signal, which
+ * does not wait for a queue that never empties; a signal taken instead
+ * of a wakeup passes the wakeup on.
+ */
+static int
+svc_loop(struct oncrpc_svc *svc, bool sig)
 {
-	struct oncrpc_svc *svc = arg;
 	struct oncrpc_xprt *xp;
 	struct oncrpc_ireq *ir;
 	struct mbuf *m, *nam;
+	int error = 0;
 
 	mutex_enter(&svc->svc_lock);
 	for (;;) {
+		if (sig && sigispending(curlwp, 0)) {
+			error = EINTR;
+			break;
+		}
 		while ((xp = TAILQ_FIRST(&svc->svc_pending)) == NULL &&
-		    !svc->svc_dying)
-			cv_wait(&svc->svc_cv, &svc->svc_lock);
+		    !svc->svc_dying) {
+			if (!sig) {
+				cv_wait(&svc->svc_cv, &svc->svc_lock);
+				continue;
+			}
+			error = cv_wait_sig(&svc->svc_cv, &svc->svc_lock);
+			if (error != 0)
+				break;
+		}
+		if (error != 0) {
+			if (!TAILQ_EMPTY(&svc->svc_pending))
+				cv_signal(&svc->svc_cv);
+			break;
+		}
 		if (xp == NULL)
 			break;
 		TAILQ_REMOVE(&svc->svc_pending, xp, xp_pending);
@@ -612,7 +678,62 @@ svc_worker(void *arg)
 		mutex_enter(&svc->svc_lock);
 	}
 	mutex_exit(&svc->svc_lock);
+	return error;
+}
+
+static void
+svc_worker(void *arg)
+{
+
+	(void)svc_loop(arg, false);
 	kthread_exit(0);
+}
+
+/* Lend the calling thread to the server until it is signalled. */
+int
+oncrpc_svc_run(struct oncrpc_svc *svc)
+{
+
+	return svc_loop(svc, true);
+}
+
+static struct oncrpc_svc *
+svc_alloc(void)
+{
+	struct oncrpc_svc *svc;
+
+	svc = kmem_zalloc(sizeof(*svc), KM_SLEEP);
+	mutex_init(&svc->svc_lock, MUTEX_DRIVER, IPL_SOFTNET);
+	cv_init(&svc->svc_cv, "oncrpc");
+	cv_init(&svc->svc_progcv, "oncrpcpg");
+	TAILQ_INIT(&svc->svc_pending);
+	LIST_INIT(&svc->svc_xprts);
+	LIST_INIT(&svc->svc_progs);
+	SLIST_INIT(&svc->svc_workers);
+	atomic_inc_uint(&oncrpc_nsvc);
+	return svc;
+}
+
+/* Bring the pool up to nworkers.  Not to be called concurrently. */
+static int
+svc_addworkers(struct oncrpc_svc *svc, const char *name, u_int nworkers)
+{
+	struct oncrpc_worker *wk;
+	int error;
+
+	while (svc->svc_nworkers < nworkers) {
+		wk = kmem_alloc(sizeof(*wk), KM_SLEEP);
+		error = kthread_create(PRI_NONE,
+		    KTHREAD_MPSAFE | KTHREAD_MUSTJOIN, NULL, svc_worker, svc,
+		    &wk->wk_lwp, "%s/%u", name, svc->svc_nworkers);
+		if (error != 0) {
+			kmem_free(wk, sizeof(*wk));
+			return error;
+		}
+		SLIST_INSERT_HEAD(&svc->svc_workers, wk, wk_list);
+		svc->svc_nworkers++;
+	}
+	return 0;
 }
 
 /*
@@ -623,31 +744,16 @@ int
 oncrpc_svc_create(const char *name, u_int nworkers, struct oncrpc_svc **svcp)
 {
 	struct oncrpc_svc *svc;
-	u_int i;
 	int error;
 
 	if (nworkers == 0)
 		return EINVAL;
 
-	svc = kmem_zalloc(SVC_SIZE(nworkers), KM_SLEEP);
-	mutex_init(&svc->svc_lock, MUTEX_DRIVER, IPL_SOFTNET);
-	cv_init(&svc->svc_cv, "oncrpc");
-	cv_init(&svc->svc_progcv, "oncrpcpg");
-	TAILQ_INIT(&svc->svc_pending);
-	LIST_INIT(&svc->svc_xprts);
-	LIST_INIT(&svc->svc_progs);
-	svc->svc_nalloc = nworkers;
-	atomic_inc_uint(&oncrpc_nsvc);
-
-	for (i = 0; i < nworkers; i++) {
-		error = kthread_create(PRI_NONE,
-		    KTHREAD_MPSAFE | KTHREAD_MUSTJOIN, NULL, svc_worker, svc,
-		    &svc->svc_workers[i], "%s/%u", name, i);
-		if (error != 0) {
-			oncrpc_svc_destroy(svc);
-			return error;
-		}
-		svc->svc_nworkers++;
+	svc = svc_alloc();
+	error = svc_addworkers(svc, name, nworkers);
+	if (error != 0) {
+		oncrpc_svc_destroy(svc);
+		return error;
 	}
 	*svcp = svc;
 	return 0;
@@ -662,7 +768,7 @@ void
 oncrpc_svc_destroy(struct oncrpc_svc *svc)
 {
 	struct oncrpc_xprt *xp;
-	u_int i;
+	struct oncrpc_worker *wk;
 
 	KASSERT(LIST_EMPTY(&svc->svc_progs));
 
@@ -678,14 +784,66 @@ oncrpc_svc_destroy(struct oncrpc_svc *svc)
 	cv_broadcast(&svc->svc_cv);
 	mutex_exit(&svc->svc_lock);
 
-	for (i = 0; i < svc->svc_nworkers; i++)
-		kthread_join(svc->svc_workers[i]);
+	while ((wk = SLIST_FIRST(&svc->svc_workers)) != NULL) {
+		SLIST_REMOVE_HEAD(&svc->svc_workers, wk_list);
+		kthread_join(wk->wk_lwp);
+		kmem_free(wk, sizeof(*wk));
+	}
 
 	cv_destroy(&svc->svc_cv);
 	cv_destroy(&svc->svc_progcv);
 	mutex_destroy(&svc->svc_lock);
-	kmem_free(svc, SVC_SIZE(svc->svc_nalloc));
+	kmem_free(svc, sizeof(*svc));
 	atomic_dec_uint(&oncrpc_nsvc);
+}
+
+/*
+ * The server called name, made if it is not there yet, with at least
+ * nworkers threads.
+ */
+int
+oncrpc_svc_hold(const char *name, u_int nworkers, struct oncrpc_svc **svcp)
+{
+	struct oncrpc_svc *svc;
+	int error;
+
+	KASSERT(strlen(name) < sizeof(svc->svc_name));
+
+	mutex_enter(&oncrpc_named_lock);
+	LIST_FOREACH(svc, &oncrpc_named, svc_named) {
+		if (strcmp(svc->svc_name, name) == 0)
+			break;
+	}
+	if (svc == NULL) {
+		svc = svc_alloc();
+		strlcpy(svc->svc_name, name, sizeof(svc->svc_name));
+		LIST_INSERT_HEAD(&oncrpc_named, svc, svc_named);
+	}
+	svc->svc_refs++;
+	error = svc_addworkers(svc, name, nworkers);
+	mutex_exit(&oncrpc_named_lock);
+	if (error != 0) {
+		oncrpc_svc_rele(svc);
+		return error;
+	}
+	*svcp = svc;
+	return 0;
+}
+
+/* The caller's programs must be unregistered. */
+void
+oncrpc_svc_rele(struct oncrpc_svc *svc)
+{
+
+	mutex_enter(&oncrpc_named_lock);
+	KASSERT(svc->svc_refs > 0);
+	if (--svc->svc_refs > 0) {
+		mutex_exit(&oncrpc_named_lock);
+		return;
+	}
+	LIST_REMOVE(svc, svc_named);
+	mutex_exit(&oncrpc_named_lock);
+	oncrpc_svc_destroy(svc);
 }
 
 /*
@@ -746,6 +904,18 @@ oncrpc_svc_unregister(struct oncrpc_svc *svc, const struct oncrpc_program *op)
 int
 oncrpc_svc_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam)
 {
+
+	return oncrpc_svc_addsock_tag(svc, fp, nam, NULL);
+}
+
+/*
+ * The same, with a tag for oncrpc_svc_closesocks(): whoever added a
+ * socket to a shared server closes its own and no other holder's.
+ */
+int
+oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
+    const void *tag)
+{
 	struct socket *so;
 	struct oncrpc_xprt *xp;
 	int error, val;
@@ -778,6 +948,7 @@ oncrpc_svc_addsock(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam)
 	xp->xp_fp = fp;
 	xp->xp_so = so;
 	xp->xp_nam = nam;
+	xp->xp_tag = tag;
 	xp->xp_refs = 1;
 	xp->xp_flags = XP_READABLE;
 	SIMPLEQ_INIT(&xp->xp_sendq);
@@ -820,6 +991,99 @@ bad:
 	return error;
 }
 
+/* Shut every socket added with tag.  Calls in progress finish. */
+void
+oncrpc_svc_closesocks(struct oncrpc_svc *svc, const void *tag)
+{
+	struct oncrpc_xprt *xp;
+
+	mutex_enter(&svc->svc_lock);
+restart:
+	LIST_FOREACH(xp, &svc->svc_xprts, xp_list) {
+		if (xp->xp_tag != tag)
+			continue;
+		xp->xp_refs++;
+		mutex_exit(&svc->svc_lock);
+		xprt_zap(xp);
+		xprt_rele(xp);
+		mutex_enter(&svc->svc_lock);
+		goto restart;
+	}
+	mutex_exit(&svc->svc_lock);
+}
+
+/*
+ * Give the program the message and where the arguments start, for a
+ * parser of its own.  rq_args is of no more use.  With no arguments the
+ * cursor has run off the chain, and a parser needs a place to find that
+ * there is nothing left.
+ */
+void
+oncrpc_req_takemsg(struct oncrpc_req *rq, struct mbuf **mp, struct mbuf **mdp,
+    char **posp)
+{
+	struct oncrpc_ireq *ir = (struct oncrpc_ireq *)rq;
+	struct mbuf *m;
+
+	oncrpc_xdrmbuf_getcursor(&ir->ir_args, mdp, posp);
+	if (*mdp == NULL) {
+		for (m = ir->ir_msg; m->m_next != NULL; m = m->m_next)
+			continue;
+		*mdp = m;
+		*posp = mtod(m, char *) + m->m_len;
+	}
+	*mp = ir->ir_msg;
+	ir->ir_msg = NULL;
+}
+
+/*
+ * What the program keeps per socket, made by make on the first call
+ * that asks and passed to dtor when the socket goes.  One slot, as only
+ * NFS versions 2 and 3 have a use for it.
+ */
+void *
+oncrpc_req_ctx(struct oncrpc_req *rq, void *(*make)(struct socket *),
+    void (*dtor)(void *))
+{
+	struct oncrpc_xprt *xp = ((struct oncrpc_ireq *)rq)->ir_xprt;
+	struct oncrpc_svc *svc = xp->xp_svc;
+	void *ctx, *new;
+
+	mutex_enter(&svc->svc_lock);
+	ctx = xp->xp_ctx;
+	mutex_exit(&svc->svc_lock);
+	if (ctx != NULL)
+		return ctx;
+
+	new = (*make)(xp->xp_so);
+	mutex_enter(&svc->svc_lock);
+	if (xp->xp_ctx == NULL) {
+		xp->xp_ctx = new;
+		xp->xp_ctxdtor = dtor;
+		new = NULL;
+	}
+	ctx = xp->xp_ctx;
+	mutex_exit(&svc->svc_lock);
+	if (new != NULL)
+		(*dtor)(new);
+	return ctx;
+}
+
+/* End a call left with ONCRPC_DEFERRED, with raw or with no reply. */
+void
+oncrpc_req_finish(struct oncrpc_req *rq, struct mbuf *raw)
+{
+	struct oncrpc_ireq *ir = (struct oncrpc_ireq *)rq;
+
+	XDR_DESTROY(rq->rq_res);
+	if (raw == NULL) {
+		req_free(ir);
+		return;
+	}
+	req_setraw(ir, raw);
+	xprt_send(ir);
+}
+
 u_int
 oncrpc_svc_nxprt(struct oncrpc_svc *svc)
 {
@@ -835,9 +1099,13 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
+		mutex_init(&oncrpc_named_lock, MUTEX_DEFAULT, IPL_NONE);
 		return 0;
 	case MODULE_CMD_FINI:
-		return atomic_load_relaxed(&oncrpc_nsvc) != 0 ? EBUSY : 0;
+		if (atomic_load_relaxed(&oncrpc_nsvc) != 0)
+			return EBUSY;
+		mutex_destroy(&oncrpc_named_lock);
+		return 0;
 	default:
 		return ENOTTY;
 	}

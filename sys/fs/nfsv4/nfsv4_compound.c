@@ -388,7 +388,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 	case MODULE_CMD_INIT:
 		nfsv4_state_init();
 		nfsv4_drc_init();
-		error = oncrpc_svc_create("nfsv4", NFSV4_NTHREADS, &nfsv4_svc);
+		error = oncrpc_svc_hold("nfs", NFSV4_NTHREADS, &nfsv4_svc);
 		if (error != 0) {
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
@@ -396,7 +396,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		}
 		error = oncrpc_svc_register(nfsv4_svc, &nfsv4_program);
 		if (error != 0) {
-			oncrpc_svc_destroy(nfsv4_svc);
+			oncrpc_svc_rele(nfsv4_svc);
 			nfsv4_drc_fini();
 			nfsv4_state_fini();
 			return error;
@@ -406,7 +406,9 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 	case MODULE_CMD_FINI:
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);
-		oncrpc_svc_destroy(nfsv4_svc);
+		/* The server may go on, for versions 2 and 3. */
+		oncrpc_svc_closesocks(nfsv4_svc, NULL);
+		oncrpc_svc_rele(nfsv4_svc);
 		nfsv4_drc_fini();
 		nfsv4_state_fini();
 		return 0;

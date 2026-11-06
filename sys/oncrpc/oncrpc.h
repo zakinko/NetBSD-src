@@ -84,6 +84,7 @@
 
 struct file;
 struct mbuf;
+struct socket;
 struct oncrpc_svc;
 struct oncrpc_req;
 struct sockaddr;
@@ -108,7 +109,9 @@ enum oncrpc_dispatch {
 	ONCRPC_NOREPLY,		/* no reply, RFC 5531 s8.4.1 */
 	ONCRPC_ERR_PROC,	/* PROC_UNAVAIL */
 	ONCRPC_ERR_ARGS,	/* GARBAGE_ARGS */
-	ONCRPC_ERR_SYSTEM	/* SYSTEM_ERR */
+	ONCRPC_ERR_SYSTEM,	/* SYSTEM_ERR */
+	ONCRPC_RAWREPLY,	/* rq_raw is the whole message, to send as is */
+	ONCRPC_DEFERRED		/* oncrpc_req_finish() will end the call */
 };
 
 /*
@@ -143,6 +146,7 @@ struct oncrpc_req {
 	void		*rq_arg;	/* op_arg */
 	XDR		*rq_args;
 	XDR		*rq_res;
+	struct mbuf	*rq_raw;	/* for ONCRPC_RAWREPLY */
 };
 
 int	oncrpc_svc_create(const char *, u_int, struct oncrpc_svc **);
@@ -159,5 +163,25 @@ int	oncrpc_clnt_call_unix(const char *,
 	    const struct oncrpc_clnt_call *, int);
 int	oncrpc_clnt_call(const struct sockaddr *,
 	    const struct oncrpc_clnt_call *, int);
+
+/*
+ * A server shared by name, so that programs that know nothing of each
+ * other can answer on the same sockets.  The pool only ever grows to
+ * the largest nworkers asked for, which may be 0 for a holder whose
+ * threads come through oncrpc_svc_run().
+ */
+int	oncrpc_svc_hold(const char *, u_int, struct oncrpc_svc **);
+void	oncrpc_svc_rele(struct oncrpc_svc *);
+int	oncrpc_svc_run(struct oncrpc_svc *);
+int	oncrpc_svc_addsock_tag(struct oncrpc_svc *, struct file *,
+	    struct mbuf *, const void *);
+void	oncrpc_svc_closesocks(struct oncrpc_svc *, const void *);
+
+/* For a program that parses the mbufs of a call itself. */
+void	oncrpc_req_takemsg(struct oncrpc_req *, struct mbuf **, struct mbuf **,
+	    char **);
+void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
+	    void (*)(void *));
+void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

@@ -1,0 +1,81 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 Showta Ishizaki
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd November 6, 2026
+.Dt GSSD 8
+.Os
+.Sh NAME
+.Nm gssd
+.Nd establish RPCSEC_GSS contexts for the NFS server
+.Sh SYNOPSIS
+.Nm
+.Op Fl d
+.Op Fl h Ar hostname
+.Op Fl k Ar keytab
+.Sh DESCRIPTION
+.Nm
+accepts Kerberos V5 contexts for the kernel's NFS server, which then
+handles every message of those contexts itself.
+It needs the key of
+.Li nfs/ Ns Ar hostname
+in the keytab.
+It also maps principals to local users.
+.Pp
+A principal
+.Li user@REALM
+of the default realm is the local user of that name.
+.Li host/ Ns Ar name ,
+.Li nfs/ Ns Ar name
+and
+.Li root/ Ns Ar name
+are root, to which the export's
+.Fl maproot
+applies.
+Any other principal is the export's anonymous user.
+.Pp
+The options are:
+.Bl -tag -width indent
+.It Fl d
+Stay in the foreground and log to standard error.
+.It Fl h Ar hostname
+The host name of the service principal, by default
+.Xr gethostname 3 .
+.It Fl k Ar keytab
+The keytab.
+.El
+.Sh FILES
+.Bl -tag -width /var/run/gssd.sock -compact
+.It Pa /var/run/gssd.sock
+the socket the kernel connects to
+.El
+.Sh SEE ALSO
+.Xr exports 5 ,
+.Xr mountd 8
+.Sh STANDARDS
+.Rs
+.%R RFC 2203
+.%T RPCSEC_GSS Protocol Specification
+.Re

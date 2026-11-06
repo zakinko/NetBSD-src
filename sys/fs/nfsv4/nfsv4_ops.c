@@ -44,6 +44,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/uio.h>
 #include <sys/vnode.h>
 
+#include <nfs/rpcv2.h>
+#include <nfs/nfsproto.h>
+#include <nfs/nfs.h>
+
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 
 /*
@@ -516,17 +522,69 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 	return st;
 }
 
+/* The bits of a list, the strongest first as s16.31.4 asks of the order. */
+static const struct {
+	int		sec;
+	uint32_t	flavor;
+	uint32_t	service;
+} secinfo_table[] = {
+	{ NFS_EXSEC_KRB5P, RPCSEC_GSS, RPCSEC_GSS_SVC_PRIVACY },
+	{ NFS_EXSEC_KRB5I, RPCSEC_GSS, RPCSEC_GSS_SVC_INTEGRITY },
+	{ NFS_EXSEC_KRB5, RPCSEC_GSS, RPCSEC_GSS_SVC_NONE },
+	{ NFS_EXSEC_SYS, ONCRPC_AUTH_SYS, 0 },
+	{ NFS_EXSEC_NONE, ONCRPC_AUTH_NONE, 0 },
+};
+
+/* RFC 2623 s4.2, the object identifier 1.2.840.113554.1.2.2 in DER. */
+static const uint8_t secinfo_krb5oid[] = {
+	0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02
+};
+
+/* secinfo4<>, s16.31.4, for the flavors of sec. */
+static bool
+secinfo_put(struct nfsv4_compound *c, int sec)
+{
+	uint32_t n, qop = 0, oidlen = sizeof(secinfo_krb5oid);
+	u_int i;
+
+	n = 0;
+	for (i = 0; i < __arraycount(secinfo_table); i++)
+		if ((sec & secinfo_table[i].sec) != 0)
+			n++;
+	if (!xdr_u_int32_t(c->c_rx, &n))
+		return false;
+	for (i = 0; i < __arraycount(secinfo_table); i++) {
+		uint32_t flavor = secinfo_table[i].flavor;
+		uint32_t service = secinfo_table[i].service;
+
+		if ((sec & secinfo_table[i].sec) == 0)
+			continue;
+		if (!xdr_u_int32_t(c->c_rx, &flavor))
+			return false;
+		if (flavor == RPCSEC_GSS &&
+		    (!xdr_u_int32_t(c->c_rx, &oidlen) ||
+		    !xdr_opaque(c->c_rx, __UNCONST(secinfo_krb5oid), oidlen) ||
+		    !xdr_u_int32_t(c->c_rx, &qop) ||
+		    !xdr_u_int32_t(c->c_rx, &service)))
+			return false;
+	}
+	return true;
+}
+
 /*
- * RFC 7530 s16.31.  Every object has the same flavors, as the exports
- * say nothing about them yet (decisions.md, sec=).  Lookup is done for
- * the errors it gives.
+ * RFC 7530 s16.31.  What the object's export allows; an export that says
+ * nothing allows what it always has, and the pseudo file system whatever
+ * might lie under it, s7.3.  Lookup is done for the errors it gives, and
+ * must find an object the client's present flavor may not touch: being
+ * told which it may is what the operation is for.
  */
 uint32_t
 nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	const struct nfsv4_name *nm = &a->name.name;
 	struct nfsv4_cfh *cf = &c->c_cur, to;
-	uint32_t st, n = 2, sys = ONCRPC_AUTH_SYS, none = ONCRPC_AUTH_NONE;
+	uint32_t st;
+	int sec;
 
 	if (cf->cf_vp != NULL && cf->cf_vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
@@ -534,29 +592,46 @@ nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		return st;
 	memset(&to, 0, sizeof(to));
+	c->c_anysec = true;
 	st = nfsv4_cfh_lookup(c, cf, nm->nm_str, nm->nm_len, &to);
+	c->c_anysec = false;
+	sec = to.cf_exflags & NFS_EXSEC_MASK;
+	if (st == NFS4_OK && sec == 0)
+		sec = NFS_EXSEC_SYS | NFS_EXSEC_NONE;
+	if (st == NFS4_OK && to.cf_vp == NULL)
+		sec = NFS_EXSEC_MASK;
 	nfsv4_cfh_clear(&to);
 	if (st != NFS4_OK)
 		return st;
+	if (!secinfo_put(c, sec))
+		return NFS4ERR_RESOURCE;
 	/* RFC 8881 s18.29.3 */
 	if (c->c_minor != 0)
 		nfsv4_cfh_clear(cf);
-	return xdr_u_int32_t(c->c_rx, &n) && xdr_u_int32_t(c->c_rx, &sys) &&
-	    xdr_u_int32_t(c->c_rx, &none) ? NFS4_OK : NFS4ERR_RESOURCE;
+	return NFS4_OK;
 }
 
-/* RFC 8881 s18.45.  The flavors are those of everything, as above. */
+/*
+ * RFC 8881 s18.45.  The flavors of the current object, or its parent's
+ * with SECINFO_STYLE4_PARENT, as SECINFO has them.
+ */
 uint32_t
 nfsv4_op_secinfo_no_name(struct nfsv4_compound *c, union nfsv4_args *a)
 {
-	uint32_t st, n = 2, sys = ONCRPC_AUTH_SYS, none = ONCRPC_AUTH_NONE;
+	struct nfsv4_cfh *cf = &c->c_cur;
+	uint32_t st;
+	int sec;
 
 	if (a->u32.value == SECINFO_STYLE4_PARENT) {
 		st = nfsv4_lookupp(c);
 		if (st != NFS4_OK)
 			return st;
 	}
-	nfsv4_cfh_clear(&c->c_cur);
-	return xdr_u_int32_t(c->c_rx, &n) && xdr_u_int32_t(c->c_rx, &sys) &&
-	    xdr_u_int32_t(c->c_rx, &none) ? NFS4_OK : NFS4ERR_RESOURCE;
+	sec = cf->cf_exflags & NFS_EXSEC_MASK;
+	if (sec == 0)
+		sec = NFS_EXSEC_SYS | NFS_EXSEC_NONE;
+	if (cf->cf_vp == NULL)
+		sec = NFS_EXSEC_MASK;
+	nfsv4_cfh_clear(cf);
+	return secinfo_put(c, sec) ? NFS4_OK : NFS4ERR_RESOURCE;
 }

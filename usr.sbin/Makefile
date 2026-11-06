@@ -9,7 +9,7 @@ SUBDIR=	ac accton acpitools altq apm apmd arp \
 	dev_mkdb diskpart dumpfs \
 	edquota eeprom emcfanctl envstat etcupdate extattrctl \
 	flashctl fssconfig fstyp fusermount fwctl \
-	gpioctl grfconfig gspa \
+	gpioctl grfconfig gspa gssd \
 	i2cscan ifwatchd inetd installboot intrctl iostat ipwctl irdaattach \
 	isibootd iteconfig \
 	kgmon \

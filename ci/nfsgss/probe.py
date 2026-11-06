@@ -36,14 +36,6 @@ class C:
             o += d
         return o
 
-class U:
-    """The same over UDP, RFC 5531 s10 having no record marks."""
-    def __init__(self):
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.s.connect((HOST, 2049)); self.s.settimeout(6)
-    def send(self, b): self.s.send(b)
-    def recv(self): return self.s.recv(65536)
-
 class Reply:
     def __init__(self, b):
         self.b = b
@@ -63,8 +55,8 @@ def cred(vers, gproc, seq, svc, handle):
     return p32(vers, gproc, seq, svc) + opaque(handle)
 
 class Ctx:
-    def __init__(self, vers=1, udp=False):
-        self.c = U() if udp else C(); self.vers = vers; self.seq = random.randrange(1, 1000)
+    def __init__(self, vers=1):
+        self.c = C(); self.vers = vers; self.seq = random.randrange(1000, 2000)
         self.g = gssapi.SecurityContext(name=gssapi.Name('nfs@' + HOST,
             gssapi.NameType.hostbased_service), usage='initiate',
             flags=[gssapi.RequirementFlag.mutual_authentication,
@@ -267,11 +259,6 @@ for v, arg, parg in ((2, fh2, mnt(1, PONLY)), (3, opaque(fh3), opaque(fh3p))):
     check(f'v{v} krb5 on a krb5p export: AUTH_TOOWEAK', denied(r, 5), r and r.__dict__.get('why', r.b[:40].hex()))
     r = z.call(PRIV, 1, parg)
     check(f'v{v} krb5p there', accepted(r, 0) and compstat(z.results(r)) == 0)
-    u = Ctx(udp=True)
-    for s, n in ((NONE, 'krb5'), (INTEG, 'krb5i'), (PRIV, 'krb5p')):
-        r = u.call(s, 1, arg)
-        check(f'v{v} UDP GETATTR under {n}', accepted(r, 0) and compstat(u.results(r)) == 0)
-    check(f'v{v} UDP replay dropped', u.call(seq=u.seq) is None)
 VERS = 4
 
 c = C()

@@ -95,6 +95,8 @@ struct cb_target {
 	uint32_t	ct_prog;
 	uint32_t	ct_ident;
 	uint32_t	ct_flavor;
+	uint32_t	ct_service;
+	char		ct_principal[NFSV4_PRINCIPAL_MAX];
 	uid_t		ct_uid;
 	gid_t		ct_gid;
 };
@@ -346,22 +348,29 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	struct oncrpc_clnt_call cc;
 	union cb_addr ua;
 	char cred[ONCRPC_MAX_AUTH_BYTES];
+	struct oncrpc_gssc *gc = NULL;
+	int error;
 
 	if (!cb_addr_parse(&ct->ct_addr, &ua))
 		return EADDRNOTAVAIL;
 	/*
-	 * RFC 7530 s3.3.3: the flavor of SETCLIENTID, with the server
-	 * authenticated to the client, for which this server has no
-	 * initiator.  With no call the path is down, and delegations,
-	 * which are never owed, are not given.
+	 * RFC 7530 s3.3.3: the flavor of SETCLIENTID, to the principal
+	 * that used it, with the server authenticated in return.  One
+	 * context to a call; these are rare, and the client may be gone.
 	 */
-	if (ct->ct_flavor == RPCSEC_GSS)
-		return EPROTONOSUPPORT;
+	if (ct->ct_flavor == RPCSEC_GSS) {
+		error = oncrpc_gssc_create(&ua.ca_sa, ct->ct_prog,
+		    NFSV4_CB_VERSION, ct->ct_principal, ct->ct_service,
+		    NFSV4_CB_TIMEO, &gc);
+		if (error != 0)
+			return error;
+	}
 	memset(&cc, 0, sizeof(cc));
 	cc.cc_prog = ct->ct_prog;
 	cc.cc_vers = NFSV4_CB_VERSION;
 	cc.cc_proc = proc;
 	cc.cc_flavor = ct->ct_flavor;
+	cc.cc_gss = gc;
 	if (ct->ct_flavor == ONCRPC_AUTH_SYS) {
 		cc.cc_cred = cred;
 		cc.cc_credlen = cb_authsys(cred, sizeof(cred), ct->ct_uid,
@@ -371,7 +380,10 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	cc.cc_arg = arg;
 	cc.cc_decode = dec;
 	cc.cc_res = res;
-	return oncrpc_clnt_call(&ua.ca_sa, &cc, NFSV4_CB_TIMEO);
+	error = oncrpc_clnt_call(&ua.ca_sa, &cc, NFSV4_CB_TIMEO);
+	if (gc != NULL)
+		oncrpc_gssc_destroy(gc);
+	return error;
 }
 
 static void
@@ -384,6 +396,8 @@ cb_target_get(const struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_prog = cl->cl_cbprog;
 	ct->ct_ident = cl->cl_cbident;
 	ct->ct_flavor = cl->cl_flavor;
+	ct->ct_service = cl->cl_cbservice;
+	strlcpy(ct->ct_principal, cl->cl_principal, sizeof(ct->ct_principal));
 	ct->ct_uid = cl->cl_uid;
 	ct->ct_gid = cl->cl_gid;
 }

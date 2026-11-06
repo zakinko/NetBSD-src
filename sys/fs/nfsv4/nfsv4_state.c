@@ -47,6 +47,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/time.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -945,6 +947,11 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	n->cl_gid = c->c_rq->rq_cred != NULL ?
 	    kauth_cred_getegid(c->c_rq->rq_cred) : (gid_t)-1;
 	n->cl_flavor = c->c_rq->rq_flavor;
+	if (n->cl_flavor == RPCSEC_GSS) {
+		n->cl_cbservice = c->c_rq->rq_secflavor - RPCSEC_GSS_KRB5 + 1;
+		strlcpy(n->cl_principal, c->c_rq->rq_principal,
+		    sizeof(n->cl_principal));
+	}
 	n->cl_connid = c->c_rq->rq_connid;
 	n->cl_idlen = sa->idlen;
 	memcpy(n->cl_idstr, sa->id, sa->idlen);

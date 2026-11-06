@@ -112,6 +112,21 @@ struct oncrpc_gss_call {
 	uint8_t			gg_verfbody[ONCRPC_GSS_MAXVERF];
 };
 
+struct oncrpc_gssc;
+struct oncrpc_opaque_auth;
+struct sockaddr;
+
+int	oncrpc_gssc_create(const struct sockaddr *, uint32_t, uint32_t,
+	    const char *, uint32_t, int, struct oncrpc_gssc **);
+void	oncrpc_gssc_destroy(struct oncrpc_gssc *);
+bool	oncrpc_gssc_header(struct oncrpc_gssc *, uint32_t, uint32_t, uint32_t,
+	    uint32_t, uint8_t *, uint32_t *, uint8_t *, uint32_t *, uint32_t *);
+struct mbuf *
+	oncrpc_gssc_seal(struct oncrpc_gssc *, uint32_t, struct mbuf *);
+int	oncrpc_gssc_open(struct oncrpc_gssc *, uint32_t,
+	    const struct oncrpc_opaque_auth *, struct mbuf *, u_int,
+	    struct mbuf **);
+
 void	oncrpc_gss_init(void);
 void	oncrpc_gss_fini(void);
 enum oncrpc_gss_verdict

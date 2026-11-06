@@ -101,6 +101,10 @@ struct oncrpc_clnt_call {
 	void		*cc_arg;
 	bool		(*cc_decode)(XDR *, void *);
 	void		*cc_res;
+	struct oncrpc_gssc *cc_gss;	/* under this context, if any */
+	struct oncrpc_opaque_auth *cc_verfout; /* the reply's verifier */
+	const void	*cc_verf;	/* the verifier; flavor from cc_gss */
+	uint32_t	cc_verflen;
 };
 
 /* What a program's dispatch wants done with the request. */
@@ -140,6 +144,7 @@ struct oncrpc_req {
 	uint32_t	rq_proc;
 	uint32_t	rq_flavor;
 	uint32_t	rq_secflavor;	/* rq_flavor, or the pseudo flavor */
+	const char	*rq_principal;	/* under RPCSEC_GSS, for this call */
 	kauth_cred_t	rq_cred;	/* NULL for AUTH_NONE */
 	struct mbuf	*rq_nam;	/* peer, as MT_SONAME; may be NULL */
 	uint64_t	rq_connid;	/* the connection; none is used twice */

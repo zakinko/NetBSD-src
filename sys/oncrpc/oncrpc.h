@@ -136,6 +136,7 @@ struct oncrpc_req {
 	uint32_t	rq_vers;
 	uint32_t	rq_proc;
 	uint32_t	rq_flavor;
+	uint32_t	rq_secflavor;	/* rq_flavor, or the pseudo flavor */
 	kauth_cred_t	rq_cred;	/* NULL for AUTH_NONE */
 	struct mbuf	*rq_nam;	/* peer, as MT_SONAME; may be NULL */
 	uint64_t	rq_connid;	/* the connection; none is used twice */
@@ -151,6 +152,8 @@ void	oncrpc_svc_unregister(struct oncrpc_svc *,
 	    const struct oncrpc_program *);
 int	oncrpc_svc_addsock(struct oncrpc_svc *, struct file *, struct mbuf *);
 u_int	oncrpc_svc_nxprt(struct oncrpc_svc *);
+int	oncrpc_clnt_call_unix(const char *,
+	    const struct oncrpc_clnt_call *, int);
 int	oncrpc_clnt_call(const struct sockaddr *,
 	    const struct oncrpc_clnt_call *, int);
 

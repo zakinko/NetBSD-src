@@ -70,6 +70,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <netinet/tcp.h>
 
 #include <oncrpc/gss_krb5.h>
+#include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_var.h>
 
 /*
@@ -147,6 +148,7 @@ struct oncrpc_ireq {
 	struct oncrpc_xdrmbuf	 ir_args;
 	struct oncrpc_xdrmbuf	 ir_res;
 	struct oncrpc_call	 ir_call;
+	struct oncrpc_gss_call	 ir_gss;
 };
 
 static u_int oncrpc_nsvc;
@@ -311,6 +313,7 @@ req_free(struct oncrpc_ireq *ir)
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct oncrpc_req *rq = &ir->ir_req;
 
+	oncrpc_gss_done(&ir->ir_gss);
 	if (rq->rq_cred != NULL)
 		kauth_cred_free(rq->rq_cred);
 	m_freem(ir->ir_msg);
@@ -460,7 +463,7 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	struct mbuf *res = NULL, *m;
 	enum oncrpc_dispatch disp;
 	uint32_t low = 0, high = 0, why, stat;
-	bool known, ok;
+	bool gss, known, ok;
 	XDR *x;
 
 	oncrpc_xdrmbuf_create(&ir->ir_args, ir->ir_msg, 0, XDR_DECODE);
@@ -495,14 +498,44 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	}
 	op = pg->pg_prog;
 
-	ao = oncrpc_auth_lookup(c->c_cred.oa_flavor);
-	why = ao != NULL ? (*ao->ao_svc_verify)(c, &rq->rq_cred) :
-	    ONCRPC_AUTH_REJECTEDCRED;
-	/* RFC 5531 s12.1: procedure 0 never requires authentication. */
-	if (why != ONCRPC_AUTH_OK && c->c_proc != 0) {
-		svc_prog_rele(svc, pg);
-		ok = oncrpc_msg_encode_denied_auth(x, c->c_xid, why);
-		goto reply;
+	gss = c->c_cred.oa_flavor == RPCSEC_GSS;
+	if (gss) {
+		/*
+		 * Before the procedure's own checks: a control message is
+		 * not the program's to see, RFC 2203 s5, and may replace
+		 * ir_msg and ir_args.
+		 */
+		switch (oncrpc_gss_accept(&ir->ir_gss, c, &ir->ir_args,
+		    &ir->ir_msg, rq, &res, &why)) {
+		case ONCRPC_GSS_DISPATCH:
+			break;
+		case ONCRPC_GSS_REPLY:
+			svc_prog_rele(svc, pg);
+			stat = ONCRPC_SUCCESS;
+			goto accepted;
+		case ONCRPC_GSS_GARBAGE:
+			svc_prog_rele(svc, pg);
+			stat = ONCRPC_GARBAGE_ARGS;
+			goto accepted;
+		case ONCRPC_GSS_DENY:
+			svc_prog_rele(svc, pg);
+			ok = oncrpc_msg_encode_denied_auth(x, c->c_xid, why);
+			goto reply;
+		case ONCRPC_GSS_DROP:
+			svc_prog_rele(svc, pg);
+			goto drop;
+		}
+	} else {
+		rq->rq_secflavor = c->c_cred.oa_flavor;
+		ao = oncrpc_auth_lookup(c->c_cred.oa_flavor);
+		why = ao != NULL ? (*ao->ao_svc_verify)(c, &rq->rq_cred) :
+		    ONCRPC_AUTH_REJECTEDCRED;
+		/* RFC 5531 s12.1: procedure 0 never requires authentication. */
+		if (why != ONCRPC_AUTH_OK && c->c_proc != 0) {
+			svc_prog_rele(svc, pg);
+			ok = oncrpc_msg_encode_denied_auth(x, c->c_xid, why);
+			goto reply;
+		}
 	}
 
 	rq->rq_xid = c->c_xid;
@@ -543,7 +576,25 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	}
 	if (stat != ONCRPC_SUCCESS)
 		XDR_DESTROY(rq->rq_res);
-	ok = oncrpc_msg_encode_accepted(x, c->c_xid, stat, 0, 0);
+	/* RFC 2203 s5.3.3.4.1, .4: no reply if the results cannot be sealed. */
+	if (gss && stat == ONCRPC_SUCCESS &&
+	    !oncrpc_gss_wrap_results(&ir->ir_gss, &res))
+		goto drop;
+accepted:
+	if (gss) {
+		/* RFC 2203 s5.3.3.4.1 */
+		if (!oncrpc_gss_verifier(&ir->ir_gss)) {
+			m_freem(res);
+			res = NULL;
+			ok = oncrpc_msg_encode_denied_auth(x, c->c_xid,
+			    RPCSEC_GSS_CTXPROBLEM);
+		} else {
+			ok = oncrpc_msg_encode_accepted_verf(x, c->c_xid,
+			    ir->ir_gss.gg_verf, ir->ir_gss.gg_verfbody,
+			    ir->ir_gss.gg_verflen, stat, 0, 0);
+		}
+	} else
+		ok = oncrpc_msg_encode_accepted(x, c->c_xid, stat, 0, 0);
 
 reply:
 	if (!ok) {
@@ -841,9 +892,15 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
-		return gss_krb5_selftest() == 0 ? 0 : EIO;
+		if (gss_krb5_selftest() != 0)
+			return EIO;
+		oncrpc_gss_init();
+		return 0;
 	case MODULE_CMD_FINI:
-		return atomic_load_relaxed(&oncrpc_nsvc) != 0 ? EBUSY : 0;
+		if (atomic_load_relaxed(&oncrpc_nsvc) != 0)
+			return EBUSY;
+		oncrpc_gss_fini();
+		return 0;
 	default:
 		return ENOTTY;
 	}

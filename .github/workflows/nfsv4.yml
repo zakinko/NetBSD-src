@@ -1,7 +1,7 @@
 name: nfsv4
 on:
   push:
-    branches: [nfsv4, nfsv4-acl, nfsv40, nfsgss]
+    branches: [nfsv4, nfsv4-acl, nfsv40]
     paths:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'

@@ -110,6 +110,7 @@ struct nfsv4_compound {
 	struct nfsv4_cfh c_scratch;	/* for a lookup that is thrown away */
 	char		*c_rbuf;	/* NFSV4_REPLAY_MAX, for seqid replies */
 	bool		c_drc;		/* an operation that the DRC keeps ran */
+	bool		c_anysec;	/* SECINFO: an export's flavors stay out */
 	struct acl	*c_setacl;	/* parsed, not set yet; nfsv4_acl_set */
 	struct nfsv4_xstore c_xs;
 	struct nfsv4_attrov c_ov;	/* for the GETATTR going on */
@@ -175,6 +176,8 @@ uint32_t nfsv4_file_check(const struct nfsv4_cfh *);
 int	nfsv4_dir_change(struct vnode *, kauth_cred_t, uint64_t *);
 uint32_t nfsv4_io_check(struct nfsv4_compound *, const struct nfsv4_stateid *,
 	    bool);
+
+bool	nfsv4_sec_allowed(int, uint32_t);
 
 uint32_t nfsv4_errno(int);
 void	nfsv4_write_verf(struct nfsv4_verifier *);

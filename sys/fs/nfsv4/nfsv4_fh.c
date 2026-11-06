@@ -71,6 +71,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfs.h>
 #include <nfs/nfs_var.h>
 
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -174,6 +176,32 @@ nfsv4_cfh_copy(struct nfsv4_cfh *to, const struct nfsv4_cfh *from)
  * for it should get it; a client told NFS4ERR_WRONGSEC at least knows
  * this is about how it connected.
  */
+/*
+ * May this flavor, or pseudo flavor, use an export with these flags?
+ * The test is for the flavor exactly, RFC 2623 s3.2: a triple is
+ * exported or it is not, and krb5p does not stand in for krb5.
+ */
+bool
+nfsv4_sec_allowed(int exflags, uint32_t flavor)
+{
+	int sec = exflags & NFS_EXSEC_MASK;
+
+	switch (flavor) {
+	case ONCRPC_AUTH_NONE:
+		return sec == 0 || (sec & NFS_EXSEC_NONE) != 0;
+	case ONCRPC_AUTH_SYS:
+		return sec == 0 || (sec & NFS_EXSEC_SYS) != 0;
+	case RPCSEC_GSS_KRB5:
+		return (sec & NFS_EXSEC_KRB5) != 0;
+	case RPCSEC_GSS_KRB5I:
+		return (sec & NFS_EXSEC_KRB5I) != 0;
+	case RPCSEC_GSS_KRB5P:
+		return (sec & NFS_EXSEC_KRB5P) != 0;
+	default:
+		return false;
+	}
+}
+
 static uint32_t
 cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
 {
@@ -194,6 +222,10 @@ cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
 		    ntohs(sin->sin_port) >= IPPORT_RESERVED)
 			return NFS4ERR_WRONGSEC;
 	}
+
+	/* RFC 7530 s3.3.2, s16.20.4 for PUTFH. */
+	if (!c->c_anysec && !nfsv4_sec_allowed(exflags, rq->rq_secflavor))
+		return NFS4ERR_WRONGSEC;
 
 	if (rq->rq_cred == NULL) {
 		kauth_cred_hold(anon);

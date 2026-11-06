@@ -59,6 +59,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <netinet/in.h>
 
+#include <oncrpc/oncrpc_gss.h>
+
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
@@ -347,6 +349,14 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 
 	if (!cb_addr_parse(&ct->ct_addr, &ua))
 		return EADDRNOTAVAIL;
+	/*
+	 * RFC 7530 s3.3.3: the flavor of SETCLIENTID, with the server
+	 * authenticated to the client, for which this server has no
+	 * initiator.  With no call the path is down, and delegations,
+	 * which are never owed, are not given.
+	 */
+	if (ct->ct_flavor == RPCSEC_GSS)
+		return EPROTONOSUPPORT;
 	memset(&cc, 0, sizeof(cc));
 	cc.cc_prog = ct->ct_prog;
 	cc.cc_vers = NFSV4_CB_VERSION;

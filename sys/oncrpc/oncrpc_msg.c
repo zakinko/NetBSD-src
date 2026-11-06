@@ -96,19 +96,28 @@ msg_encode_head(XDR *xdrs, uint32_t xid, uint32_t stat)
 }
 
 /*
- * accepted_reply up to the results.  The verifier is always an empty
- * AUTH_NONE, one of the two RFC 5531 App. A allows; this server never
- * issues AUTH_SHORT.  low and high are for PROG_MISMATCH.
+ * accepted_reply up to the results.  Without a flavor's own verifier it
+ * is an empty AUTH_NONE, one of the two RFC 5531 App. A allows; this
+ * server never issues AUTH_SHORT.  low and high are for PROG_MISMATCH.
  */
 bool
 oncrpc_msg_encode_accepted(XDR *xdrs, uint32_t xid, uint32_t stat,
     uint32_t low, uint32_t high)
 {
-	uint32_t flavor = ONCRPC_AUTH_NONE, len = 0;
+
+	return oncrpc_msg_encode_accepted_verf(xdrs, xid, ONCRPC_AUTH_NONE,
+	    NULL, 0, stat, low, high);
+}
+
+bool
+oncrpc_msg_encode_accepted_verf(XDR *xdrs, uint32_t xid, uint32_t flavor,
+    const void *verf, uint32_t len, uint32_t stat, uint32_t low, uint32_t high)
+{
 
 	if (!msg_encode_head(xdrs, xid, ONCRPC_MSG_ACCEPTED) ||
 	    !xdr_u_int32_t(xdrs, &flavor) ||
 	    !xdr_u_int32_t(xdrs, &len) ||
+	    (len != 0 && !xdr_opaque(xdrs, __UNCONST(verf), len)) ||
 	    !xdr_u_int32_t(xdrs, &stat))
 		return false;
 	if (stat == ONCRPC_PROG_MISMATCH)

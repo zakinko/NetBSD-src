@@ -21,6 +21,9 @@ SRCS.rumpnfsd= rumpnfsd.c nfsd.c mountd.c getmntinfo.c get_net.c
 LDADD+=	-lrumpnet -lrumpnet_net -lrumpnet_local
 LDADD+= -lrumpnet_netinet6 -lrumpnet_netinet			# TCP/IP
 LDADD+=	-lrumpfs_nfsserver -lrumpfs_nfs				# NFS support
+.if defined(NFSSERVER_ONCRPC)
+LDADD+=	-lrumpkern_crypto					# RPCSEC_GSS
+.endif
 LDADD+=	-lrumpdev_disk -lrumpdev				# disk devices
 LDADD+=	-lrumpfs_ffs 						# FFS
 LDADD+=	-lrumpnet_shmif						# shmif

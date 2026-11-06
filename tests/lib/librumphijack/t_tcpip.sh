@@ -260,6 +260,7 @@ nfs_body()
 	test_nfs -lrumpvfs -lrumpdev -lrumpnet -lrumpnet_net		\
 	    -lrumpnet_netinet -lrumpnet_local -lrumpnet_shmif		\
 	    -lrumpdev_disk -lrumpfs_ffs -lrumpfs_nfs -lrumpfs_nfsserver	\
+	    -lrumpkern_crypto						\
 	    -d key=/dk,hostpath=ffs.img,size=host
 }
 

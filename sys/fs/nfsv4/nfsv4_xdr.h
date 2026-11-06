@@ -60,13 +60,13 @@
 #include <fs/nfsv4/nfsv4_proto.h>
 
 /*
- * Attributes run to 55 (RFC 7531 s2), so two words hold them all.  The
+ * Attributes run to 75 (RFC 8881 s5.8.1.14), so three words hold them.  The
  * RFC does not bound bitmap4; NFSV4_BITMAP_READ is a choice, to keep a
  * length from the wire from driving a long loop.  Words past
  * NFSV4_BITMAP_WORDS are remembered only as being nonzero or not, for
  * they name attributes that do not exist here.
  */
-#define	NFSV4_BITMAP_WORDS	2
+#define	NFSV4_BITMAP_WORDS	3
 #define	NFSV4_BITMAP_READ	64
 
 /*
@@ -154,6 +154,7 @@ struct nfsv4_lock_denied {
 struct nfsv4_open_deleg {
 	uint32_t	od_type;
 	uint32_t	od_recall;
+	uint32_t	od_why;		/* OPEN_DELEGATE_NONE_EXT */
 	struct nfsv4_stateid od_stateid;
 };
 
@@ -234,11 +235,12 @@ struct nfsv4_args_open {
 	uint32_t	seqid;
 	uint32_t	share_access;
 	uint32_t	share_deny;
+	uint32_t	want;		/* RFC 8881 s18.16.1, from share_access */
 	struct nfsv4_owner owner;
 	uint32_t	opentype;
 	uint32_t	createmode;		/* OPEN4_CREATE */
-	struct nfsv4_fattr createattrs;		/* UNCHECKED4, GUARDED4 */
-	struct nfsv4_verifier createverf;	/* EXCLUSIVE4 */
+	struct nfsv4_fattr createattrs;		/* all but EXCLUSIVE4 */
+	struct nfsv4_verifier createverf;	/* EXCLUSIVE4, EXCLUSIVE4_1 */
 	uint32_t	claim;
 	struct nfsv4_name file;			/* all but CLAIM_PREVIOUS */
 	uint32_t	delegate_type;		/* CLAIM_PREVIOUS */
@@ -315,7 +317,82 @@ struct nfsv4_args_release_lockowner {
 	struct nfsv4_owner owner;
 };
 
+/* RFC 8881 s18.35.1; what is not kept is decoded only to be passed. */
+struct nfsv4_args_exchange_id {
+	struct nfsv4_verifier verifier;
+	uint32_t	idlen;
+	uint8_t		id[NFS4_OPAQUE_LIMIT];
+	uint32_t	flags;
+	uint32_t	how;
+};
+
+/* channel_attrs4, RFC 8881 s18.36.1 */
+struct nfsv4_chanattrs {
+	uint32_t	ca_headerpad;
+	uint32_t	ca_maxreq;
+	uint32_t	ca_maxresp;
+	uint32_t	ca_maxcached;
+	uint32_t	ca_maxops;
+	uint32_t	ca_maxreqs;
+	uint32_t	ca_nird;	/* 0 or 1 */
+	uint32_t	ca_ird;
+};
+
+struct nfsv4_args_create_session {
+	uint64_t	clientid;
+	uint32_t	sequence;
+	uint32_t	flags;
+	struct nfsv4_chanattrs fore;
+	struct nfsv4_chanattrs back;
+	uint32_t	cb_program;
+	bool		gss;		/* a csa_sec_parms is RPCSEC_GSS */
+};
+
+struct nfsv4_args_backchannel_ctl {
+	uint32_t	cb_program;
+	bool		gss;
+};
+
+struct nfsv4_sessionid {
+	uint8_t		sid_data[NFS4_SESSIONID_SIZE];
+};
+
+struct nfsv4_args_sessionid {		/* DESTROY_SESSION */
+	struct nfsv4_sessionid sessionid;
+};
+
+struct nfsv4_args_bind_conn {
+	struct nfsv4_sessionid sessionid;
+	uint32_t	dir;
+	uint32_t	rdma;
+};
+
+struct nfsv4_args_sequence {
+	struct nfsv4_sessionid sessionid;
+	uint32_t	sequenceid;
+	uint32_t	slotid;
+	uint32_t	highest_slotid;
+	uint32_t	cachethis;
+};
+
+struct nfsv4_args_test_stateid {
+	uint32_t	count;
+	u_int		pos;		/* of the first, in the stream */
+};
+
+struct nfsv4_args_u32 {			/* RECLAIM_COMPLETE, SECINFO_NO_NAME */
+	uint32_t	value;
+};
+
 union nfsv4_args {
+	struct nfsv4_args_exchange_id	exchange_id;
+	struct nfsv4_args_create_session create_session;
+	struct nfsv4_args_backchannel_ctl backchannel_ctl;
+	struct nfsv4_args_sessionid	sessionid;
+	struct nfsv4_args_bind_conn	bind_conn;
+	struct nfsv4_args_sequence	sequence;
+	struct nfsv4_args_test_stateid	test_stateid;
+	struct nfsv4_args_u32		u32;
 	struct nfsv4_args_access	access;
 	struct nfsv4_args_close		close;
 	struct nfsv4_args_commit	commit;
@@ -356,14 +433,16 @@ bool	nfsv4_xdr_change_info(XDR *, struct nfsv4_change_info *);
 bool	nfsv4_xdr_clientaddr(XDR *, struct nfsv4_clientaddr *);
 bool	nfsv4_xdr_lock_denied(XDR *, struct nfsv4_lock_denied *);
 bool	nfsv4_xdr_open_deleg(XDR *, struct nfsv4_open_deleg *);
+bool	nfsv4_xdr_chanattrs(XDR *, struct nfsv4_chanattrs *);
+bool	nfsv4_xdr_sessionid(XDR *, struct nfsv4_sessionid *);
 bool	nfsv4_xdr_skip(XDR *, u_int);
 bool	nfsv4_xdr_pad(XDR *, u_int);
 
 /*
- * The arguments of operation op.  False means they did not decode,
+ * The arguments of operation op in a minor version.  False means they did not decode,
  * and is NFS4ERR_BADXDR: RFC 7530 s15.2.4 for a server decoding each
  * operation as it comes to it.
  */
-bool	nfsv4_xdr_args(XDR *, uint32_t, union nfsv4_args *);
+bool	nfsv4_xdr_args(XDR *, uint32_t, uint32_t, union nfsv4_args *);
 
 #endif /* !_FS_NFSV4_NFSV4_XDR_H_ */

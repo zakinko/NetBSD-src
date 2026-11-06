@@ -111,26 +111,26 @@ trip(uint32_t op, u_int extra)
 	char *copy;
 
 	xdrmem_create(&x, wire, sizeof(wire), XDR_ENCODE);
-	CHECK(nfsv4_xdr_args(&x, op, &a));
+	CHECK(nfsv4_xdr_args(&x, op, 0, &a));
 	len = xdr_getpos(&x);
 	memset(wire + len, 0xee, extra);
 	len += extra;
 
 	memset(&b, 0x5a, sizeof(b));
 	xdrmem_create(&x, wire, len, XDR_DECODE);
-	CHECK(nfsv4_xdr_args(&x, op, &b));
+	CHECK(nfsv4_xdr_args(&x, op, 0, &b));
 	CHECK(xdr_getpos(&x) == len);
 
 	for (i = 0; i < len; i++) {
 		copy = malloc(i ? i : 1);	/* ASan fences the end */
 		memcpy(copy, wire, i);
 		xdrmem_create(&x, copy, i, XDR_DECODE);
-		CHECK(!nfsv4_xdr_args(&x, op, &b));
+		CHECK(!nfsv4_xdr_args(&x, op, 0, &b));
 		free(copy);
 	}
 	memset(&b, 0, sizeof(b));
 	xdrmem_create(&x, wire, len, XDR_DECODE);
-	CHECK(nfsv4_xdr_args(&x, op, &b));
+	CHECK(nfsv4_xdr_args(&x, op, 0, &b));
 	return len;
 }
 
@@ -397,15 +397,16 @@ test_limits(void)
 	xdrmem_create(&x, wire, sizeof(wire), XDR_DECODE);
 	CHECK(!nfsv4_xdr_fh(&x, &fh));
 
-	/* A bitmap longer than two words: the rest counts only if set. */
-	off = put32(0, 3);
+	/* A bitmap longer than three words: the rest counts only if set. */
+	off = put32(0, 4);
 	off = put32(off, 1);
 	off = put32(off, 2);
 	off = put32(off, 0);
+	off = put32(off, 0);
 	xdrmem_create(&x, wire, off, XDR_DECODE);
 	CHECK(nfsv4_xdr_bitmap(&x, &bm));
-	CHECK(bm.bm_n == 2 && bm.bm_w[1] == 2 && !bm.bm_more);
-	put32(12, 1);
+	CHECK(bm.bm_n == 3 && bm.bm_w[1] == 2 && !bm.bm_more);
+	put32(16, 1);
 	xdrmem_create(&x, wire, off, XDR_DECODE);
 	CHECK(nfsv4_xdr_bitmap(&x, &bm));
 	CHECK(bm.bm_more);
@@ -432,7 +433,7 @@ test_limits(void)
 	/* Booleans. */
 	off = put32(0, 2);
 	xdrmem_create(&x, wire, off, XDR_DECODE);
-	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPENATTR, &a));
+	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPENATTR, 0, &a));
 
 	/* The arms that have no default. */
 	memset(&a, 0, sizeof(a));
@@ -440,11 +441,11 @@ test_limits(void)
 	a.open.opentype = OPEN4_CREATE;
 	a.open.createmode = 9;
 	xdrmem_create(&x, wire, sizeof(wire), XDR_ENCODE);
-	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPEN, &a));
+	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPEN, 0, &a));
 	memset(&a, 0, sizeof(a));
 	a.open.claim = 9;
 	xdrmem_create(&x, wire, sizeof(wire), XDR_ENCODE);
-	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPEN, &a));
+	CHECK(!nfsv4_xdr_args(&x, NFSV4_OP_OPEN, 0, &a));
 }
 
 /* Noise must never read out of bounds.  What it decodes to is no matter. */
@@ -469,7 +470,7 @@ test_noise(void)
 			buf[j] = (j & 3) == 3 ? (char)(random() & 0x1f) :
 			    (random() % 16 == 0 ? (char)random() : 0);
 		xdrmem_create(&x, buf, len, XDR_DECODE);
-		(void)nfsv4_xdr_args(&x, ops[i % (sizeof(ops) / sizeof(ops[0]))], &b);
+		(void)nfsv4_xdr_args(&x, ops[i % (sizeof(ops) / sizeof(ops[0]))], 0, &b);
 		free(buf);
 	}
 }

@@ -249,6 +249,10 @@ nfsv4_xdr_open_deleg(XDR *x, struct nfsv4_open_deleg *od)
 		return false;
 	if (od->od_type == OPEN_DELEGATE_NONE)
 		return true;
+	/* RFC 8881 s18.16.2, open_none_delegation4 */
+	if (od->od_type == OPEN_DELEGATE_NONE_EXT)
+		return U32(x, &od->od_why) && (od->od_why != WND4_RESOURCE ||
+		    U32(x, &od->od_recall));
 	if (!nfsv4_xdr_stateid(x, &od->od_stateid) || !U32(x, &od->od_recall))
 		return false;
 	if (od->od_type == OPEN_DELEGATE_WRITE &&
@@ -256,6 +260,159 @@ nfsv4_xdr_open_deleg(XDR *x, struct nfsv4_open_deleg *od)
 		return false;
 	return U32(x, &ty) && U32(x, &flag) && U32(x, &mask) &&
 	    U32(x, &wholen) && xdr_opaque(x, __UNCONST(who), wholen) != 0;
+}
+
+bool
+nfsv4_xdr_sessionid(XDR *x, struct nfsv4_sessionid *sid)
+{
+
+	return xdr_opaque(x, (char *)sid->sid_data, NFS4_SESSIONID_SIZE) != 0;
+}
+
+/* ca_rdma_ird<1>: a second element does not decode. */
+bool
+nfsv4_xdr_chanattrs(XDR *x, struct nfsv4_chanattrs *ca)
+{
+
+	if (!U32(x, &ca->ca_headerpad) || !U32(x, &ca->ca_maxreq) ||
+	    !U32(x, &ca->ca_maxresp) || !U32(x, &ca->ca_maxcached) ||
+	    !U32(x, &ca->ca_maxops) || !U32(x, &ca->ca_maxreqs) ||
+	    !U32(x, &ca->ca_nird) || ca->ca_nird > 1)
+		return false;
+	return ca->ca_nird == 0 || U32(x, &ca->ca_ird);
+}
+
+/* Step over an opaque<>. */
+static bool
+xdr_skip_opaque(XDR *x)
+{
+	uint32_t len;
+
+	return U32(x, &len) && nfsv4_xdr_skip(x, len);
+}
+
+/* Step over count elements of opaque<>: sec_oid4<>, gsshandle4_t. */
+static bool
+xdr_skip_opaques(XDR *x)
+{
+	uint32_t n, i;
+
+	if (!U32(x, &n) || n > NFSV4_BITMAP_READ)
+		return false;
+	for (i = 0; i < n; i++) {
+		if (!xdr_skip_opaque(x))
+			return false;
+	}
+	return true;
+}
+
+/* state_protect_ops4 */
+static bool
+xdr_skip_spo(XDR *x)
+{
+	struct nfsv4_bitmap bm;
+
+	return nfsv4_xdr_bitmap(x, &bm) && nfsv4_xdr_bitmap(x, &bm);
+}
+
+/* RFC 8881 s18.35.1 */
+static bool
+xdr_args_exchange_id(XDR *x, struct nfsv4_args_exchange_id *a)
+{
+	uint64_t t64;
+	uint32_t n, t;
+
+	if (!nfsv4_xdr_verifier(x, &a->verifier) ||
+	    !xdr_vopaque(x, a->id, &a->idlen, NFS4_OPAQUE_LIMIT) ||
+	    !U32(x, &a->flags) || !U32(x, &a->how))
+		return false;
+	switch (a->how) {
+	case SP4_NONE:
+		break;
+	case SP4_MACH_CRED:
+		if (!xdr_skip_spo(x))
+			return false;
+		break;
+	case SP4_SSV:
+		if (!xdr_skip_spo(x) || !xdr_skip_opaques(x) ||
+		    !xdr_skip_opaques(x) || !U32(x, &t) || !U32(x, &t))
+			return false;
+		break;
+	default:
+		return false;
+	}
+	/* nfs_impl_id4 eia_client_impl_id<1> */
+	if (!U32(x, &n) || n > 1)
+		return false;
+	return n == 0 || (xdr_skip_opaque(x) && xdr_skip_opaque(x) &&
+	    U64(x, &t64) && U32(x, &t));
+}
+
+/* callback_sec_parms4<>, RFC 8881 s18.33.1, noting any RPCSEC_GSS. */
+static bool
+xdr_sec_parms(XDR *x, bool *gss)
+{
+	uint32_t n, i, flavor, t;
+
+	*gss = false;
+	if (!U32(x, &n) || n > NFSV4_BITMAP_READ)
+		return false;
+	for (i = 0; i < n; i++) {
+		if (!U32(x, &flavor))
+			return false;
+		switch (flavor) {
+		case 0:		/* AUTH_NONE */
+			break;
+		case 1:		/* AUTH_SYS: stamp, name, uid, gid, gids<> */
+			if (!U32(x, &t) || !xdr_skip_opaque(x) ||
+			    !U32(x, &t) || !U32(x, &t) || !U32(x, &t) ||
+			    t > NFSV4_BITMAP_READ)
+				return false;
+			if (!nfsv4_xdr_skip(x, t * 4))
+				return false;
+			break;
+		case NFSV4_RPCSEC_GSS:
+			*gss = true;
+			if (!U32(x, &t) || !xdr_skip_opaque(x) ||
+			    !xdr_skip_opaque(x))
+				return false;
+			break;
+		default:
+			return false;	/* no default arm */
+		}
+	}
+	return true;
+}
+
+static bool
+xdr_args_create_session(XDR *x, struct nfsv4_args_create_session *a)
+{
+
+	return U64(x, &a->clientid) && U32(x, &a->sequence) &&
+	    U32(x, &a->flags) && nfsv4_xdr_chanattrs(x, &a->fore) &&
+	    nfsv4_xdr_chanattrs(x, &a->back) && U32(x, &a->cb_program) &&
+	    xdr_sec_parms(x, &a->gss);
+}
+
+static bool
+xdr_args_sequence(XDR *x, struct nfsv4_args_sequence *a)
+{
+
+	return nfsv4_xdr_sessionid(x, &a->sessionid) &&
+	    U32(x, &a->sequenceid) && U32(x, &a->slotid) &&
+	    U32(x, &a->highest_slotid) && U32(x, &a->cachethis) &&
+	    a->cachethis <= 1;
+}
+
+/* The stateids stay in the stream, there being no bound on them. */
+static bool
+xdr_args_test_stateid(XDR *x, struct nfsv4_args_test_stateid *a)
+{
+
+	if (!U32(x, &a->count) || a->count > UINT32_MAX / 16)
+		return false;
+	a->pos = XDR_GETPOS(x);
+	return nfsv4_xdr_skip(x, a->count * 16);
 }
 
 static bool
@@ -334,7 +491,7 @@ xdr_args_locku(XDR *x, struct nfsv4_args_locku *a)
 
 /* openflag4 and open_claim4 are the variable parts of OPEN4args. */
 static bool
-xdr_args_open(XDR *x, struct nfsv4_args_open *a)
+xdr_args_open(XDR *x, struct nfsv4_args_open *a, uint32_t minor)
 {
 
 	if (!U32(x, &a->seqid) || !U32(x, &a->share_access) ||
@@ -353,6 +510,12 @@ xdr_args_open(XDR *x, struct nfsv4_args_open *a)
 			break;
 		case EXCLUSIVE4:
 			if (!nfsv4_xdr_verifier(x, &a->createverf))
+				return false;
+			break;
+		case EXCLUSIVE4_1:
+			if (minor == 0 ||
+			    !nfsv4_xdr_verifier(x, &a->createverf) ||
+			    !nfsv4_xdr_fattr(x, &a->createattrs))
 				return false;
 			break;
 		default:
@@ -374,6 +537,12 @@ xdr_args_open(XDR *x, struct nfsv4_args_open *a)
 	case CLAIM_DELEGATE_CUR:
 		return nfsv4_xdr_stateid(x, &a->delegate_stateid) &&
 		    nfsv4_xdr_name(x, &a->file);
+	case CLAIM_FH:
+	case CLAIM_DELEG_PREV_FH:
+		return minor != 0;
+	case CLAIM_DELEG_CUR_FH:
+		return minor != 0 &&
+		    nfsv4_xdr_stateid(x, &a->delegate_stateid);
 	default:
 		return false;		/* no default arm in open_claim4 */
 	}
@@ -430,7 +599,7 @@ xdr_args_write(XDR *x, struct nfsv4_args_write *a)
 }
 
 bool
-nfsv4_xdr_args(XDR *x, uint32_t op, union nfsv4_args *a)
+nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 {
 
 	switch (op) {
@@ -443,9 +612,11 @@ nfsv4_xdr_args(XDR *x, uint32_t op, union nfsv4_args *a)
 	case NFSV4_OP_CREATE:
 		return xdr_args_create(x, &a->create);
 	case NFSV4_OP_DELEGPURGE:
+	case NFSV4_OP_DESTROY_CLIENTID:
 	case NFSV4_OP_RENEW:
 		return U64(x, &a->clientid.clientid);
 	case NFSV4_OP_DELEGRETURN:
+	case NFSV4_OP_FREE_STATEID:
 		return nfsv4_xdr_stateid(x, &a->stateid.stateid);
 	case NFSV4_OP_GETATTR:
 		return nfsv4_xdr_bitmap(x, &a->getattr.mask);
@@ -464,7 +635,7 @@ nfsv4_xdr_args(XDR *x, uint32_t op, union nfsv4_args *a)
 	case NFSV4_OP_VERIFY:
 		return nfsv4_xdr_fattr(x, &a->verify.attrs);
 	case NFSV4_OP_OPEN:
-		return xdr_args_open(x, &a->open);
+		return xdr_args_open(x, &a->open, minor);
 	case NFSV4_OP_OPENATTR:
 		return U32(x, &a->openattr.createdir) &&
 		    a->openattr.createdir <= 1;
@@ -494,6 +665,30 @@ nfsv4_xdr_args(XDR *x, uint32_t op, union nfsv4_args *a)
 		return xdr_args_write(x, &a->write);
 	case NFSV4_OP_RELEASE_LOCKOWNER:
 		return nfsv4_xdr_owner(x, &a->release_lockowner.owner);
+	case NFSV4_OP_BACKCHANNEL_CTL:
+		return U32(x, &a->backchannel_ctl.cb_program) &&
+		    xdr_sec_parms(x, &a->backchannel_ctl.gss);
+	case NFSV4_OP_BIND_CONN_TO_SESSION:
+		return nfsv4_xdr_sessionid(x, &a->bind_conn.sessionid) &&
+		    U32(x, &a->bind_conn.dir) && U32(x, &a->bind_conn.rdma) &&
+		    a->bind_conn.rdma <= 1;
+	case NFSV4_OP_EXCHANGE_ID:
+		return xdr_args_exchange_id(x, &a->exchange_id);
+	case NFSV4_OP_CREATE_SESSION:
+		return xdr_args_create_session(x, &a->create_session);
+	case NFSV4_OP_DESTROY_SESSION:
+		return nfsv4_xdr_sessionid(x, &a->sessionid.sessionid);
+	case NFSV4_OP_SECINFO_NO_NAME:
+		return U32(x, &a->u32.value) &&
+		    a->u32.value <= SECINFO_STYLE4_PARENT;
+	case NFSV4_OP_SEQUENCE:
+		return xdr_args_sequence(x, &a->sequence);
+	case NFSV4_OP_SET_SSV:
+		return xdr_skip_opaque(x) && xdr_skip_opaque(x);
+	case NFSV4_OP_TEST_STATEID:
+		return xdr_args_test_stateid(x, &a->test_stateid);
+	case NFSV4_OP_RECLAIM_COMPLETE:
+		return U32(x, &a->u32.value) && a->u32.value <= 1;
 	default:			/* those with void arguments */
 		return true;
 	}

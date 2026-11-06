@@ -184,7 +184,7 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	const struct nfsv4_opdesc *od;
 	uint32_t st;
 
-	if (!nfsv4_xdr_args(c->c_ax, op, a))
+	if (!nfsv4_xdr_args(c->c_ax, op, 0, a))
 		st = NFS4ERR_BADXDR;
 	else if ((od = &nfsv4_ops[op])->od_func == NULL)
 		st = NFS4ERR_NOTSUPP;

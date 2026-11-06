@@ -624,7 +624,7 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 		return nfsv4_patch32(rx, 0, NFS4ERR_MINOR_VERS_MISMATCH) ?
 		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
 	}
-	/* RFC 8178 s4.2: what a later minor version adds is illegal before. */
+	/* RFC 8178 s8.2: what a later minor version adds is illegal before. */
 	maxop = minor == 0 ? NFSV4_OP_RELEASE_LOCKOWNER :
 	    minor == 1 ? NFSV4_OP_RECLAIM_COMPLETE : NFSV4_OP_REMOVEXATTR;
 	c.c_rbuf = kmem_alloc(NFSV4_REPLAY_MAX, KM_SLEEP);

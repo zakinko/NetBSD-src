@@ -194,6 +194,7 @@ seek_vp(struct vnode *vp, kauth_cred_t cred, bool hole, off_t off,
 	case ENXIO:
 		*nextp = size;
 		return 0;
+	case EPASSTHROUGH:	/* genfs_enoioctl() */
 	case ENOTTY:
 	case EOPNOTSUPP:
 		seek_bmap(vp, hole, off, size, nextp);

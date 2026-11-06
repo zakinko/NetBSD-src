@@ -90,7 +90,7 @@ struct oncrpc_gss_ctx {
 	kmutex_t	gx_lock;	/* gx_seq */
 	struct oncrpc_gss_seq gx_seq;
 	struct gss_krb5_ctx *gx_krb;
-	kauth_cred_t	gx_cred;	/* NULL for a principal with no user */
+	kauth_cred_t	gx_cred;
 	bool		gx_used;	/* gx_initres is not needed any more */
 	void		*gx_initres;	/* for a retransmitted request */
 	size_t		gx_initreslen;
@@ -125,7 +125,7 @@ gss_ctx_free(struct oncrpc_gss_ctx *gx)
 
 	if (gx->gx_krb != NULL)
 		gss_krb5_ctx_destroy(gx->gx_krb);
-	if (gx->gx_cred != NULL)
+	if (gx->gx_cred != NULL)	/* not one that never finished */
 		kauth_cred_free(gx->gx_cred);
 	if (gx->gx_initres != NULL)
 		kmem_free(gx->gx_initres, gx->gx_initreslen);
@@ -387,21 +387,19 @@ gss_ctx_complete(struct oncrpc_gss_ctx *gx, struct oncrpc_gssd_accept_res *ar)
 	if (error != 0)
 		return error;
 	gx->gx_expire = time_uptime + MIN(ar->ar_lifetime, 86400U * 365);
-	if (ar->ar_mapped) {
-		cred = kauth_cred_alloc();
-		kauth_cred_setuid(cred, ar->ar_uid);
-		kauth_cred_seteuid(cred, ar->ar_uid);
-		kauth_cred_setsvuid(cred, ar->ar_uid);
-		kauth_cred_setgid(cred, ar->ar_gid);
-		kauth_cred_setegid(cred, ar->ar_gid);
-		kauth_cred_setsvgid(cred, ar->ar_gid);
-		for (i = 0; i < ar->ar_ngroups; i++)
-			gids[i] = ar->ar_groups[i];
-		if (ar->ar_ngroups > 0)
-			kauth_cred_setgroups(cred, gids, ar->ar_ngroups, -1,
-			    UIO_SYSSPACE);
-		gx->gx_cred = cred;
-	}
+	cred = kauth_cred_alloc();
+	kauth_cred_setuid(cred, ar->ar_uid);
+	kauth_cred_seteuid(cred, ar->ar_uid);
+	kauth_cred_setsvuid(cred, ar->ar_uid);
+	kauth_cred_setgid(cred, ar->ar_gid);
+	kauth_cred_setegid(cred, ar->ar_gid);
+	kauth_cred_setsvgid(cred, ar->ar_gid);
+	for (i = 0; i < ar->ar_ngroups; i++)
+		gids[i] = ar->ar_groups[i];
+	if (ar->ar_ngroups > 0)
+		kauth_cred_setgroups(cred, gids, ar->ar_ngroups, -1,
+		    UIO_SYSSPACE);
+	gx->gx_cred = cred;
 	oncrpc_gss_seq_init(&gx->gx_seq);
 	gx->gx_dh = 0;
 	gx->gx_complete = true;
@@ -753,7 +751,7 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 	}
 
 	/* Each request its own, as a program may change it. */
-	rq->rq_cred = gx->gx_cred != NULL ? kauth_cred_dup(gx->gx_cred) : NULL;
+	rq->rq_cred = kauth_cred_dup(gx->gx_cred);
 	rq->rq_secflavor = gc->gc_service == RPCSEC_GSS_SVC_NONE ?
 	    RPCSEC_GSS_KRB5 : gc->gc_service == RPCSEC_GSS_SVC_INTEGRITY ?
 	    RPCSEC_GSS_KRB5I : RPCSEC_GSS_KRB5P;

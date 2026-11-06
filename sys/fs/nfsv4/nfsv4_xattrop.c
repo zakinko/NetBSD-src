@@ -46,6 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/vnode.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
+#include <fs/nfsv4/nfsv4_state.h>
 
 /*
  * Choices, none from the RFC, which s8.2.1 leaves to the file system.
@@ -210,6 +211,10 @@ nfsv4_op_setxattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = xattr_key_check(&sa->key);
 	if (st == NFS4_OK)
 		st = nfsv4_errno(nfsv4_access_vp(cf, VWRITE));
+	/* s8.4.2.4, s8.4.4.4 */
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid,
+		    NFSV4_DC_WRITE);
 	if (st != NFS4_OK)
 		return st;
 	if (sa->len > NFSV4_XATTR_MAX)
@@ -278,6 +283,10 @@ nfsv4_op_removexattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = xattr_key_check(nm);
 	if (st == NFS4_OK)
 		st = nfsv4_errno(nfsv4_access_vp(cf, VWRITE));
+	/* s8.4.2.4, s8.4.4.4 */
+	if (st == NFS4_OK)
+		st = nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid,
+		    NFSV4_DC_WRITE);
 	if (st != NFS4_OK)
 		return st;
 

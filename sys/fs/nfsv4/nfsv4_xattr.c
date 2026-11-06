@@ -752,6 +752,7 @@ nfsv4_xattr_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a,
 		return nfsv4_attr_put_mask(c->c_rx, 0) ? NFS4ERR_ISDIR :
 		    NFS4ERR_RESOURCE;
 	default:
-		return NFS4ERR_INVAL;
+		/* RFC 8881 s5.3 */
+		return c->c_minor != 0 ? NFS4ERR_WRONG_TYPE : NFS4ERR_INVAL;
 	}
 }

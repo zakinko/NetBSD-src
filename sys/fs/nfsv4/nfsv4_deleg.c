@@ -536,7 +536,8 @@ nfsv4_op_delegpurge(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	SLIST_INIT(&reap);
 	mutex_enter(&nfsv4_state_lock);
-	status = nfsv4_client_get(a->clientid.clientid, &cl);
+	/* RFC 8881 s18.5.3: under a session the argument is ignored. */
+	status = nfsv4_client_cur(c, a->clientid.clientid, &cl);
 	if (status == NFS4_OK) {
 		nfsv4_deleg_drop_prev(cl, &reap);
 		cl->cl_purged = true;
@@ -583,12 +584,12 @@ nfsv4_op_want_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_open_deleg od;
 	uint32_t want = a->want_delegation.want;
 
-	if ((want & ~(OPEN4_SHARE_ACCESS_WANT_DELEG_MASK |
-	    OPEN4_SHARE_ACCESS_WANT_SIGNAL_DELEG_WHEN_RESRC_AVAIL |
-	    OPEN4_SHARE_ACCESS_WANT_PUSH_DELEG_WHEN_UNCONTENDED)) != 0)
-		return NFS4ERR_INVAL;
+	/*
+	 * s18.49.3: what is outside the want is not looked at, and asking
+	 * for nothing is no request.
+	 */
 	want &= OPEN4_SHARE_ACCESS_WANT_DELEG_MASK;
-	if (want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
+	if (want == 0 || want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
 		return NFS4ERR_INVAL;
 	memset(&od, 0, sizeof(od));
 	od.od_type = OPEN_DELEGATE_NONE_EXT;

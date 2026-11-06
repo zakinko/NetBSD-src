@@ -58,6 +58,10 @@ __KERNEL_RCSID(0, "$NetBSD$");
 				 (a) <= OPEN4_SHARE_ACCESS_BOTH)
 #define	OPEN4_DENY_OK(d)	((d) <= OPEN4_SHARE_DENY_BOTH)
 
+#define	OPEN_BYFH(claim)	((claim) == CLAIM_FH || \
+				 (claim) == CLAIM_DELEG_CUR_FH || \
+				 (claim) == CLAIM_DELEG_PREV_FH)
+
 /* RFC 8881 s18.16.1: what share_access may hold beside the access. */
 #define	OPEN4_WANT_FLAGS	\
 	(OPEN4_SHARE_ACCESS_WANT_SIGNAL_DELEG_WHEN_RESRC_AVAIL | \
@@ -537,16 +541,17 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		return open_previous(c, oa, sw, spare, sparef, ds, rlen);
 	case CLAIM_DELEGATE_CUR:
 	case CLAIM_DELEGATE_PREV:
-		break;
 	case CLAIM_DELEG_CUR_FH:
-		return NFS4ERR_BAD_STATEID;
+	case CLAIM_DELEG_PREV_FH:
+		break;
 	default:			/* s16.16.5 */
 		return NFS4ERR_NOTSUPP;
 	}
-	/* RFC 8881 s18.51.3 */
-	if (c->c_minor != 0 && !sw->sw_client->cl_reclaimed)
+	/* RFC 8881 s18.51.3, s10.2.1: a held delegation needs no grace. */
+	if (c->c_minor != 0 && !sw->sw_client->cl_reclaimed &&
+	    (oa->claim == CLAIM_NULL || oa->claim == CLAIM_FH))
 		return NFS4ERR_GRACE;
-	if (oa->claim == CLAIM_FH) {
+	if (OPEN_BYFH(oa->claim)) {
 		/* RFC 8881 s18.16.3: to create takes a name. */
 		if (oa->opentype == OPEN4_CREATE)
 			return NFS4ERR_INVAL;
@@ -559,7 +564,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	    !OPEN4_DENY_OK(oa->share_deny))
 		return NFS4ERR_INVAL;	/* s16.16.6 */
 
-	if (oa->claim == CLAIM_FH) {
+	if (OPEN_BYFH(oa->claim)) {
 		vp = cf->cf_vp;
 		vref(vp);
 	} else {
@@ -579,10 +584,12 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		if (st != NFS4_OK)
 			goto bad;
 	}
-	if (oa->claim == CLAIM_DELEGATE_CUR)
+	if (oa->claim == CLAIM_DELEGATE_CUR ||
+	    oa->claim == CLAIM_DELEG_CUR_FH)
 		st = nfsv4_deleg_claim_cur(c, sw->sw_client,
 		    &oa->delegate_stateid, vp);
-	else if (oa->claim == CLAIM_DELEGATE_PREV) {
+	else if (oa->claim == CLAIM_DELEGATE_PREV ||
+	    oa->claim == CLAIM_DELEG_PREV_FH) {
 		st = nfsv4_deleg_claim_prev(sw->sw_client, vp, &od);
 		if (st == NFS4_OK)
 			sw->sw_confirmed = true;  /* s9.1.11, s16.18.5 */

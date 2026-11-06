@@ -363,6 +363,7 @@ xdr_sec_parms(XDR *x, struct nfsv4_cbsec *cs)
 			return false;
 		switch (flavor) {
 		case 0:		/* AUTH_NONE */
+			cs->cs_any = first ? true : cs->cs_any;
 			first = false;
 			break;
 		case 1:		/* AUTH_SYS: stamp, name, uid, gid, gids<> */
@@ -373,6 +374,7 @@ xdr_sec_parms(XDR *x, struct nfsv4_cbsec *cs)
 			if (!nfsv4_xdr_skip(x, t * 4))
 				return false;
 			if (first) {
+				cs->cs_any = true;
 				cs->cs_flavor = flavor;
 				cs->cs_uid = uid;
 				cs->cs_gid = gid;

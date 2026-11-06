@@ -270,32 +270,42 @@ cb_authsys(char *buf, size_t len, uid_t uid, gid_t gid)
 	return n;
 }
 
+/*
+ * CB_COMPOUND4args up to the one operation that matters, s17.2.2.  RFC
+ * 8881 s18.36.3 has minor version 1, and s20.9 a CB_SEQUENCE first; no
+ * call refers to another, as nothing here races a reply, s2.10.6.3.
+ */
+static bool
+cb_head(XDR *x, const struct cb_target *ct, uint32_t ident)
+{
+	uint32_t zero = 0, one = 1, two = 2, seqop = NFSV4_OP_CB_SEQUENCE;
+	uint32_t seq = ct->ct_seq;
+	struct nfsv4_sessionid sid = ct->ct_sid;
+
+	if (ct->ct_sess == NULL)
+		return xdr_u_int32_t(x, &zero) &&	/* tag */
+		    xdr_u_int32_t(x, &zero) &&		/* minorversion */
+		    xdr_u_int32_t(x, &ident) &&		/* s17.2.4 */
+		    xdr_u_int32_t(x, &one);
+	return xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &one) &&
+	    xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &two) &&
+	    xdr_u_int32_t(x, &seqop) && nfsv4_xdr_sessionid(x, &sid) &&
+	    xdr_u_int32_t(x, &seq) &&
+	    xdr_u_int32_t(x, &zero) &&		/* csa_slotid */
+	    xdr_u_int32_t(x, &zero) &&		/* csa_highest_slotid */
+	    xdr_u_int32_t(x, &zero) &&		/* csa_cachethis */
+	    xdr_u_int32_t(x, &zero);		/* csa_referring_call_lists */
+}
+
 /* CB_COMPOUND4args, s17.2.2, of the one operation that is used here. */
 static bool
 cb_recall_encode(XDR *x, void *arg)
 {
 	struct cb_recall_args *ra = arg;
 	const struct cb_target *ct = ra->ra_ct;
-	uint32_t zero = 0, one = 1, two = 2, op = NFSV4_OP_CB_RECALL;
-	uint32_t seqop = NFSV4_OP_CB_SEQUENCE, seq = ct->ct_seq;
-	struct nfsv4_sessionid sid = ct->ct_sid;
+	uint32_t zero = 0, op = NFSV4_OP_CB_RECALL;
 
-	/* RFC 8881 s18.36.3: minor version 1, and s20.9 comes first. */
-	if (ct->ct_sess != NULL &&
-	    (!xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &one) ||
-	    !xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
-	    !xdr_u_int32_t(x, &seqop) || !nfsv4_xdr_sessionid(x, &sid) ||
-	    !xdr_u_int32_t(x, &seq) ||
-	    !xdr_u_int32_t(x, &zero) ||		/* csa_slotid */
-	    !xdr_u_int32_t(x, &zero) ||		/* csa_highest_slotid */
-	    !xdr_u_int32_t(x, &zero) ||		/* csa_cachethis */
-	    !xdr_u_int32_t(x, &zero)))		/* csa_referring_call_lists */
-		return false;
-	if (ct->ct_sess == NULL &&
-	    (!xdr_u_int32_t(x, &zero) ||	/* tag */
-	    !xdr_u_int32_t(x, &zero) ||		/* minorversion, s17.2.3 */
-	    !xdr_u_int32_t(x, &ra->ra_ident) ||	/* s17.2.4 */
-	    !xdr_u_int32_t(x, &one)))
+	if (!cb_head(x, ct, ra->ra_ident))
 		return false;
 	return xdr_u_int32_t(x, &op) &&
 	    nfsv4_xdr_stateid(x, &ra->ra_stateid) &&
@@ -312,6 +322,7 @@ cb_status_decode(XDR *x, void *res)
 }
 
 struct cb_getattr {
+	const struct cb_target *ga_ct;
 	uint32_t	ga_ident;
 	struct nfsv4_fh	ga_fh;
 	uint64_t	ga_size;
@@ -324,12 +335,12 @@ static bool
 cb_getattr_encode(XDR *x, void *arg)
 {
 	struct cb_getattr *ga = arg;
-	uint32_t zero = 0, one = 1, op = NFSV4_OP_CB_GETATTR;
+	uint32_t one = 1, op = NFSV4_OP_CB_GETATTR;
 	uint32_t mask = (1U << FATTR4_CHANGE) | (1U << FATTR4_SIZE);
 
-	return xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &zero) &&
-	    xdr_u_int32_t(x, &ga->ga_ident) && xdr_u_int32_t(x, &one) &&
-	    xdr_u_int32_t(x, &op) && nfsv4_xdr_fh(x, &ga->ga_fh) &&
+	if (!cb_head(x, ga->ga_ct, ga->ga_ident))
+		return false;
+	return xdr_u_int32_t(x, &op) && nfsv4_xdr_fh(x, &ga->ga_fh) &&
 	    xdr_u_int32_t(x, &one) && xdr_u_int32_t(x, &mask);
 }
 
@@ -564,9 +575,11 @@ nfsv4_cb_getattr(const struct nfsv4_client *cl, const struct nfsv4_fh *fh,
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
-	(void)cb_target_get(__UNCONST(cl), &ct);
+	if (!cb_target_get(__UNCONST(cl), &ct))
+		return EAGAIN;
 	mutex_exit(&nfsv4_state_lock);
 	ga = kmem_zalloc(sizeof(*ga), KM_SLEEP);
+	ga->ga_ct = &ct;
 	ga->ga_ident = ct.ct_ident;
 	ga->ga_fh = *fh;
 	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_getattr_encode, ga,
@@ -579,6 +592,7 @@ nfsv4_cb_getattr(const struct nfsv4_client *cl, const struct nfsv4_fh *fh,
 	}
 	kmem_free(ga, sizeof(*ga));
 	mutex_enter(&nfsv4_state_lock);
+	cb_target_put(&ct, error);
 	return error;
 }
 

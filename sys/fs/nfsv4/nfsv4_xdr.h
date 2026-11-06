@@ -341,6 +341,7 @@ struct nfsv4_chanattrs {
 /* What is kept of callback_sec_parms4<>, RFC 8881 s18.33.1. */
 struct nfsv4_cbsec {
 	bool		cs_gss;		/* one is RPCSEC_GSS */
+	bool		cs_any;		/* one can be used */
 	uint32_t	cs_flavor;	/* the first of the others */
 	uint32_t	cs_uid;		/* of AUTH_SYS */
 	uint32_t	cs_gid;

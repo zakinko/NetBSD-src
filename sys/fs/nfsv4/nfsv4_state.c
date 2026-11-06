@@ -675,7 +675,8 @@ nfsv4_stateid_check(const struct nfsv4_stateid *si,
 		return NFS4ERR_EXPIRED;
 	if (st->st_file->f_vp != vp)
 		return NFS4ERR_BAD_STATEID;
-	if (nfsv4_lease_moved(cl))
+	/* RFC 8881 s15.1.16.2: superseded by the status of SEQUENCE. */
+	if (cl->cl_minor == 0 && nfsv4_lease_moved(cl))
 		return NFS4ERR_LEASE_MOVED;
 	if (type != 0 && st->st_type != type)
 		return NFS4ERR_BAD_STATEID;

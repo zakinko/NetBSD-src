@@ -428,8 +428,9 @@ nfsv4_reclaim_check(const struct nfsv4_client *cl)
 	if (!nfsv4_grace_active())
 		return NFS4ERR_NO_GRACE;
 	mutex_enter(&stable_lock);
+	/* RFC 8881 s8.4.3 narrows RFC 7530's choice to NFS4ERR_NO_GRACE. */
 	st = stable_find(cl->cl_idstr, cl->cl_idlen) != NULL ? NFS4_OK :
-	    NFS4ERR_RECLAIM_BAD;
+	    cl->cl_minor != 0 ? NFS4ERR_NO_GRACE : NFS4ERR_RECLAIM_BAD;
 	mutex_exit(&stable_lock);
 	return st;
 }

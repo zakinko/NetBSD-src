@@ -341,6 +341,7 @@ stateid_track(struct nfsv4_compound *c, uint32_t op)
 	case NFSV4_OP_CREATE:
 	case NFSV4_OP_LOOKUP:
 	case NFSV4_OP_LOOKUPP:
+	case NFSV4_OP_OPENATTR:
 	case NFSV4_OP_PUTFH:
 	case NFSV4_OP_PUTPUBFH:
 	case NFSV4_OP_PUTROOTFH:

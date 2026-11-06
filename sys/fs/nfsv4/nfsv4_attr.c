@@ -948,6 +948,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		c->c_setacl = NULL;
 	}
 	c->c_xs.xs_set = 0;
+	/* RFC 8881 s5.5: it is known, and get-only. */
+	if (c->c_minor != 0 && !attr_more(&fa->fa_mask, 1) &&
+	    fa->fa_mask.bm_n > 2 && fa->fa_mask.bm_w[2] != 0)
+		return NFS4ERR_INVAL;
 	if (attr_more(&fa->fa_mask, 0) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;

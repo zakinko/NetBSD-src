@@ -218,7 +218,9 @@ session_cbconn(struct nfsv4_session *se)
 	for (i = 0; i < se->se_nconn; i++) {
 		if (!nfsv4_conn_alive(se->se_conns[i].sc_id))
 			continue;
-		if ((se->se_conns[i].sc_dir & CDFS4_BACK) != 0 && id == 0)
+		/* s2.10.8.2: with no flavor offered, no call can be made. */
+		if ((se->se_conns[i].sc_dir & CDFS4_BACK) != 0 && id == 0 &&
+		    se->se_cbsec.cs_any)
 			id = se->se_conns[i].sc_id;
 		se->se_conns[n++] = se->se_conns[i];
 	}
@@ -349,7 +351,8 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 
 	if (sa->sequenceid == sl->sl_seq && sl->sl_used) {
 		/* s18.46.3, a MAY: the client reused the slot and sequence. */
-		if (sl->sl_sum != c->c_argsum) {
+		if (sl->sl_sum != c->c_argsum ||
+		    sl->sl_uid != nfsv4_client_principal(c)) {
 			mutex_exit(&nfsv4_state_lock);
 			return NFS4ERR_SEQ_FALSE_RETRY;
 		}
@@ -358,6 +361,9 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 			mutex_exit(&nfsv4_state_lock);
 			return NFS4ERR_DELAY;
 		}
+		/* s18.46.3: the lease, on a retry too. */
+		if (!se->se_client->cl_expired)
+			se->se_client->cl_expire = time_uptime + NFSV4_LEASE;
 		if (sl->sl_reply != NULL) {
 			/* Busy, it keeps its reply while this copies it. */
 			sl->sl_busy = true;
@@ -380,6 +386,7 @@ nfsv4_seq_begin(struct nfsv4_compound *c, const struct nfsv4_args_sequence *sa,
 		sl->sl_used = true;
 		sl->sl_busy = true;
 		sl->sl_sum = c->c_argsum;
+		sl->sl_uid = nfsv4_client_principal(c);
 		old = sl->sl_reply;
 		oldlen = sl->sl_len;
 		sl->sl_reply = NULL;
@@ -450,6 +457,9 @@ nfsv4_seq_end(struct nfsv4_compound *c, bool ok)
 		sl->sl_len = buf != NULL ? len : 0;
 		sl->sl_busy = false;
 	}
+	/* s2.10.12: a long COMPOUND does not eat the lease it runs under. */
+	if (!c->c_client->cl_expired)
+		c->c_client->cl_expire = time_uptime + NFSV4_LEASE;
 	c->c_client->cl_refs--;
 	session_rele(se);
 	mutex_exit(&nfsv4_state_lock);
@@ -533,7 +543,10 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_exchange_id *ea = &a->exchange_id;
 	struct nfsv4_client *conf, *unconf, *n;
 	uid_t uid = nfsv4_client_principal(c);
-	uint32_t flags = EXCHGID4_FLAG_USE_NON_PNFS, seq, st;
+	/* s18.35.3: referrals and migration can both be seen here. */
+	uint32_t flags = EXCHGID4_FLAG_USE_NON_PNFS |
+	    EXCHGID4_FLAG_SUPP_MOVED_REFER | EXCHGID4_FLAG_SUPP_MOVED_MIGR;
+	uint32_t seq, st;
 	uint64_t id;
 	bool same_verf, same_uid;
 

@@ -46,6 +46,32 @@ t() {
 	t sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do : >/mnt/v3/lc/d/n$i; done'
 	t rm -rf /mnt/v3/lc/d
 	t flock -n /mnt/v4/lc/a true
+	# The last nfsd goes: the version 4 connection stays and works.
+	c() { ssh netbsd 'netstat -an -f inet' 2>/dev/null | grep '127.0.0.1.2049 .*ESTABLISHED' | sort; }
+	# Which connection is which, by traffic while only one mount is used.
+	echo '$ connections, both up'
+	c | tee "$OUT/conn0"
+	t sudo sh -c 'echo before >/mnt/v4/lc/k'
+	ssh netbsd 'pkill -x nfsd; sleep 3; ps -ax | grep "[n]fsd" || echo no nfsd'
+	echo '$ connections, nfsd gone'
+	c | tee "$OUT/conn1"
+	t test "$(wc -l <"$OUT/conn1")" -ge 1
+	t timeout 30 sudo sh -c 'echo during >/mnt/v4/lc/k2; sync'
+	t sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'
+	t test "$(timeout 30 cat /mnt/v4/lc/k2)" = during
+	t timeout 60 cp "$BIN" /mnt/v4/lc/e
+	t sudo sh -c 'sync; echo 3 >/proc/sys/vm/drop_caches'
+	t timeout 60 cmp "$BIN" /mnt/v4/lc/e
+	t ssh netbsd 'test "$(cat /export/ffs/lc/k2)" = during'
+	# Version 3 waits, as a hard mount does, and comes back with nfsd.
+	timeout 150 ls /mnt/v3/lc >"$OUT/v3back" 2>&1 &
+	v3=$!
+	t ssh netbsd '/usr/sbin/nfsd -t -u -n 4; sleep 2; ps -ax | grep -c "[n]fsd"'
+	wait $v3 || { echo FAILED v3 did not come back; fails=$((fails + 1)); }
+	t grep -q k2 "$OUT/v3back"
+	echo '$ connections, nfsd back'
+	c | tee "$OUT/conn2"
+	t sh -c "grep -Fxf '$OUT/conn1' '$OUT/conn2' >/dev/null"
 	t sudo rm -rf /mnt/v3/lc
 	t sudo umount /mnt/v3
 	t sudo umount /mnt/v4

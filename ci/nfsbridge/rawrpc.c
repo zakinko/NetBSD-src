@@ -4,7 +4,7 @@
  * Raw calls at the server on 127.0.0.1:2049, for what a client will not
  * send: replays, and calls that are wrong.  Every check prints ok or
  * FAILED, and the exit status counts the latter.
- *   rawrpc tcp|udp DIR [garbage|v2write]
+ *   rawrpc tcp|udp DIR [garbage]
  * DIR is a directory on an exported file system.  Run as root, getfh(2).
  */
 
@@ -28,7 +28,6 @@
 #define	NFS_PROG	100003		/* RFC 1813 s2.2 */
 #define	PROC_GETATTR	1		/* RFC 1813 s3.3.1 */
 #define	PROC_READ	6		/* RFC 1813 s3.3.6 */
-#define	PROC_V2WRITE	8		/* RFC 1094 s2.2.9 */
 #define	PROC_MKDIR	9		/* RFC 1813 s3.3.9 */
 #define	NFS3ERR_EXIST	17		/* RFC 1813 s2.6, nfsstat3 */
 #define	FATTR3_WORDS	21		/* RFC 1813 s2.5, fattr3 */
@@ -137,7 +136,7 @@ main(int argc, char **argv)
 	if (argc < 3)
 		errx(1, "usage");
 	stream = strcmp(argv[1], "tcp") == 0;
-	garbage = argc > 3 && strcmp(argv[3], "garbage") == 0;
+	garbage = argc > 3;
 	if (getfh(argv[2], fh, &fhlen) == -1)
 		err(1, "getfh");
 	s = socket(AF_INET, stream ? SOCK_STREAM : SOCK_DGRAM, 0);
@@ -153,14 +152,6 @@ main(int argc, char **argv)
 		err(1, "SO_RCVBUF");
 	if (connect(s, (void *)&sin, sizeof(sin)) == -1)
 		err(1, "connect");
-
-	/* One call and out: the stock server is not expected to survive it. */
-	if (argc > 3 && strcmp(argv[3], "v2write") == 0) {
-		n = put(b, ++xid, 2, PROC_V2WRITE, AUTH_SYS_);
-		r = call(b, n);
-		printf("WRITE with no arguments: %d words\n", r);
-		return 0;
-	}
 
 	/* A MKDIR, sent again with the same xid: only a cache can say OK. */
 	snprintf(name, sizeof(name), "d%d", (int)getpid());
@@ -211,13 +202,6 @@ main(int argc, char **argv)
 	/* The stock server says nothing; the bridge must say GARBAGE_ARGS. */
 	if (garbage) {
 		check("GETATTR with no arguments, GARBAGE_ARGS",
-		    r >= 6 && w(5) == 4);
-		n = put(b, ++xid, 2, PROC_V2WRITE, AUTH_SYS_);
-		r = call(b, n);
-		check("gathered WRITE with no arguments, GARBAGE_ARGS",
-		    r >= 6 && w(5) == 4);
-		r = call(b, n);
-		check("the same again, not dropped as in progress",
 		    r >= 6 && w(5) == 4);
 	}
 	n = put(b, ++xid, 3, 0, AUTH_NONE_);

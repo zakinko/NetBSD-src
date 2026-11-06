@@ -123,6 +123,8 @@ nfsv4_client_get(uint64_t id, struct nfsv4_client **clp)
 	if (cl->cl_expired || time_uptime > cl->cl_expire)
 		return NFS4ERR_EXPIRED;
 	cl->cl_expire = lease_end();
+	if (nfsv4_lease_moved(cl))
+		return NFS4ERR_LEASE_MOVED;
 	*clp = cl;
 	return NFS4_OK;
 }
@@ -302,6 +304,31 @@ nfsv4_owner_replay_save(struct nfsv4_owner_s *sw, uint32_t seqid, uint32_t op,
 	nfsv4_reap_finish(&reap);
 	if (old != NULL)
 		kmem_free(old, oldlen);
+}
+
+/*
+ * s9.14.3: does cl have state on a file system that has gone, and has
+ * it not found out?  A linear search, and only with such a file system
+ * around, for two leases.
+ */
+bool
+nfsv4_lease_moved(const struct nfsv4_client *cl)
+{
+	const struct nfsv4_owner_s *sw;
+	const struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (!nfsv4_moved_grace() || cl->cl_movedack == nfsv4_moved_gen())
+		return false;
+	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+		LIST_FOREACH(st, &sw->sw_states, st_olist) {
+			if (st->st_file != NULL &&
+			    nfsv4_moved_mount(st->st_file->f_vp->v_mount))
+				return true;
+		}
+	}
+	return false;
 }
 
 /* The client with this ID, confirmed, if it still exists. */
@@ -606,6 +633,8 @@ nfsv4_stateid_check(const struct nfsv4_stateid *si,
 		return NFS4ERR_EXPIRED;
 	if (st->st_file->f_vp != vp)
 		return NFS4ERR_BAD_STATEID;
+	if (nfsv4_lease_moved(cl))
+		return NFS4ERR_LEASE_MOVED;
 	if (type != 0 && st->st_type != type)
 		return NFS4ERR_BAD_STATEID;
 	if (st->st_type == NFSV4_ST_OPEN && !st->st_owner->sw_confirmed)
@@ -1024,6 +1053,10 @@ nfsv4_op_renew(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t st;
 
 	mutex_enter(&nfsv4_state_lock);
+	/* s9.14.3: the convention for saying it has seen fs_locations. */
+	if (c->c_probed &&
+	    (cl = nfsv4_client_byid(a->clientid.clientid)) != NULL)
+		cl->cl_movedack = nfsv4_moved_gen();
 	st = nfsv4_client_get(a->clientid.clientid, &cl);
 	/* s16.28.5: only the principal; open files are not looked for. */
 	if (st == NFS4_OK && cl->cl_uid != client_principal(c))

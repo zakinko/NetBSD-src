@@ -57,6 +57,7 @@ struct nfsv4_referral {
 	SLIST_ENTRY(nfsv4_referral) rf_list;
 	struct vnode	*rf_vp;
 	u_int		rf_index;
+	bool		rf_moved;	/* the whole file system, s9.14 */
 	char		rf_path[256];
 	char		rf_locs[512];
 };
@@ -198,6 +199,10 @@ int	nfsv4_referral_line(const char *);
 const struct nfsv4_referral *
 	nfsv4_referral_find(const struct vnode *);
 bool	nfsv4_referral_allowed(uint32_t, const union nfsv4_args *);
+int	nfsv4_moved_line(const char *);
+bool	nfsv4_moved_mount(const struct mount *);
+uint32_t nfsv4_moved_gen(void);
+bool	nfsv4_moved_grace(void);
 bool	nfsv4_attr_absent_ok(const struct nfsv4_bitmap *);
 uint32_t nfsv4_xattr_byhash(struct nfsv4_cfh *, const uint8_t *);
 void	nfsv4_xattr_hash(const char *, size_t, uint8_t *);

@@ -78,6 +78,7 @@ struct nfsv4_client {
 	bool		cl_purged;	/* DELEGPURGE was done */
 	bool		cl_stable;	/* stable storage has it */
 	bool		cl_revoked;	/* and must hear of a revocation */
+	uint32_t	cl_movedack;	/* moved generation it has heard of */
 	bool		cl_confirmed;
 	bool		cl_expired;	/* state gone; stateids still known */
 	time_t		cl_expire;	/* lease, in time_uptime */
@@ -244,6 +245,7 @@ struct nfsv4_file *
 struct nfsv4_client *
 	nfsv4_client_byid(uint64_t);
 void	nfsv4_client_renew(struct nfsv4_client *);
+bool	nfsv4_lease_moved(const struct nfsv4_client *);
 struct nfsv4_state *
 	nfsv4_state_byother(uint64_t);
 void	nfsv4_cb_probe(struct nfsv4_client *);

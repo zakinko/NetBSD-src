@@ -385,6 +385,13 @@ nfsv4_sysctl_referral(SYSCTLFN_ARGS)
 	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_referral_line);
 }
 
+static int
+nfsv4_sysctl_moved(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_moved_line);
+}
+
 static const struct oncrpc_program nfsv4_program = {
 	.op_prog = NFSV4_PROGRAM,
 	.op_vers_low = NFSV4_VERSION,
@@ -453,6 +460,10 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "referral", SYSCTL_DESCR("Add a referral"),
 	    nfsv4_sysctl_referral, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "moved", SYSCTL_DESCR("Say a file system has migrated"),
+	    nfsv4_sysctl_moved, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "delegations", SYSCTL_DESCR("0 none, 1 read, 2 read and write"),

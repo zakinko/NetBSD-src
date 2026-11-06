@@ -35,6 +35,14 @@
  * for each.  The directory is held until the module goes, and a handle
  * of it is marked, cf_ref, by nfsv4_cfh_setvp().  The checks are s8.2 and
  * s8.3.
+ *
+ * Migration, s9.14, is the same given to vfs.nfsv4.moved with a mount
+ * point: every object of that file system is absent from then on, its
+ * state is not carried over, which s9.14.1 leaves as a SHOULD, and a
+ * client with state there gets NFS4ERR_LEASE_MOVED from what renews,
+ * s9.14.3, until it has probed or two leases are over.  One RENEW after
+ * fs_locations counts for all the file systems gone so far.  How the
+ * data gets there is the administrator's.
  */
 
 #include <sys/cdefs.h>
@@ -56,6 +64,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 static kmutex_t referral_lock;
 static SLIST_HEAD(, nfsv4_referral) referrals;
 static u_int referral_n;
+static uint32_t moved_gen;
+static time_t moved_end;
 
 void
 nfsv4_referral_init(void)
@@ -64,6 +74,7 @@ nfsv4_referral_init(void)
 	mutex_init(&referral_lock, MUTEX_DEFAULT, IPL_NONE);
 	SLIST_INIT(&referrals);
 	referral_n = 0;
+	moved_gen = 0;
 }
 
 void
@@ -127,10 +138,63 @@ nfsv4_referral_find(const struct vnode *vp)
 		return NULL;
 	mutex_enter(&referral_lock);
 	SLIST_FOREACH(rf, &referrals, rf_list) {
-		if (rf->rf_vp == vp) {
+		if (rf->rf_vp == vp ||
+		    (rf->rf_moved && rf->rf_vp->v_mount == vp->v_mount)) {
 			found = rf;
 			break;
 		}
+	}
+	mutex_exit(&referral_lock);
+	return found;
+}
+
+int
+nfsv4_moved_line(const char *s)
+{
+	struct nfsv4_referral *rf;
+	int error;
+
+	error = nfsv4_referral_line(s);
+	if (error != 0)
+		return error;
+	mutex_enter(&referral_lock);
+	rf = SLIST_FIRST(&referrals);
+	if ((rf->rf_vp->v_vflag & VV_ROOT) == 0)
+		error = EINVAL;
+	else {
+		rf->rf_moved = true;
+		moved_gen++;
+		moved_end = time_uptime + 2 * NFSV4_LEASE;	/* s9.14.3 */
+	}
+	mutex_exit(&referral_lock);
+	return error;
+}
+
+uint32_t
+nfsv4_moved_gen(void)
+{
+
+	return atomic_load_relaxed(&moved_gen);
+}
+
+bool
+nfsv4_moved_grace(void)
+{
+
+	return atomic_load_relaxed(&moved_gen) != 0 &&
+	    time_uptime < moved_end;
+}
+
+bool
+nfsv4_moved_mount(const struct mount *mp)
+{
+	const struct nfsv4_referral *rf;
+	bool found = false;
+
+	mutex_enter(&referral_lock);
+	SLIST_FOREACH(rf, &referrals, rf_list) {
+		if (rf->rf_moved && rf->rf_vp->v_mount == mp)
+			found = true;
 	}
 	mutex_exit(&referral_lock);
 	return found;

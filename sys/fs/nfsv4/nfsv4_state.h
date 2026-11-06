@@ -198,6 +198,8 @@ enum nfsv4_seq {
 	NFSV4_SEQ_BAD
 };
 
+extern const uint64_t nfsv4_attr_exclcreat;
+
 void	nfsv4_state_init(void);
 void	nfsv4_state_fini(void);
 void	nfsv4_cb_init(void);

@@ -114,6 +114,7 @@ struct nfsv4_compound {
 	struct nfsv4_xstore c_xs;
 	struct nfsv4_attrov c_ov;	/* for the GETATTR going on */
 	bool		c_probed;	/* fs_locations of an absent fs, s9.14.3 */
+	uint32_t	c_minor;
 };
 
 /* A COMPOUND in the duplicate request cache's hands; see nfsv4_drc.c. */
@@ -164,7 +165,8 @@ uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    struct nfsv4_bitmap *, u_int *);
 uint64_t nfsv4_attr_change(const struct vnode *, const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
-bool	nfsv4_attr_supported(const struct nfsv4_bitmap *, struct vnode *);
+bool	nfsv4_attr_supported(const struct nfsv4_compound *,
+	    const struct nfsv4_bitmap *, struct vnode *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
 
 uint32_t nfsv4_attr_parse(struct nfsv4_compound *,

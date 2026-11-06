@@ -191,6 +191,29 @@ attr_quota_put(XDR *x, struct vnode *vp, uid_t uid, u_int n)
 	return xdr_u_int64_t(x, &(uint64_t){ v * DEV_BSIZE });
 }
 
+/*
+ * RFC 8881 s5.8.1.14: what EXCLUSIVE4_1 can set.  Not time_access_set,
+ * which holds the verifier, s18.16.3, and size would mean nothing.
+ */
+const uint64_t nfsv4_attr_exclcreat =
+    BIT(FATTR4_ACL) | BIT(FATTR4_MODE) | BIT(FATTR4_OWNER) |
+    BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_TIME_MODIFY_SET);
+
+/* The bit of suppattr_exclcreat in the third word; nothing else is there. */
+#define	W2_EXCLCREAT	(1U << (FATTR4_SUPPATTR_EXCLCREAT - 64))
+
+/* Words past two that this minor version has nothing to say of. */
+static inline bool
+attr_more(const struct nfsv4_bitmap *bm, uint32_t minor)
+{
+	uint32_t w2;
+
+	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
+	if (minor != 0)
+		w2 &= ~W2_EXCLCREAT;
+	return bm->bm_more || w2 != 0;
+}
+
 static inline uint64_t
 attr_mask(const struct nfsv4_bitmap *bm)
 {
@@ -220,10 +243,12 @@ nfsv4_attr_absent_ok(const struct nfsv4_bitmap *bm)
 }
 
 bool
-nfsv4_attr_supported(const struct nfsv4_bitmap *bm, struct vnode *vp)
+nfsv4_attr_supported(const struct nfsv4_compound *c,
+    const struct nfsv4_bitmap *bm, struct vnode *vp)
 {
 
-	return (attr_mask(bm) & ~attr_supported_full(vp)) == 0;
+	return !attr_more(bm, c->c_minor) &&
+	    (attr_mask(bm) & ~attr_supported_full(vp)) == 0;
 }
 
 static uint32_t
@@ -488,7 +513,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	uint64_t m, out, id, maxsize, sup;
 	uint32_t st;
 	u_int n;
-	bool ok;
+	bool ok, exclcreat;
 	XDR x;
 	int error;
 
@@ -564,8 +589,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		out |= BIT(n);
 		switch (n) {
 		case FATTR4_SUPPORTED_ATTRS:
-			ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
-			    attr_u32(&x, W1(sup));
+			ok = attr_u32(&x, c->c_minor != 0 ? 3 : 2) &&
+			    attr_u32(&x, W0(sup)) && attr_u32(&x, W1(sup));
+			if (ok && c->c_minor != 0)
+				ok = attr_u32(&x, W2_EXCLCREAT);
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
@@ -753,15 +780,25 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		}
 	}
 
+	/* Attribute 75 comes after all the others, RFC 8881 s5.8.1.14. */
+	exclcreat = ok && rderr == NFS4_OK && c->c_minor != 0 &&
+	    want->bm_n > 2 && (want->bm_w[2] & W2_EXCLCREAT) != 0;
+	if (exclcreat) {
+		sup = nfsv4_attr_exclcreat & attr_supported_by(vp);
+		ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
+		    attr_u32(&x, W1(sup));
+	}
+
 	if (sb != NULL)
 		kmem_free(sb, sizeof(*sb));
 	if (acl != NULL)
 		acl_free(acl);
 	if (!ok)
 		return NFS4ERR_TOOSMALL;
-	got->bm_n = 2;
+	got->bm_n = exclcreat ? 3 : 2;
 	got->bm_w[0] = W0(out);
 	got->bm_w[1] = W1(out);
+	got->bm_w[2] = exclcreat ? W2_EXCLCREAT : 0;
 	got->bm_more = false;
 	*lenp = xdr_getpos(&x);
 	return NFS4_OK;
@@ -911,7 +948,7 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		c->c_setacl = NULL;
 	}
 	c->c_xs.xs_set = 0;
-	if (fa->fa_mask.bm_more ||
+	if (attr_more(&fa->fa_mask, 0) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	/* Whether these can be set depends on the file system. */
@@ -1021,9 +1058,9 @@ nfsv4_attr_put_mask(XDR *x, uint64_t set)
 {
 	struct nfsv4_bitmap bm;
 
+	memset(&bm, 0, sizeof(bm));
 	bm.bm_n = 2;
 	bm.bm_w[0] = W0(set);
 	bm.bm_w[1] = W1(set);
-	bm.bm_more = false;
 	return nfsv4_xdr_bitmap(x, &bm);
 }

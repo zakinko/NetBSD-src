@@ -170,7 +170,11 @@ flockab() {
 	h=$!
 	sleep 3
 	echo "\$ flock -n, vers=$1 delegations=$2"
-	if flock -n "$p/ab" true; then echo "granted vers=$1 delegations=$2"; else echo "refused vers=$1 delegations=$2"; fi
+	if flock -n "$p/ab" true; then
+		echo "FAILED: granted vers=$1 delegations=$2"; fails=$((fails + 1))
+	else
+		echo "refused vers=$1 delegations=$2"
+	fi
 	wait $h
 	grep -E 'DELEGRETURN|  LOCK:' /proc/self/mountstats | sort -u | head -4
 	sudo rm -f "$p/ab"

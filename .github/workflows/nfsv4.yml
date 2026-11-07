@@ -234,8 +234,8 @@ jobs:
       # Last, for the runs after it to be measured all the same.
       - name: The Linux client must have had no failures
         run: |
-          grep -H '^failures:' out/linux-client-*.txt
-          ! grep -q '^failures: [1-9]' out/linux-client-*.txt
+          grep -H '^failures:' out/linux-client-*.txt out/linux-42.txt
+          ! grep -q '^failures: [1-9]' out/linux-client-*.txt out/linux-42.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

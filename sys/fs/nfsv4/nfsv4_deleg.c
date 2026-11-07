@@ -332,7 +332,7 @@ deleg_refused(struct nfsv4_client *cl, struct vnode *vp, bool write,
 	    deleg_count >= NFSV4_DELEG_MAX || nfsv4_deleg_mode == 0 ||
 	    (write && nfsv4_deleg_mode == 1))
 		return WND4_RESOURCE + 1;
-	if ((write && ds->ds_nowrite) || vp->v_writecount != 0)
+	if (ds->ds_locked || vp->v_writecount != 0)
 		return WND4_CONTENTION + 1;
 	f = nfsv4_file_find(vp);
 	if (f == NULL)
@@ -389,13 +389,17 @@ nfsv4_deleg_look(struct vnode *vp, kauth_cred_t cred,
 	struct flock fl;
 	struct vattr va;
 
-	/* s10.4.2 has the holder lock alone; nobody may have any. */
+	/*
+	 * s10.4.2 has the holder of a write delegation lock alone, and the
+	 * client of Linux does so under a read delegation too, not sending
+	 * LOCK: nobody may have any, or it would not see them.
+	 */
 	memset(&fl, 0, sizeof(fl));
 	fl.l_whence = SEEK_SET;
 	fl.l_type = F_WRLCK;
 	if (VOP_ADVLOCK(vp, ds, F_GETLK, &fl, 0) != 0 ||
 	    fl.l_type != F_UNLCK)
-		ds->ds_nowrite = true;
+		ds->ds_locked = true;
 	/* s10.4.3, sc */
 	vn_lock(vp, LK_SHARED | LK_RETRY);
 	if (VOP_GETATTR(vp, &va, cred) == 0)

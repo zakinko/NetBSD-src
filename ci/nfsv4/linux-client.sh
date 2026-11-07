@@ -179,6 +179,12 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 		echo "DELEGRETURN before $r0 after $(dreturns "$m")"
 		t test "$(dreturns "$m")" -gt "$r0"
 	fi
+	# A local lock, from before the OPEN and from after it.
+	t sh -c "ssh netbsd '/var/tmp/nfsv4/lockhold /export/pynfs/dg/a 8' &
+	    sleep 3; flock -n -x $m/dg/a true; r=\$?; wait; test \$r -ne 0"
+	t sh -c "exec 3<$m/dg/a; sleep 1
+	    ssh netbsd '/var/tmp/nfsv4/lockhold /export/pynfs/dg/a 8' &
+	    sleep 3; flock -n -x $m/dg/a true; r=\$?; wait; test \$r -ne 0"
 	t mv "$m/dg/a" "$m/dg/b"
 	t sudo rm -rf "$m/dg"
 	grep -E 'DELEGRETURN|OPEN:|BIND_CONN_TO_SESSION|CREATE_SESSION' /proc/self/mountstats | tail -4

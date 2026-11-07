@@ -256,7 +256,7 @@ SLIST_HEAD(nfsv4_reap, nfsv4_state);
 
 /* Allocated beforehand for a delegation that may come of an OPEN. */
 struct nfsv4_deleg_spare {
-	bool		ds_nowrite;	/* locks on the file, of whoever */
+	bool		ds_locked;	/* locks on the file, of whoever */
 	uint64_t	ds_change;	/* s10.4.3, sc */
 	bool		ds_refset;	/* st_refset and the rest */
 	struct nfsv4_sessionid ds_refsid;

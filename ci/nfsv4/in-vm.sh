@@ -79,6 +79,7 @@ sleep 2
 
 cd "$D"
 cc -g -Wall -o nfsv4d nfsv4d.c
+cc -g -Wall -o lockhold lockhold.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1

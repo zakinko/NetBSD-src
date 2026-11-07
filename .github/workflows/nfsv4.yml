@@ -113,7 +113,7 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
@@ -214,6 +214,11 @@ jobs:
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-acl.json out/pynfs-acl.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+      # Last, for the runs after it to be measured all the same.
+      - name: The Linux client must have had no failures
+        run: |
+          grep -H '^failures:' out/linux-client-*.txt
+          ! grep -q '^failures: [1-9]' out/linux-client-*.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

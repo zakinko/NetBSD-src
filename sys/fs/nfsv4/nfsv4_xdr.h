@@ -420,7 +420,9 @@ struct nfsv4_args_copy {
 	uint64_t	count;
 	uint32_t	consecutive;
 	uint32_t	synchronous;
-	uint32_t	nsources;	/* of ca_source_server<>, not kept */
+	uint32_t	nsources;	/* of ca_source_server<> */
+	bool		have_addr;	/* the first NL4_NETADDR of it */
+	struct nfsv4_clientaddr addr;
 };
 
 /* RFC 7862 s15.5.1 */

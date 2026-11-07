@@ -173,12 +173,12 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 				  { nfsv4_op_destroy_clientid, NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },
 	/*
-	 * COPY_NOTIFY is inter-server copy, LAYOUTERROR and LAYOUTSTATS are
-	 * pNFS, and neither feature is here: RFC 7862 s13 has them
-	 * NFS4ERR_NOTSUPP, as is GETDEVICELIST, s14.2.4.
+	 * LAYOUTERROR and LAYOUTSTATS are pNFS, which is not here: RFC 7862
+	 * s13 has them NFS4ERR_NOTSUPP, as is GETDEVICELIST, s14.2.4.
 	 */
 	[NFSV4_OP_ALLOCATE]	= { nfsv4_op_allocate,	NFSV4_OPF_FH },
 	[NFSV4_OP_COPY]		= { nfsv4_op_copy,	NFSV4_OPF_FH },
+	[NFSV4_OP_COPY_NOTIFY]	= { nfsv4_op_copy_notify, NFSV4_OPF_FH },
 	[NFSV4_OP_DEALLOCATE]	= { nfsv4_op_deallocate, NFSV4_OPF_FH },
 	[NFSV4_OP_IO_ADVISE]	= { nfsv4_op_io_advise,	NFSV4_OPF_FH },
 	[NFSV4_OP_OFFLOAD_CANCEL] = { nfsv4_op_offload_cancel, NFSV4_OPF_FH },
@@ -293,6 +293,8 @@ stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		return stateid_current(c, &a->io_advise.stateid, false);
 	case NFSV4_OP_WRITE_SAME:
 		return stateid_current(c, &a->write_same.stateid, false);
+	case NFSV4_OP_COPY_NOTIFY:
+		return stateid_current(c, &a->copy.src_stateid, false);
 	case NFSV4_OP_COPY:
 	case NFSV4_OP_CLONE:
 		st = stateid_current(c, &a->copy.src_stateid, false);
@@ -879,6 +881,10 @@ nfsv4_sysctl_init(void)
 	    nfsv4_sysctl_idmap, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "copy_addr", SYSCTL_DESCR("Universal address COPY_NOTIFY names"),
+	    NULL, 0, nfsv4_copy_addr, NFSV4_NETADDR_MAX,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "domain", SYSCTL_DESCR("dns_domain of owners"),
 	    nfsv4_sysctl_domain, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
@@ -958,6 +964,7 @@ nfsv4_modcmd(modcmd_t cmd, void *arg)
 		return 0;
 	case MODULE_CMD_FINI:
 		nfsv4_offload_drain();
+		nfsv4_cnr_drain();
 		nfsv4_deleg_fini();
 		sysctl_teardown(&nfsv4_sysctllog);
 		oncrpc_svc_unregister(nfsv4_svc, &nfsv4_program);

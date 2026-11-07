@@ -624,11 +624,16 @@ xdr_args_range(XDR *x, struct nfsv4_args_range *a)
 	    U64(x, &a->length);
 }
 
-/* netloc4, RFC 7863 s2, which is decoded only to be passed. */
+/*
+ * netloc4, RFC 7863 s2.  A name or a URL would want resolving, which the
+ * kernel does not do, so only the first netaddr4 is kept, if one fits.
+ */
 static bool
-xdr_skip_netloc(XDR *x)
+xdr_netloc(XDR *x, bool *have, struct nfsv4_clientaddr *ca)
 {
+	struct nfsv4_clientaddr t;
 	uint32_t type;
+	u_int pos;
 
 	if (!U32(x, &type))
 		return false;
@@ -637,7 +642,14 @@ xdr_skip_netloc(XDR *x)
 	case NL4_URL:
 		return xdr_skip_opaque(x);
 	case NL4_NETADDR:
-		return xdr_skip_opaque(x) && xdr_skip_opaque(x);
+		pos = XDR_GETPOS(x);
+		if (!*have && nfsv4_xdr_clientaddr(x, &t)) {
+			*ca = t;
+			*have = true;
+			return true;
+		}
+		return XDR_SETPOS(x, pos) && xdr_skip_opaque(x) &&
+		    xdr_skip_opaque(x);
 	default:
 		return false;		/* no default arm in netloc4 */
 	}
@@ -657,8 +669,9 @@ xdr_args_copy(XDR *x, struct nfsv4_args_copy *a)
 	if (a->consecutive > 1 || a->synchronous > 1 ||
 	    a->nsources > NFSV4_BITMAP_READ)
 		return false;
+	a->have_addr = false;
 	for (i = 0; i < a->nsources; i++) {
-		if (!xdr_skip_netloc(x))
+		if (!xdr_netloc(x, &a->have_addr, &a->addr))
 			return false;
 	}
 	return true;
@@ -842,6 +855,10 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		return xdr_args_clone(x, &a->copy);
 	case NFSV4_OP_IO_ADVISE:
 		return xdr_args_io_advise(x, &a->io_advise);
+	case NFSV4_OP_COPY_NOTIFY:
+		a->copy.have_addr = false;
+		return nfsv4_xdr_stateid(x, &a->copy.src_stateid) &&
+		    xdr_netloc(x, &a->copy.have_addr, &a->copy.addr);
 	case NFSV4_OP_OFFLOAD_CANCEL:
 	case NFSV4_OP_OFFLOAD_STATUS:
 		return nfsv4_xdr_stateid(x, &a->stateid.stateid);

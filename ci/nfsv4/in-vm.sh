@@ -95,5 +95,7 @@ cc -g -Wall -o lockhold lockhold.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1
+# What COPY_NOTIFY names as the source, RFC 7862 s15.3.3: this server.
+sysctl -w vfs.nfsv4.copy_addr=127.0.0.1.8.1
 sysctl -w 'vfs.nfsv4.referral=/export/ref/there srv1,srv2:/x/y;srv3:/z'
 netstat -an -f inet | grep '\.2049 '

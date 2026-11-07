@@ -40,6 +40,7 @@ struct nameidata;
 struct nfsv4_client;
 struct nfsv4_session;
 struct nfsv4_slot;
+struct sockaddr_storage;
 struct vattr;
 struct vnode;
 
@@ -351,6 +352,16 @@ uint32_t nfsv4_op_io_advise(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_offload_cancel(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_offload_status(struct nfsv4_compound *, union nfsv4_args *);
 void	nfsv4_offload_drain(void);
+uint32_t nfsv4_op_copy_notify(struct nfsv4_compound *, union nfsv4_args *);
+bool	nfsv4_cnr_ok(const struct nfsv4_stateid *, struct vnode *);
+bool	nfsv4_cnr_cancel(const struct nfsv4_stateid *, struct vnode *, uid_t);
+void	nfsv4_cnr_drain(void);
+int	nfsv4_rcopy(const struct nfsv4_clientaddr *, const struct nfsv4_fh *,
+	    const struct nfsv4_stateid *, uint64_t, struct vnode *,
+	    kauth_cred_t, uint64_t, uint64_t *);
+bool	nfsv4_uaddr_parse(const struct nfsv4_clientaddr *,
+	    struct sockaddr_storage *);
+extern char nfsv4_copy_addr[];
 uint32_t nfsv4_op_read_plus(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_seek(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_write_same(struct nfsv4_compound *, union nfsv4_args *);

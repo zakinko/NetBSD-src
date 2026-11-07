@@ -257,6 +257,20 @@ cb_addr_parse(const struct nfsv4_clientaddr *ca, union cb_addr *ua)
 	return true;
 }
 
+/* For the client of an inter-server copy, nfsv4_copy.c. */
+bool
+nfsv4_uaddr_parse(const struct nfsv4_clientaddr *ca,
+    struct sockaddr_storage *ss)
+{
+	union cb_addr ua;
+
+	if (!cb_addr_parse(ca, &ua))
+		return false;
+	memset(ss, 0, sizeof(*ss));
+	memcpy(ss, &ua, ua.ca_sa.sa_len);
+	return true;
+}
+
 /* RFC 5531 App. A, struct authsys_parms with no name and no groups. */
 static u_int
 cb_authsys(char *buf, size_t len, uid_t uid, gid_t gid)

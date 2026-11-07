@@ -1135,6 +1135,9 @@ nfsv4_io_check_vp(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 		if (!write && si->si_seqid != 0)
 			goto out;
 	} else {
+		/* RFC 7862 s4.6.2: the copy stateid of a COPY_NOTIFY. */
+		if (!write && nfsv4_cnr_ok(si, vp))
+			goto out;
 		status = nfsv4_stateid_lookup(c, si, &st);
 		if (status != NFS4_OK)
 			goto out;

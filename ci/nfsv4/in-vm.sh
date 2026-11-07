@@ -37,6 +37,8 @@ mkdir -p /export/acl
 dd if=/dev/zero of=/var/tmp/acl.img bs=1m count=256
 newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
 vnconfig vnd1 /var/tmp/acl.img
+# What fsck says of UFS2ea fresh from newfs, the control for after.
+fsck_ffs -fn /dev/rvnd1d >/var/tmp/nfsv4/fsck-control-ea.txt 2>&1 || :
 mount -o nfs4acls /dev/vnd1d /export/acl
 chmod 1777 /export/acl
 # FFS with quotas.

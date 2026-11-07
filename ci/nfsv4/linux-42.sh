@@ -189,6 +189,8 @@ flockab() {
 	flockab 4.2 0
 	echo '$ fsck of FFSv1 fresh from newfs, the control'
 	ssh netbsd cat /var/tmp/nfsv4/fsck-control.txt
+	echo '$ fsck of UFS2ea fresh from newfs, the control'
+	ssh netbsd cat /var/tmp/nfsv4/fsck-control-ea.txt
 	grep -E 'READ_PLUS' "/boot/config-$(uname -r)" || :
 	#   export          holes  allocate clone xattr
 	one /export/pynfs   holes  yes      no    no

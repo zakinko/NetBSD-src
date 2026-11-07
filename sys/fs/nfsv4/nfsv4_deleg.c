@@ -687,6 +687,20 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
+ * GDD4_UNAVAIL with no promise.  s18.39.3 has it for a delegation already
+ * held and NFS4ERR_DIRDELEG_UNAVAIL for the other refusals, but the client
+ * of Linux turns that error into EIO for the GETATTR it came with, as a
+ * run of 2026-11-07 showed, and this says the same.
+ */
+static uint32_t
+gdd_unavail(struct nfsv4_compound *c)
+{
+
+	return nfsv4_xdr_u32(c->c_rx, GDD4_UNAVAIL) &&
+	    nfsv4_xdr_u32(c->c_rx, 0) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/*
  * RFC 8881 s18.39.  gddr_notification is empty, which s18.39.3 allows: no
  * CB_NOTIFY is ever sent, and any change by another is a recall.  The
  * cookie verifier is that of READDIR here, which is zeros.  No "want" is
@@ -703,15 +717,19 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_verifier verf;
 	struct nfsv4_file *f;
 	struct nfsv4_state *st;
-	uint32_t status = NFS4_OK;
 	bool held = false, ok;
 
+	/* OPTIONAL, s17: off, there is no such operation. */
+	if (!nfsv4_dirdeleg)
+		return NFS4ERR_NOTSUPP;
 	if (vp != NULL && vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
-	if (vp == NULL || cf->cf_attr != 0 || !nfsv4_dirdeleg)
-		return NFS4ERR_DIRDELEG_UNAVAIL;
-	if (nfsv4_grace_active() || !cl->cl_reclaimed)
+	if (vp == NULL || cf->cf_attr != 0)
+		held = true;
+	else if (nfsv4_grace_active() || !cl->cl_reclaimed)
 		return NFS4ERR_GRACE;		/* s18.51.3 */
+	if (held)
+		return gdd_unavail(c);
 
 	memset(&ds, 0, sizeof(ds));
 	memset(&od, 0, sizeof(od));
@@ -734,7 +752,7 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 		/* below */;
 	else if (cl->cl_cbstate != NFSV4_CB_UP ||
 	    deleg_count >= NFSV4_DELEG_MAX || nfsv4_deleg_mode == 0)
-		status = NFS4ERR_DIRDELEG_UNAVAIL;
+		held = true;
 	else
 		nfsv4_deleg_add(cl, vp, &cf->cf_fh, OPEN_DELEGATE_READ, &ds,
 		    &od);
@@ -746,11 +764,8 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 		kmem_free(ds.ds_sw, sizeof(*ds.ds_sw));
 	if (ds.ds_f != NULL)
 		kmem_free(ds.ds_f, sizeof(*ds.ds_f));
-	if (status != NFS4_OK)
-		return status;
-	if (held)			/* s18.39.3 */
-		return nfsv4_xdr_u32(c->c_rx, GDD4_UNAVAIL) &&
-		    nfsv4_xdr_u32(c->c_rx, 0) ? NFS4_OK : NFS4ERR_RESOURCE;
+	if (held)
+		return gdd_unavail(c);
 
 	c->c_curst = od.od_stateid;
 	memset(&verf, 0, sizeof(verf));

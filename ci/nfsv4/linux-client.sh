@@ -161,7 +161,7 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 		echo "DELEGRETURN before $r0 after $(dreturns "$m")"
 		t test "$(dreturns "$m")" -gt "$r0"
 		# The connection goes, and with it the backchannel, s2.10.13.1.2.
-		t sudo pkill -f 'ssh -f -N .*2049:127.0.0.1:2049'
+		t sudo pkill -f '[s]sh -f -N .*2049:127.0.0.1:2049'
 		t ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
 		    -L 2049:127.0.0.1:2049 \
 		    -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \

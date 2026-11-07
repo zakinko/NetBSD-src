@@ -1,0 +1,49 @@
+name: rquotad
+on:
+  push:
+    branches: [rquotad-trunk]
+  workflow_dispatch:
+concurrency:
+  group: rquotad-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/cache/restore@v4
+        id: dest
+        with:
+          path: out
+          key: rquotad-dest-${{ github.sha }}
+      - if: steps.dest.outputs.cache-hit != 'true'
+        run: sh ci/rquotad/build.sh "$PWD/nb" "$PWD/out"
+      - uses: actions/cache/save@v4
+        if: steps.dest.outputs.cache-hit != 'true'
+        with:
+          path: out
+          key: rquotad-dest-${{ github.sha }}
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - run: sh ci/rquotad/swap.sh out/netbsd RQTRUNK ssh netbsd
+      - shell: bash
+        run: |
+          zstd -dc out/dest.tar.zst | ssh netbsd 'mkdir -p /var/tmp/dest && tar -C /var/tmp/dest -xf -'
+          scp ci/rquotad/run.sh ci/rquotad/chroot.sh netbsd:/var/tmp/
+          ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/run.sh' | tee rquotad.txt
+          grep -q '^=== end' rquotad.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rquotad
+          path: rquotad.txt
+          retention-days: 30

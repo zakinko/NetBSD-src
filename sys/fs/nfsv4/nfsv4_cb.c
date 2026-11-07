@@ -100,6 +100,7 @@ struct cb_target {
 	struct nfsv4_sessionid ct_sid;
 	uint32_t	ct_seq;
 	uint32_t	ct_vers;
+	uint32_t	ct_minor;	/* of the session, for CB_COMPOUND */
 	bool		ct_ref;		/* s20.9.2, on the same session */
 	uint32_t	ct_refslot;
 	uint32_t	ct_refseq;
@@ -307,7 +308,8 @@ cb_offload_encode(XDR *x, void *arg)
 	uint32_t op = NFSV4_OP_CB_OFFLOAD, seq = ct->ct_seq;
 	struct nfsv4_sessionid sid = ct->ct_sid;
 
-	if (!xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
+	if (!xdr_u_int32_t(x, &zero) ||
+	    !xdr_u_int32_t(x, __UNCONST(&ct->ct_minor)) ||
 	    !xdr_u_int32_t(x, &zero) || !xdr_u_int32_t(x, &two) ||
 	    !xdr_u_int32_t(x, &seqop) || !nfsv4_xdr_sessionid(x, &sid) ||
 	    !xdr_u_int32_t(x, &seq) ||
@@ -344,7 +346,8 @@ cb_head(XDR *x, const struct cb_target *ct, uint32_t ident)
 		    xdr_u_int32_t(x, &zero) &&		/* minorversion */
 		    xdr_u_int32_t(x, &ident) &&		/* s17.2.4 */
 		    xdr_u_int32_t(x, &one);
-	return xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &one) &&
+	return xdr_u_int32_t(x, &zero) &&
+	    xdr_u_int32_t(x, __UNCONST(&ct->ct_minor)) &&	/* s20.9 */
 	    xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &two) &&
 	    xdr_u_int32_t(x, &seqop) && nfsv4_xdr_sessionid(x, &sid) &&
 	    xdr_u_int32_t(x, &seq) &&
@@ -477,6 +480,7 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_sess = NULL;
 	ct->ct_ref = false;
 	ct->ct_vers = NFSV4_CB_VERSION;
+	ct->ct_minor = cl->cl_minor;
 	if (cl->cl_minor == 0)
 		return true;
 	se = nfsv4_session_cbget(cl, &ct->ct_conn);

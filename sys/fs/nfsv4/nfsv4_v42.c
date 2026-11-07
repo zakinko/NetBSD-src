@@ -827,6 +827,50 @@ nfsv4_offload_drain(void)
 }
 
 /*
+ * s15.2.3 with ca_source_server: the source is another server, and
+ * SAVED_FH and ca_src_stateid are its own, s4.6.2.  Synchronous, with a
+ * short result past NFSV4_COPY_MAX.  With no netaddr4 to reach it by,
+ * s11.1.2.1 has the client copy by itself.
+ */
+static uint32_t
+copy_remote(struct nfsv4_compound *c, const struct nfsv4_args_copy *ca)
+{
+	const struct nfsv4_cfh *src = &c->c_saved, *dst = &c->c_cur;
+	struct nfsv4_verifier verf;
+	uint64_t count;
+	uint32_t st, none = 0, committed = UNSTABLE4, met = 1;
+	int error;
+
+	if (!ca->have_addr)
+		return NFS4ERR_OFFLOAD_DENIED;
+	if (!src->cf_set)
+		return NFS4ERR_NOFILEHANDLE;
+	st = regular_check(dst);
+	if (st == NFS4_OK)
+		st = nfsv4_io_check_vp(c, &ca->dst_stateid, dst->cf_vp, true);
+	if (st == NFS4_OK)
+		st = nfsv4_errno(nfsv4_access_vp(dst, VWRITE));
+	if (st != NFS4_OK)
+		return st;
+	count = ca->count == 0 ? NFSV4_COPY_MAX : MIN(ca->count, NFSV4_COPY_MAX);
+	if (ca->dst_offset > (uint64_t)INT64_MAX ||
+	    count > (uint64_t)INT64_MAX - ca->dst_offset)
+		return NFS4ERR_FBIG;
+	error = nfsv4_rcopy(&ca->addr, &src->cf_fh, &ca->src_stateid,
+	    ca->src_offset, dst->cf_vp, dst->cf_cred, ca->dst_offset, &count);
+	if (error != 0)
+		return error == EIO ? NFS4ERR_PARTNER_NO_AUTH :
+		    NFS4ERR_PARTNER_NOTSUPP;
+	nfsv4_write_verf(&verf);
+	return xdr_u_int32_t(c->c_rx, &none) &&
+	    xdr_u_int64_t(c->c_rx, &count) &&
+	    xdr_u_int32_t(c->c_rx, &committed) &&
+	    nfsv4_xdr_verifier(c->c_rx, &verf) &&
+	    xdr_u_int32_t(c->c_rx, &met) &&
+	    xdr_u_int32_t(c->c_rx, &met) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/*
  * s15.2.  ca_consecutive and ca_synchronous are met whichever is asked
  * for, so NFS4ERR_OFFLOAD_NO_REQS does not arise.  An error after some
  * bytes went over comes as a short result: COPY4res has nowhere to put
@@ -847,9 +891,8 @@ nfsv4_op_copy(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int n, got;
 	int error;
 
-	/* s11.1.2.1: the client falls back to copying by itself. */
 	if (ca->nsources != 0)
-		return NFS4ERR_OFFLOAD_DENIED;
+		return copy_remote(c, ca);
 	st = copy_prep(c, ca);
 	if (st != NFS4_OK)
 		return st;
@@ -949,6 +992,10 @@ nfsv4_op_offload_cancel(struct nfsv4_compound *c, union nfsv4_args *a)
 	else
 		of->of_cancel = true;
 	mutex_exit(&nfsv4_state_lock);
+	/* s15.8.3: at the source, the stateid of a COPY_NOTIFY. */
+	if (st != NFS4_OK && nfsv4_cnr_cancel(&a->stateid.stateid,
+	    c->c_cur.cf_vp, nfsv4_client_principal(c)))
+		st = NFS4_OK;
 	return st;
 }
 

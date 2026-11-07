@@ -5,6 +5,7 @@ import os
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import app_data_block4, netloc4, stateid4
 from xdrdef.nfs4_type import locker4, open_to_lock_owner4, lock_owner4
+from xdrdef.nfs4_type import netaddr4
 from .environment import check, fail, create_file, write_file, read_file, create_obj
 from .environment import use_obj, do_getattrdict
 import nfs_ops
@@ -459,3 +460,37 @@ def test_s4_cancel_other_user(t, env):
     sess, fh, st = mk(t, env)
     bad = stateid4(1, b"\x55" * 12)
     check(sess.compound([op.putfh(fh), op.offload_cancel(bad)]), NFS4ERR_BAD_STATEID)
+
+def arm(r, name):
+    return getattr(r, name, None) or getattr(r.resok4, name)
+
+def test_s15_3_inter_server(t, env):
+    """s15.3.3, s15.2.3, s4.6.2 COPY_NOTIFY, then COPY from it by NFSv4.2
+    FLAGS: v42
+    CODE: V4224
+    VERS: 2-
+    """
+    data = os.urandom(100000)
+    sess, fh, st = mk(t, env, data)
+    check(sess.compound([op.putfh(fh), op.copy_notify(env.stateid0,
+        netloc4(NL4_NETADDR, nl_addr=netaddr4(b"tcp", b"127.0.0.1.8.1")))]),
+        NFS4ERR_BAD_STATEID)
+    res = sess.compound([op.putfh(fh), op.copy_notify(st,
+        netloc4(NL4_NETADDR, nl_addr=netaddr4(b"tcp", b"127.0.0.1.8.1")))])
+    check(res)
+    r = res.resarray[-1]
+    cnr = arm(r, "cnr_stateid")
+    srcs = arm(r, "cnr_source_server")
+    print("lease", arm(r, "cnr_lease_time").seconds, "sources", srcs)
+    if cnr.seqid == 0 or not srcs:
+        fail("cnr %r sources %r" % (cnr, srcs))
+    fh2, st2 = mk2(sess, env, t)
+    res = sess.compound([op.putfh(fh), op.savefh(), op.putfh(fh2),
+                         op.copy(cnr, st2, 0, 0, len(data), 0, 1, srcs)])
+    check(res)
+    n = res.resarray[-1].cr_response.wr_count
+    if n != len(data) or rd(sess, fh2, st2, 0, len(data)) != data:
+        fail("copied %d" % n)
+    # s15.8.3: cancelled at the source, the stateid reads no more.
+    check(sess.compound([op.putfh(fh), op.offload_cancel(cnr)]))
+    check(sess.compound([op.putfh(fh), op.read(cnr, 0, 10)]), NFS4ERR_BAD_STATEID)

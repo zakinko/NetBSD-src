@@ -383,8 +383,8 @@ jobs:
       - name: The Linux client must have had no failures
         if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
-          grep -H '^failures:' out/linux-client-*.txt
-          ! grep -q '^failures: [1-9]' out/linux-client-*.txt
+          grep -H '^failures:' out/linux-client-*.txt out/linux-42.txt
+          ! grep -q '^failures: [1-9]' out/linux-client-*.txt out/linux-42.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

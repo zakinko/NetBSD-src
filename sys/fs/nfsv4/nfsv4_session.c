@@ -869,6 +869,7 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	se->se_cbseq = 1;		/* s18.36.3 */
 	/* s18.36.3 and its errata 2291; see nfsv4_cb.c. */
 	se->se_cbvers = nfsv4_cb_vers4 ? NFSV4_VERSION : 1;
+	se->se_minor = c->c_minor;
 	se->se_cost = cost;
 	nfsv4_ses_cost += cost;
 	flags = ca->flags & CREATE_SESSION4_FLAG_CONN_BACK_CHAN;

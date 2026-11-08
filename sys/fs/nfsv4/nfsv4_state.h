@@ -99,6 +99,7 @@ struct nfsv4_session {
 	uint32_t	se_cbprog;
 	struct nfsv4_cbsec se_cbsec;
 	uint32_t	se_cbvers;	/* RPC version of calls on it */
+	uint32_t	se_minor;	/* of CREATE_SESSION, for CB_COMPOUND */
 	uint32_t	se_cbseq;	/* of the one slot of the backchannel */
 	bool		se_cbbusy;	/* a call is out on it */
 	char		*se_cbsave;	/* a call with no reply, to resend */

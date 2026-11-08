@@ -7,6 +7,7 @@
 OUT=$1
 LOG=$OUT/linux-42.txt
 sudo apt-get install -y -q attr >/dev/null 2>&1
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q tshark >/dev/null 2>&1
 fails=0
 t() {
 	echo "\$ $*"
@@ -160,6 +161,17 @@ punchfsck() {
 flockab() {
 	p=/mnt/v42ab
 	sudo mkdir -p "$p"
+	cap=""
+	if [ "$2" = 2 ]; then
+		# The backchannel rides the forechannel's connection: one
+		# capture shows the OPEN's delegation and any CB_RECALL.
+		cap=$OUT/flock-$1.pcap
+		sudo rpcdebug -m nfs -s callback >/dev/null 2>&1 || :
+		sudo dmesg -C 2>/dev/null || :
+		sudo tcpdump -i lo -s 0 -U -w "$cap" tcp port 2049 >/dev/null 2>&1 &
+		tp=$!
+		sleep 1
+	fi
 	ssh netbsd "sysctl -w vfs.nfsv4.delegations=$2"
 	t sudo mount -t nfs -o vers=$1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys 127.0.0.1:/export/pynfs "$p"
 	sleep 3
@@ -179,6 +191,17 @@ flockab() {
 	grep -E 'DELEGRETURN|  LOCK:' /proc/self/mountstats | sort -u | head -4
 	sudo rm -f "$p/ab"
 	sudo umount "$p"
+	if [ -n "$cap" ]; then
+		sleep 1
+		sudo kill "$tp" 2>/dev/null; wait "$tp" 2>/dev/null
+		echo "--- what went over the wire, vers=$1 delegations=$2"
+		sudo tshark -r "$cap" -Y 'nfs' -V 2>/dev/null |
+		    grep -E 'Opcode:|Delegation Type|delegation_type|Status:|CB_RECALL|Callback|Program Version|minorversion' |
+		    sed 's/^[[:space:]]*//' | uniq | head -120
+		echo "--- the client's callback log"
+		sudo dmesg 2>/dev/null | grep -iE 'callback|cb_|recall|deleg' | tail -30
+		sudo rpcdebug -m nfs -c callback >/dev/null 2>&1 || :
+	fi
 	ssh netbsd "sysctl -w vfs.nfsv4.delegations=2"
 }
 {

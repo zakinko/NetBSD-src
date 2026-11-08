@@ -100,7 +100,7 @@ struct cb_target {
 	struct nfsv4_sessionid ct_sid;
 	uint32_t	ct_seq;
 	uint32_t	ct_vers;
-	uint32_t	ct_minor;	/* of the session, for CB_COMPOUND */
+	uint32_t	ct_minor;	/* the session's, for CB_COMPOUND */
 	bool		ct_ref;		/* s20.9.2, on the same session */
 	uint32_t	ct_refslot;
 	uint32_t	ct_refseq;
@@ -487,6 +487,7 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	if (se == NULL)
 		return false;
 	ct->ct_sess = se;
+	ct->ct_minor = se->se_minor;
 	ct->ct_sid = se->se_id;
 	ct->ct_seq = se->se_cbseq;
 	ct->ct_vers = se->se_cbvers;

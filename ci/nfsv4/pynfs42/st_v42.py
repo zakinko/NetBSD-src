@@ -5,7 +5,7 @@ import os
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import app_data_block4, netloc4, stateid4
 from xdrdef.nfs4_type import locker4, open_to_lock_owner4, lock_owner4
-from xdrdef.nfs4_type import netaddr4
+from xdrdef.nfs4_type import netaddr4, nfs_argop4, COPY_NOTIFY4args
 from .environment import check, fail, create_file, write_file, read_file, create_obj
 from .environment import use_obj, do_getattrdict
 import nfs_ops
@@ -461,6 +461,11 @@ def test_s4_cancel_other_user(t, env):
     bad = stateid4(1, b"\x55" * 12)
     check(sess.compound([op.putfh(fh), op.offload_cancel(bad)]), NFS4ERR_BAD_STATEID)
 
+def copy_notify(si, nl):
+    # pynfs's nfs4.x names the argument arm of COPY_NOTIFY opoffload_notify,
+    # so op.copy_notify() cannot make it.
+    return nfs_argop4(OP_COPY_NOTIFY, opoffload_notify=COPY_NOTIFY4args(si, nl))
+
 def arm(r, name):
     return getattr(r, name, None) or getattr(r.resok4, name)
 
@@ -472,10 +477,10 @@ def test_s15_3_inter_server(t, env):
     """
     data = os.urandom(100000)
     sess, fh, st = mk(t, env, data)
-    check(sess.compound([op.putfh(fh), op.copy_notify(env.stateid0,
+    check(sess.compound([op.putfh(fh), copy_notify(env.stateid0,
         netloc4(NL4_NETADDR, nl_addr=netaddr4(b"tcp", b"127.0.0.1.8.1")))]),
         NFS4ERR_BAD_STATEID)
-    res = sess.compound([op.putfh(fh), op.copy_notify(st,
+    res = sess.compound([op.putfh(fh), copy_notify(st,
         netloc4(NL4_NETADDR, nl_addr=netaddr4(b"tcp", b"127.0.0.1.8.1")))])
     check(res)
     r = res.resarray[-1]

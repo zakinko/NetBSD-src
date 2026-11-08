@@ -252,5 +252,6 @@ jobs:
             out/owner.txt
             out/more.txt
             out/linux-42.txt
+            out/flock-*.pcap
             out/kernel.txt
           retention-days: 30

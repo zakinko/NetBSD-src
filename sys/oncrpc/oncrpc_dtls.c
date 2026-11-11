@@ -79,6 +79,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
+#include <sys/kernel.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
 #include <sys/mutex.h>

@@ -9,6 +9,7 @@ file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc
 file	oncrpc/gss_krb5.c		oncrpc
 file	oncrpc/gss_krb5_crypto.c	oncrpc
+file	oncrpc/gss_ssv.c		oncrpc
 file	oncrpc/oncrpc_gss.c		oncrpc
 file	oncrpc/oncrpc_gss_clnt.c	oncrpc
 file	oncrpc/oncrpc_gss_svc.c		oncrpc

@@ -247,4 +247,79 @@ typedef SHA512_CTX SHA384_CTX;
 #define	SHA384_BLOCK_LENGTH	128
 #define	MD5_BLOCK_LENGTH	64
 
+
+/* For gss_ssv.c */
+static inline void *
+kmem_alloc(size_t n, int f __unused)
+{
+
+	return kmem_zalloc(n, 0);
+}
+typedef struct { int dummy; } kmutex_t;
+#define	MUTEX_DEFAULT	0
+#define	IPL_NONE	0
+#define	mutex_init(m, t, i)	((void)(m))
+#define	mutex_destroy(m)	((void)(m))
+#define	mutex_enter(m)		((void)(m))
+#define	mutex_exit(m)		((void)(m))
+#define	kern_cprng		NULL
+#define	EAUTH			80
+static inline size_t
+cprng_strong(void *c __unused, void *p, size_t n, int f __unused)
+{
+
+	return cprng_fast(p, n);
+}
+static inline void
+atomic_inc_uint(volatile unsigned *p)
+{
+
+	++*p;
+}
+static inline unsigned
+atomic_dec_uint_nv(volatile unsigned *p)
+{
+
+	return --*p;
+}
+#ifndef MIN
+#define	MIN(a, b)	((a) < (b) ? (a) : (b))
+#endif
+#ifndef roundup
+#define	roundup(x, y)	((((x) + ((y) - 1)) / (y)) * (y))
+#endif
+static inline void
+be32enc(void *p, uint32_t v)
+{
+	uint8_t *b = p;
+
+	b[0] = v >> 24; b[1] = v >> 16; b[2] = v >> 8; b[3] = v;
+}
+static inline uint32_t
+be32dec(const void *p)
+{
+	const uint8_t *b = p;
+
+	return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 |
+	    (uint32_t)b[2] << 8 | b[3];
+}
+#define	SHA224_DIGEST_LENGTH	28
+#define	SHA224_CTX	SHA256_CTX
+#define	AES_128_NROUNDS	10
+#define	AES_192_NROUNDS	12
+#define	AES_256_NROUNDS	14
+static inline uint32_t
+aes_setenckey192(struct aesenc *e, const uint8_t *key)
+{
+
+	AES_set_encrypt_key(key, 192, &e->k);
+	return 12;
+}
+static inline uint32_t
+aes_setdeckey192(struct aesdec *d, const uint8_t *key)
+{
+
+	AES_set_decrypt_key(key, 192, &d->k);
+	return 12;
+}
 #endif /* !_GSS_KRB5_SHIM_H_ */

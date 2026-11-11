@@ -426,7 +426,8 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 		return nfsv4_conn_call(ct->ct_conn, &cc, NFSV4_CB_TIMEO);
 	error = oncrpc_clnt_call(&ua.ca_sa, &cc, NFSV4_CB_TIMEO);
 	if (gc != NULL)
-		oncrpc_gssc_destroy(gc);
+		oncrpc_gssc_close(&ua.ca_sa, ct->ct_prog, NFSV4_CB_VERSION, gc,
+		    NFSV4_CB_TIMEO);
 	return error;
 }
 

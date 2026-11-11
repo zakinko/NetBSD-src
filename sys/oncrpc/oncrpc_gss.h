@@ -119,6 +119,8 @@ struct sockaddr;
 int	oncrpc_gssc_create(const struct sockaddr *, uint32_t, uint32_t,
 	    const char *, uint32_t, int, struct oncrpc_gssc **);
 void	oncrpc_gssc_destroy(struct oncrpc_gssc *);
+void	oncrpc_gssc_close(const struct sockaddr *, uint32_t, uint32_t,
+	    struct oncrpc_gssc *, int);
 bool	oncrpc_gssc_header(struct oncrpc_gssc *, uint32_t, uint32_t, uint32_t,
 	    uint32_t, uint8_t *, uint32_t *, uint8_t *, uint32_t *, uint32_t *);
 struct mbuf *

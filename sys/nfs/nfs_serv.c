@@ -103,6 +103,56 @@ bool nfsd_use_loan = true;	/* use page-loan for READ OP */
 
 #define	nqsrv_getl(vp, rw)	/* nothing */
 
+/*
+ * A delegation of NFSv4 is recalled when anything else, this server
+ * included, changes the file or the directory, RFC 8881 s10.2; see
+ * vn_lease_break().  It waits for the recall, so it is done before the
+ * vnodes are locked: the holder flushes its writes with WRITEs that need
+ * those locks.  The places nqsrv_getl() marks are under them.  As for the
+ * system calls (lease_break_name() in vfs_syscalls.c), a name that changes
+ * in between is only a lease that was not seen.
+ */
+static void
+nfsrv_lease_fh(nfsrvfh_t *nsfh, u_int what, kauth_cred_t cred,
+    struct nfssvc_sock *slp, struct mbuf *nam, int kerbflag)
+{
+	struct vnode *vp;
+	int rdonly;
+
+	if (!vn_lease_active() ||
+	    nfsrv_fhtovp(nsfh, false, &vp, cred, slp, nam, &rdonly, kerbflag,
+	    false) != 0)
+		return;
+	vn_lease_break(vp, what);
+	vrele(vp);
+}
+
+/* The same for the name of len bytes at md and dpos, which stay put. */
+static void
+nfsrv_lease_name(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md, char *dpos,
+    kauth_cred_t cred, struct nfssvc_sock *slp, struct mbuf *nam,
+    struct lwp *l, int kerbflag)
+{
+	struct nameidata nd;
+	struct vnode *dirp;
+
+	if (!vn_lease_active())
+		return;
+	nd.ni_cnd.cn_cred = cred;
+	nd.ni_cnd.cn_nameiop = LOOKUP;
+	nd.ni_cnd.cn_flags = 0;
+	if (nfs_namei(&nd, nsfh, len, slp, nam, &md, &dpos, &dirp, NULL, NULL,
+	    l, kerbflag, false) == 0) {
+		vn_lease_break(nd.ni_vp, VN_LEASE_WRITE);
+		vrele(nd.ni_vp);
+		pathbuf_destroy(nd.ni_pathbuf);
+	}
+	if (dirp != NULL) {
+		vn_lease_break(dirp, VN_LEASE_WRITE);	/* s10.9 */
+		vrele(dirp);
+	}
+}
+
 static const struct syscall_package nfsserver_syscalls[] = {
 	{ SYS_nfssvc, 0, (sy_call_t *)sys_nfssvc },
 	{ 0, 0, NULL },
@@ -330,6 +380,8 @@ nfsrv_setattr(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *
 	/*
 	 * Now that we have all the fields, lets do it.
 	 */
+	nfsrv_lease_fh(&nsfh, VN_LEASE_WRITE, cred, slp, nam,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	error = nfsrv_fhtovp(&nsfh, 1, &vp, cred, slp, nam, &rdonly,
 	    (nfsd->nd_flag & ND_KERBAUTH), false);
 	if (error) {
@@ -655,6 +707,8 @@ nfsrv_read(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lwp
 	nfsm_dissect(tl, uint32_t *, NFSX_UNSIGNED);
 	reqlen = fxdr_unsigned(uint32_t, *tl);
 	reqlen = MIN(reqlen, NFS_SRVMAXDATA(nfsd));
+	nfsrv_lease_fh(&nsfh, VN_LEASE_READ, cred, slp, nam,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	error = nfsrv_fhtovp(&nsfh, 1, &vp, cred, slp, nam,
 		 &rdonly, (nfsd->nd_flag & ND_KERBAUTH), false);
 	if (error) {
@@ -924,6 +978,8 @@ nfsrv_write(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lw
 		nfsm_srvwcc_data(forat_ret, &forat, aftat_ret, &va);
 		return (0);
 	}
+	nfsrv_lease_fh(&nsfh, VN_LEASE_WRITE, cred, slp, nam,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	error = nfsrv_fhtovp(&nsfh, 1, &vp, cred, slp, nam,
 		 &rdonly, (nfsd->nd_flag & ND_KERBAUTH), false);
 	if (error) {
@@ -1101,6 +1157,8 @@ nfsrv_writegather(struct nfsrv_descript **ndp, struct nfssvc_sock *slp, struct l
 	     * Now, get the write header..
 	     */
 	    nfsm_srvmtofh(&nfsd->nd_fh);
+	    nfsrv_lease_fh(&nfsd->nd_fh, VN_LEASE_WRITE, nfsd->nd_cr, slp,
+		nfsd->nd_nam, (nfsd->nd_flag & ND_KERBAUTH));
 	    if (v3) {
 		nfsm_dissect(tl, u_int32_t *, 5 * NFSX_UNSIGNED);
 		nfsd->nd_off = fxdr_hyper(tl);
@@ -1444,6 +1502,8 @@ nfsrv_create(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *l
 	nd.ni_cnd.cn_nameiop = 0;
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = CREATE;
 	nd.ni_cnd.cn_flags = LOCKPARENT | LOCKLEAF;
@@ -1684,6 +1744,8 @@ nfsrv_mknod(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lw
 	nd.ni_cnd.cn_nameiop = 0;
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = CREATE;
 	nd.ni_cnd.cn_flags = LOCKPARENT | LOCKLEAF;
@@ -1839,6 +1901,8 @@ nfsrv_remove(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *l
 #endif
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = DELETE;
 	nd.ni_cnd.cn_flags = LOCKPARENT | LOCKLEAF;
@@ -1925,6 +1989,30 @@ nfsrv_rename(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *l
 #endif
 	fromnd.ni_cnd.cn_nameiop = 0;
 	tond.ni_cnd.cn_nameiop = 0;
+	/*
+	 * Both names, before anything is locked: see nfsrv_lease_name().
+	 * The arguments are read again below from where they start.
+	 */
+	if (vn_lease_active()) {
+		struct mbuf *md0 = md;
+		char *dpos0 = dpos;
+
+		nfsm_srvmtofh(&fnsfh);
+		nfsm_srvnamesiz(len);
+		nfsrv_lease_name(&fnsfh, len, md, dpos, cred, slp, nam, lwp,
+		    (nfsd->nd_flag & ND_KERBAUTH));
+		nfsm_adv(nfsm_rndup(len));
+		nfsm_srvmtofh(&tnsfh);
+		if (v3) {
+			nfsm_dissect(tl, uint32_t *, NFSX_UNSIGNED);
+			len2 = fxdr_unsigned(uint32_t, *tl);
+		} else
+			nfsm_strsiz(len2, NFS_MAXNAMLEN);
+		nfsrv_lease_name(&tnsfh, len2, md, dpos, cred, slp, nam, lwp,
+		    (nfsd->nd_flag & ND_KERBAUTH));
+		md = md0;
+		dpos = dpos0;
+	}
 	nfsm_srvmtofh(&fnsfh);
 	nfsm_srvnamesiz(len);
 	/*
@@ -2186,6 +2274,10 @@ nfsrv_link(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lwp
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvmtofh(&dnsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_fh(&nsfh, VN_LEASE_WRITE, cred, slp, nam,
+	    (nfsd->nd_flag & ND_KERBAUTH));
+	nfsrv_lease_name(&dnsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	error = nfsrv_fhtovp(&nsfh, false, &vp, cred, slp, nam,
 		 &rdonly, (nfsd->nd_flag & ND_KERBAUTH), false);
 	if (error) {
@@ -2288,6 +2380,8 @@ nfsrv_symlink(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *
 	nd.ni_cnd.cn_nameiop = 0;
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = CREATE;
 	nd.ni_cnd.cn_flags = LOCKPARENT;
@@ -2431,6 +2525,8 @@ nfsrv_mkdir(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lw
 
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = CREATE;
 	nd.ni_cnd.cn_flags = LOCKPARENT;
@@ -2553,6 +2649,8 @@ nfsrv_rmdir(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *lw
 
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
+	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH));
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = DELETE;
 	nd.ni_cnd.cn_flags = LOCKPARENT | LOCKLEAF;

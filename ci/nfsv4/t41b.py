@@ -293,6 +293,32 @@ t("s18.36.3 version 4 taken", cbvers(b"a", 0, [4]), OPEN_DELEGATE_READ)
 t("s18.36.3 a client of 1 only, no backchannel", cbvers(b"b", 0, [1]), OPEN_DELEGATE_NONE_EXT)
 t("option: falls back to 1", cbvers(b"c", 1, [1]), OPEN_DELEGATE_READ)
 
+# s10.2: a change through the server of NFSv3 recalls too.  nfsd(8) on UDP
+# only, as the module has TCP 2049; the client is the VM's own.
+v3 = subprocess.call(["ssh", "netbsd", "sh -c 'pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
+                      "mkdir -p /mnt/v3; mount | grep -q /mnt/v3 || "
+                      "mount_nfs -3 -U 127.0.0.1:/%s /mnt/v3'" % b"/".join(export).decode()])
+print("  NFSv3 mount:", v3)
+if v3 == 0:
+    for name, cmd in ((b"v3t", "touch"), (b"v3r", "rm")):
+        fv, sv = mk(name)
+        close_file(s, fv, sv)
+        res = wd(fv, OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
+        dv = res.resarray[-1].wdr_resok4 if res.status == 0 else None
+        t("s10.2 delegation for " + cmd, dv and dv.delegation_type, OPEN_DELEGATE_READ)
+        if dv is None or dv.delegation_type != OPEN_DELEGATE_READ:
+            continue
+        del recalled[:]
+        p = subprocess.Popen(["ssh", "netbsd", "%s /mnt/v3/%s" % (cmd, (stamp + name).decode())])
+        for i in range(30):
+            if recalled:
+                break
+            time.sleep(0.5)
+        t("s10.2 recall by NFSv3 " + cmd, recalled, [[0]])
+        s.compound(nofh(fv, op.delegreturn(dv.read.stateid)))
+        t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=120), 0)
+    subprocess.call(["ssh", "netbsd", "umount /mnt/v3"])
+
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
 res = create_file(s3, stamp + b"exp", path=P(b"exp"))

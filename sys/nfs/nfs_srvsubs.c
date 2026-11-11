@@ -72,6 +72,10 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: nfs_srvsubs.c,v 1.17 2023/03/23 19:52:42 riastradh Exp $");
 
+#ifdef _KERNEL_OPT
+#include "opt_nfs_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -333,9 +337,7 @@ nfsrv_fhtovp(nfsrvfh_t *nsfh, int lockflag, struct vnode **vpp,
 			return (NFSERR_AUTHERR | AUTH_TOOWEAK);
 		}
 	}
-	/*
-	 * Check/setup credentials.
-	 */
+#ifdef NFSSERVER_ONCRPC
 	/*
 	 * RFC 2623 s2.3.2: a flavor the export does not have.  A request
 	 * with no ND_SECGSS is AUTH_SYS, the only other that gets here.
@@ -349,6 +351,10 @@ nfsrv_fhtovp(nfsrvfh_t *nsfh, int lockflag, struct vnode **vpp,
 		}
 		kerbflag &= ~ND_SECGSS;
 	}
+#endif
+	/*
+	 * Check/setup credentials.
+	 */
 	if (exflags & MNT_EXKERB) {
 		if (!kerbflag) {
 			vput(*vpp);

@@ -71,7 +71,9 @@ cat >>/etc/exports <<EOF
 /export/sysonly -sec=sys -maproot=root -noresvport -noresvmnt
 EOF
 mkdir -p "$D/inc/nfs"
+mkdir -p "$D/inc/oncrpc"
 cp "$D/src/sys/nfs/nfs.h" "$D/inc/nfs/"
+cp "$D/src/sys/oncrpc/oncrpc_sec.h" "$D/inc/oncrpc/"
 (cd "$D/src/usr.sbin/mountd" && cc -g -I"$D/inc" -o "$D/mountd" mountd.c get_net.c -lutil)
 cc -g -o "$D/desprobe" "$D/desprobe.c" -lgssapi -lkrb5
 (cd "$D/src/usr.sbin/gssd" && cc -g -Wall -I/usr/include/krb5 -o "$D/gssd" gssd.c -lgssapi -lkrb5 -lutil)

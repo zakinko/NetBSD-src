@@ -84,6 +84,7 @@ jobs:
             ci/nfsgss
             ci/oncrpc/swap.sh
             sys/nfs/nfs.h
+            sys/oncrpc/oncrpc_sec.h
             usr.sbin/mountd
             usr.sbin/gssd
       - timeout-minutes: 60
@@ -139,7 +140,7 @@ jobs:
       - timeout-minutes: 60
         name: The KDC and the daemons
         run: |
-          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          tar -cf - sys/nfs/nfs.h sys/oncrpc/oncrpc_sec.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
       - timeout-minutes: 60

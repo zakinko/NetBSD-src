@@ -86,4 +86,31 @@ int	tls13_open(struct tls13_dir *, uint8_t *, size_t, uint8_t *, size_t *);
 
 int	tls13_selftest(void);
 
+/* DTLS 1.3, RFC 9147 */
+#define	DTLS13_MAXCID	20	/* ours; RFC 9146 s3 allows cid<0..2^8-1> */
+#define	DTLS13_WINDOW	64	/* RFC 9147 s4.5.1 leaves it local; ours */
+
+struct dtls13_dir {
+	struct tls13_gcm dd_gcm;
+	struct aesenc	dd_sn;		/* RFC 9147 s4.2.3 */
+	uint32_t	dd_snrounds;
+	uint8_t		dd_secret[TLS13_SECRETLEN];
+	uint8_t		dd_iv[TLS13_IVLEN];
+	uint64_t	dd_epoch;	/* RFC 9147 s4, the 8-byte counter */
+	uint64_t	dd_seq;		/* the next to send */
+	uint64_t	dd_top;		/* the highest received */
+	uint64_t	dd_window;	/* bit i: dd_top - i received */
+	bool		dd_any;
+};
+
+void	dtls13_expand_label(const uint8_t *, const char *, const uint8_t *,
+	    size_t, uint8_t *, size_t);
+void	dtls13_dir_init(struct dtls13_dir *, const uint8_t *, uint64_t);
+void	dtls13_dir_update(struct dtls13_dir *);
+void	dtls13_dir_fini(struct dtls13_dir *);
+int	dtls13_seal(struct dtls13_dir *, uint8_t, const uint8_t *, size_t,
+	    const uint8_t *, size_t, uint8_t *, size_t *);
+int	dtls13_open(struct dtls13_dir *, size_t, uint8_t *, size_t, size_t *,
+	    uint8_t *, uint8_t **, size_t *);
+
 #endif /* !_ONCRPC_TLS13_CRYPTO_H_ */

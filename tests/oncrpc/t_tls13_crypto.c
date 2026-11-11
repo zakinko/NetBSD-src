@@ -319,6 +319,146 @@ test_keyupdate(void)
 	    "application_traffic_secret_1, s7.2");
 }
 
+/* HKDF-Expand-Label by OpenSSL, with the six-byte prefix given. */
+static void
+ref_label(const char *prefix, const uint8_t *secret, const char *label,
+    uint8_t *out, size_t outlen)
+{
+	uint8_t info[64];
+	size_t n = 0, l = strlen(label);
+	EVP_PKEY_CTX *pc;
+
+	info[n++] = 0;
+	info[n++] = (uint8_t)outlen;
+	info[n++] = (uint8_t)(6 + l);
+	memcpy(info + n, prefix, 6);
+	n += 6;
+	memcpy(info + n, label, l);
+	n += l;
+	info[n++] = 0;
+	pc = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+	EVP_PKEY_derive_init(pc);
+	EVP_PKEY_CTX_hkdf_mode(pc, EVP_PKEY_HKDEF_MODE_EXPAND_ONLY);
+	EVP_PKEY_CTX_set_hkdf_md(pc, EVP_sha256());
+	EVP_PKEY_CTX_set1_hkdf_key(pc, secret, 32);
+	EVP_PKEY_CTX_add1_hkdf_info(pc, info, (int)n);
+	EVP_PKEY_derive(pc, out, &outlen);
+	EVP_PKEY_CTX_free(pc);
+}
+
+/*
+ * DTLS 1.3, RFC 9147.  No trace with vectors exists, so the records the
+ * code seals are opened again with OpenSSL's AES-ECB and AES-GCM under
+ * keys derived by OpenSSL's HKDF from the same secret: an independent
+ * reading of s4, s4.2.3 and s5.9.
+ */
+static void
+test_dtls(void)
+{
+	static const uint8_t cid[4] = { 0xc1, 0xd2, 0xe3, 0xf4 };
+	uint8_t sec[32], key[16], iv[12], snk[16], mask[16], hdr[16];
+	uint8_t rec[3][128], buf[128], *content, type, nonce[12];
+	struct dtls13_dir w, r;
+	size_t len[3], used, clen, h, i;
+	EVP_CIPHER_CTX *c;
+	uint64_t seq;
+	int n, ok;
+
+	memset(sec, 0x5a, sizeof(sec));
+	ref_label("dtls13", sec, "key", key, 16);
+	ref_label("dtls13", sec, "iv", iv, 12);
+	ref_label("dtls13", sec, "sn", snk, 16);
+	dtls13_expand_label(sec, "key", NULL, 0, buf, 16);
+	check(memcmp(buf, key, 16) == 0, "dtls13 key, RFC 9147 s5.9");
+
+	dtls13_dir_init(&w, sec, 3);
+	dtls13_dir_init(&r, sec, 3);
+	check(memcmp(w.dd_iv, iv, 12) == 0, "dtls13 iv");
+	for (i = 0; i < 3; i++)
+		check(dtls13_seal(&w, TLS13_CT_APPDATA, cid, sizeof(cid),
+		    (const uint8_t *)"hello, rpc", 10, rec[i], &len[i]) == 0,
+		    "dtls seal");
+	/* The header: 001 C S L, epoch 3; cid; 2 bytes of seq; length. */
+	h = 1 + sizeof(cid) + 2 + 2;
+	check(rec[1][0] == (0x20 | 0x10 | 0x08 | 0x04 | 3) &&
+	    memcmp(rec[1] + 1, cid, 4) == 0 && len[1] == h + 11 + 16,
+	    "unified header, s4");
+
+	/* The second record by hand: unmask, then AES-GCM by OpenSSL. */
+	memcpy(hdr, rec[1], h);
+	c = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(c, EVP_aes_128_ecb(), NULL, snk, NULL);
+	EVP_CIPHER_CTX_set_padding(c, 0);
+	EVP_EncryptUpdate(c, mask, &n, rec[1] + h, 16);
+	EVP_CIPHER_CTX_free(c);
+	hdr[5] ^= mask[0];
+	hdr[6] ^= mask[1];
+	seq = (uint64_t)hdr[5] << 8 | hdr[6];
+	check(seq == 1, "record number encryption, s4.2.3");
+	memcpy(nonce, iv, 12);
+	nonce[11] ^= (uint8_t)seq;
+	c = EVP_CIPHER_CTX_new();
+	EVP_DecryptInit_ex(c, EVP_aes_128_gcm(), NULL, key, nonce);
+	EVP_DecryptUpdate(c, NULL, &n, hdr, (int)h);
+	EVP_DecryptUpdate(c, buf, &n, rec[1] + h, 11);
+	EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_SET_TAG, 16, rec[1] + h + 11);
+	ok = EVP_DecryptFinal_ex(c, buf + n, &n) == 1;
+	EVP_CIPHER_CTX_free(c);
+	check(ok && memcmp(buf, "hello, rpc", 10) == 0 &&
+	    buf[10] == TLS13_CT_APPDATA,
+	    "AES-GCM with the unmasked header as AD and seq for the nonce, s4");
+
+	/* Reordered, then replayed, s4.5.1. */
+	memcpy(buf, rec[2], len[2]);
+	check(dtls13_open(&r, 4, buf, len[2], &used, &type, &content,
+	    &clen) == 0 && used == len[2] && clen == 10 &&
+	    memcmp(content, "hello, rpc", 10) == 0, "open, third first");
+	memcpy(buf, rec[0], len[0]);
+	check(dtls13_open(&r, 4, buf, len[0], &used, &type, &content,
+	    &clen) == 0, "open, first behind it");
+	memcpy(buf, rec[0], len[0]);
+	check(dtls13_open(&r, 4, buf, len[0], &used, &type, &content,
+	    &clen) == EALREADY, "replay rejected, s4.5.1");
+	memcpy(buf, rec[1], len[1]);
+	check(dtls13_open(&r, 4, buf, len[1], &used, &type, &content,
+	    &clen) == 0, "open, second last");
+	memcpy(buf, rec[1], len[1]);
+	check(dtls13_open(&r, 0, buf, len[1], &used, &type, &content,
+	    &clen) == EBADMSG, "a CID the association does not have");
+	memcpy(buf, rec[1], len[1]);
+	buf[len[1] - 1] ^= 1;
+	check(dtls13_open(&r, 4, buf, len[1], &used, &type, &content,
+	    &clen) == EBADMSG, "forged tag, s4.5.2");
+
+	/* Far ahead and back across the 16-bit wrap, s4.2.2. */
+	w.dd_seq = 65530;
+	for (i = 0; i < 12; i++) {
+		size_t l;
+
+		check(dtls13_seal(&w, TLS13_CT_APPDATA, cid, 4,
+		    (const uint8_t *)"x", 1, rec[0], &l) == 0, "seal");
+		if (i < 2)
+			continue;	/* lost */
+		check(dtls13_open(&r, 4, rec[0], l, &used, &type, &content,
+		    &clen) == 0, "across the wrap");
+	}
+	check(r.dd_top == 65541, "full sequence number reconstructed");
+
+	/* A KeyUpdate on both sides: the next epoch, s8. */
+	dtls13_dir_update(&w);
+	dtls13_dir_update(&r);
+	check(dtls13_seal(&w, TLS13_CT_APPDATA, NULL, 0,
+	    (const uint8_t *)"y", 1, rec[0], &len[0]) == 0 &&
+	    (rec[0][0] & 3) == 0, "epoch 4 in the header");
+	memcpy(buf, rec[0], len[0]);
+	check(dtls13_open(&r, 0, buf, len[0], &used, &type, &content,
+	    &clen) == 0 && clen == 1 && content[0] == 'y', "after KeyUpdate");
+	dtls13_dir_init(&r, sec, 3);
+	memcpy(buf, rec[0], len[0]);
+	check(dtls13_open(&r, 0, buf, len[0], &used, &type, &content,
+	    &clen) == EAGAIN, "another epoch's record");
+}
+
 int
 main(void)
 {
@@ -332,6 +472,7 @@ main(void)
 	test_record("server", s_secret, s_key, s_iv, s_app, 1, s_alert);
 	test_padding();
 	test_keyupdate();
+	test_dtls();
 	check(tls13_selftest() == 0, "tls13_selftest");
 	printf("%d passed, %d failed\n", passed, failed);
 	return failed != 0;

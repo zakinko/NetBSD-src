@@ -257,9 +257,11 @@ hmac_sha256(const uint8_t *key, size_t keylen, const uint8_t *m1, size_t l1,
 /*
  * RFC 8446 s7.1, HKDF-Expand-Label, by HKDF-Expand of RFC 5869 s2.3 with
  * SHA-256.  Labels and contexts here are short; the bounds hold them.
+ * prefix is the six bytes put before the label: "tls13 " for TLS 1.3,
+ * "dtls13" for DTLS 1.3 (RFC 9147 s5.9).
  */
-void
-tls13_expand_label(const uint8_t *secret, const char *label,
+static void
+expand_label(const char *prefix, const uint8_t *secret, const char *label,
     const uint8_t *ctx, size_t ctxlen, uint8_t *out, size_t outlen)
 {
 	uint8_t info[2 + 1 + 255 + 1 + 255 + 1], t[TLS13_SECRETLEN];
@@ -272,7 +274,7 @@ tls13_expand_label(const uint8_t *secret, const char *label,
 	info[ilen++] = (uint8_t)(outlen >> 8);		/* uint16 length */
 	info[ilen++] = (uint8_t)outlen;
 	info[ilen++] = (uint8_t)(6 + llen);		/* label<7..255> */
-	memcpy(info + ilen, "tls13 ", 6);
+	memcpy(info + ilen, prefix, 6);
 	ilen += 6;
 	memcpy(info + ilen, label, llen);
 	ilen += llen;
@@ -290,6 +292,22 @@ tls13_expand_label(const uint8_t *secret, const char *label,
 		memcpy(out + done, t, n);
 	}
 	explicit_memset(t, 0, sizeof(t));
+}
+
+void
+tls13_expand_label(const uint8_t *secret, const char *label,
+    const uint8_t *ctx, size_t ctxlen, uint8_t *out, size_t outlen)
+{
+
+	expand_label("tls13 ", secret, label, ctx, ctxlen, out, outlen);
+}
+
+void
+dtls13_expand_label(const uint8_t *secret, const char *label,
+    const uint8_t *ctx, size_t ctxlen, uint8_t *out, size_t outlen)
+{
+
+	expand_label("dtls13", secret, label, ctx, ctxlen, out, outlen);	/* RFC 9147 s5.9 */
 }
 
 /* RFC 8446 s7.3: the write key and IV of a traffic secret. */
@@ -474,4 +492,279 @@ tls13_selftest(void)
 		error = EIO;
 	tls13_dir_fini(&d);
 	return error;
+}
+
+/*
+ * DTLS 1.3, RFC 9147.  The AEAD is that of TLS 1.3 with the 64-bit
+ * sequence number of the epoch for the nonce, s4; the keys are derived
+ * with the "dtls13" prefix, s5.9; the sequence number on the wire is
+ * encrypted, s4.2.3; and every record carries a unified header, s4.
+ */
+
+/* RFC 9147 s4, the first byte of the unified header */
+#define	DTLS13_FIXED		0x20	/* 001 in the top three bits */
+#define	DTLS13_FIXEDMASK	0xe0
+#define	DTLS13_C		0x10	/* a connection ID */
+#define	DTLS13_S		0x08	/* a 16-bit sequence number */
+#define	DTLS13_L		0x04	/* a length */
+#define	DTLS13_E		0x03	/* the low bits of the epoch */
+
+static void
+dtls_keys(struct dtls13_dir *d)
+{
+	uint8_t key[TLS13_KEYLEN];
+
+	dtls13_expand_label(d->dd_secret, "key", NULL, 0, key, sizeof(key));
+	dtls13_expand_label(d->dd_secret, "iv", NULL, 0, d->dd_iv,
+	    sizeof(d->dd_iv));
+	tls13_gcm_init(&d->dd_gcm, key);
+	/* s4.2.3: [sender]_sn_key */
+	dtls13_expand_label(d->dd_secret, "sn", NULL, 0, key, sizeof(key));
+	d->dd_snrounds = aes_setenckey128(&d->dd_sn, key);
+	explicit_memset(key, 0, sizeof(key));
+}
+
+void
+dtls13_dir_init(struct dtls13_dir *d, const uint8_t *secret, uint64_t epoch)
+{
+
+	memset(d, 0, sizeof(*d));
+	memcpy(d->dd_secret, secret, TLS13_SECRETLEN);
+	d->dd_epoch = epoch;
+	dtls_keys(d);
+}
+
+/*
+ * The next epoch after a KeyUpdate, RFC 9147 s8 and RFC 8446 s7.2: the
+ * sequence numbers and the replay window start again.
+ */
+void
+dtls13_dir_update(struct dtls13_dir *d)
+{
+	uint8_t next[TLS13_SECRETLEN];
+
+	dtls13_expand_label(d->dd_secret, "traffic upd", NULL, 0, next,
+	    sizeof(next));
+	memcpy(d->dd_secret, next, sizeof(next));
+	explicit_memset(next, 0, sizeof(next));
+	d->dd_epoch++;
+	d->dd_seq = 0;
+	d->dd_top = 0;
+	d->dd_window = 0;
+	d->dd_any = false;
+	dtls_keys(d);
+}
+
+void
+dtls13_dir_fini(struct dtls13_dir *d)
+{
+
+	explicit_memset(d, 0, sizeof(*d));
+}
+
+static void
+dtls_nonce(const struct dtls13_dir *d, uint64_t seq, uint8_t nonce[TLS13_IVLEN])
+{
+	int i;
+
+	/* RFC 9147 s4: the 64-bit sequence number, not the epoch. */
+	memcpy(nonce, d->dd_iv, TLS13_IVLEN);
+	for (i = 0; i < 8; i++)
+		nonce[TLS13_IVLEN - 1 - i] ^= (uint8_t)(seq >> (8 * i));
+}
+
+/* RFC 9147 s4.2.3: Mask = AES-ECB(sn_key, Ciphertext[0..15]). */
+static void
+dtls_snmask(const struct dtls13_dir *d, const uint8_t *ct, uint8_t mask[16])
+{
+
+	aes_enc(&d->dd_sn, ct, mask, d->dd_snrounds);
+}
+
+/*
+ * Protect a record into rec, with a connection ID of cidlen bytes when
+ * cidlen is not 0, a 16-bit sequence number and a length: the header is
+ * 1 + cidlen + 2 + 2 bytes, then len bytes of content are taken from in,
+ * one byte of type and the tag follow.  The whole record's length is
+ * returned in *reclenp.
+ */
+int
+dtls13_seal(struct dtls13_dir *d, uint8_t type, const uint8_t *cid,
+    size_t cidlen, const uint8_t *in, size_t len, uint8_t *rec,
+    size_t *reclenp)
+{
+	uint8_t nonce[TLS13_IVLEN], mask[16], *ct;
+	size_t hlen, clen = len + 1;
+
+	if (len > TLS13_MAXPLAIN || cidlen > DTLS13_MAXCID)
+		return EMSGSIZE;
+	/* s4.2.1: a sequence number never wraps; 2^48 is s4's limit. */
+	if (d->dd_seq >= (1ULL << 48))
+		return EOVERFLOW;
+	hlen = 0;
+	rec[hlen++] = DTLS13_FIXED | (cidlen != 0 ? DTLS13_C : 0) | DTLS13_S |
+	    DTLS13_L | (d->dd_epoch & DTLS13_E);
+	if (cidlen != 0)
+		memcpy(rec + hlen, cid, cidlen);
+	hlen += cidlen;
+	rec[hlen++] = (uint8_t)(d->dd_seq >> 8);
+	rec[hlen++] = (uint8_t)d->dd_seq;
+	rec[hlen++] = (uint8_t)((clen + TLS13_TAGLEN) >> 8);
+	rec[hlen++] = (uint8_t)(clen + TLS13_TAGLEN);
+	ct = rec + hlen;
+	memmove(ct, in, len);
+	ct[len] = type;
+	dtls_nonce(d, d->dd_seq, nonce);
+	/* s4: the header before record number encryption is the AD. */
+	tls13_gcm_seal(&d->dd_gcm, nonce, rec, hlen, ct, clen, ct + clen);
+	/* s4.2.3; the ciphertext is never shorter than 16 bytes here. */
+	dtls_snmask(d, ct, mask);
+	rec[hlen - 4] ^= mask[0];
+	rec[hlen - 3] ^= mask[1];
+	d->dd_seq++;
+	*reclenp = hlen + clen + TLS13_TAGLEN;
+	return 0;
+}
+
+/*
+ * RFC 9147 s4.2.2: the full sequence number closest to one past the
+ * highest deprotected, from its low bits.
+ */
+static uint64_t
+dtls_seqfull(const struct dtls13_dir *d, uint32_t low, u_int bits)
+{
+	uint64_t next = d->dd_any ? d->dd_top + 1 : 0;
+	uint64_t span = 1ULL << bits, cand;
+
+	cand = (next & ~(span - 1)) | low;
+	if (cand + span / 2 < next && cand + span < (1ULL << 48))
+		cand += span;
+	else if (cand > next + span / 2 && cand >= span)
+		cand -= span;
+	return cand;
+}
+
+/*
+ * RFC 9147 s4.5.1, the anti-replay window RFC 9289 s5.1.2 REQUIRES: the
+ * bitmap of RFC 4303 s3.4.3, DTLS13_WINDOW records behind the highest.
+ */
+static bool
+dtls_replayed(const struct dtls13_dir *d, uint64_t seq)
+{
+
+	if (!d->dd_any || seq > d->dd_top)
+		return false;
+	if (d->dd_top - seq >= DTLS13_WINDOW)
+		return true;		/* too old to tell: rejected */
+	return (d->dd_window >> (d->dd_top - seq)) & 1;
+}
+
+static void
+dtls_seen(struct dtls13_dir *d, uint64_t seq)
+{
+	uint64_t shift;
+
+	if (!d->dd_any) {
+		d->dd_any = true;
+		d->dd_top = seq;
+		d->dd_window = 1;
+		return;
+	}
+	if (seq > d->dd_top) {
+		shift = seq - d->dd_top;
+		d->dd_window = shift >= DTLS13_WINDOW ? 0 :
+		    d->dd_window << shift;
+		d->dd_window |= 1;
+		d->dd_top = seq;
+	} else
+		d->dd_window |= 1ULL << (d->dd_top - seq);
+}
+
+/*
+ * Deprotect the record at the start of the len bytes at p, in place.  A
+ * connection ID, when the header says there is one, is cidlen bytes:
+ * the header does not carry its length, the association does.  *usedp is
+ * the record's length within the datagram; the content is at *contentp,
+ * *clenp bytes of type *typep.  Any error means the record is to be
+ * dropped without an answer, s4.5.2; EALREADY is a replay, EAGAIN an
+ * epoch other than this direction's.
+ */
+int
+dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
+    size_t *usedp, uint8_t *typep, uint8_t **contentp, size_t *clenp)
+{
+	uint8_t nonce[TLS13_IVLEN], mask[16], b0, *ct;
+	size_t hlen, clen, n;
+	u_int seqbits;
+	uint32_t low;
+	uint64_t seq;
+	int error;
+
+	if (len < 1)
+		return EBADMSG;
+	b0 = p[0];
+	/* s4.1 */
+	if ((b0 & DTLS13_FIXEDMASK) != DTLS13_FIXED)
+		return EBADMSG;
+	hlen = 1;
+	if ((b0 & DTLS13_C) != 0) {
+		if (cidlen == 0)
+			return EBADMSG;
+		hlen += cidlen;
+	} else if (cidlen != 0)
+		return EBADMSG;	/* s4: then in every datagram */
+	seqbits = (b0 & DTLS13_S) != 0 ? 16 : 8;
+	hlen += seqbits / 8;
+	if ((b0 & DTLS13_L) != 0)
+		hlen += 2;
+	if (len < hlen)
+		return EBADMSG;
+	if ((b0 & DTLS13_L) != 0) {
+		clen = (size_t)p[hlen - 2] << 8 | p[hlen - 1];
+		if (clen > len - hlen)
+			return EBADMSG;
+	} else
+		clen = len - hlen;	/* the rest of the datagram, s4 */
+	if (clen > TLS13_MAXCIPHER)
+		return EMSGSIZE;
+	if (clen < 16 + 1)	/* s4.2.3 needs 16; content type and tag */
+		return EBADMSG;
+	if ((b0 & DTLS13_E) != (d->dd_epoch & DTLS13_E))
+		return EAGAIN;
+	ct = p + hlen;
+	n = (b0 & DTLS13_L) != 0 ? hlen - 2 : hlen;	/* past the seq */
+
+	dtls_snmask(d, ct, mask);
+	if (seqbits == 16) {
+		p[n - 2] ^= mask[0];
+		p[n - 1] ^= mask[1];
+		low = (uint32_t)p[n - 2] << 8 | p[n - 1];
+	} else {
+		p[n - 1] ^= mask[0];
+		low = p[n - 1];
+	}
+	seq = dtls_seqfull(d, low, seqbits);
+	dtls_nonce(d, seq, nonce);
+	clen -= TLS13_TAGLEN;
+	error = tls13_gcm_open(&d->dd_gcm, nonce, p, hlen, ct, clen,
+	    ct + clen);
+	if (error != 0)
+		return error;
+	/*
+	 * s4.5.1 SHOULD: the replay check after deprotection, so that a
+	 * discard does not tell the record number.
+	 */
+	if (dtls_replayed(d, seq))
+		return EALREADY;
+	dtls_seen(d, seq);
+	/* RFC 8446 s5.4, as in DTLSInnerPlaintext */
+	for (n = clen; n > 0 && ct[n - 1] == 0; n--)
+		continue;
+	if (n == 0)
+		return EPROTO;
+	*typep = ct[n - 1];
+	*contentp = ct;
+	*clenp = n - 1;
+	*usedp = hlen + clen + TLS13_TAGLEN;
+	return 0;
 }

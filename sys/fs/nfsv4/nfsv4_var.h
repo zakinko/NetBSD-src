@@ -317,6 +317,7 @@ bool	nfsv4_fault(volatile u_int *);
 bool	nfsv4_pnfs_on(void);
 uint32_t nfsv4_pnfs_flags(uint32_t, bool *);
 int	nfsv4_layout_setds(const char *);
+extern u_int nfsv4_layouts_given;
 uint32_t nfsv4_layout_types(struct vnode *);
 uint32_t nfsv4_layout_blksize(void);
 extern int nfsv4_numeric_owner_sys;

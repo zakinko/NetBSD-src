@@ -957,6 +957,10 @@ nfsv4_sysctl_init(void)
 	    nfsv4_sysctl_pnfs_ds, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READONLY, CTLTYPE_INT, "layouts_given", SYSCTL_DESCR("LAYOUTGETs answered with a layout"),
+	    NULL, 0, &nfsv4_layouts_given, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layout_recall", SYSCTL_DESCR("Recall every layout"),
 	    nfsv4_sysctl_layout_recall, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

@@ -145,6 +145,7 @@ struct oncrpc_req {
 	uint32_t	rq_flavor;
 	uint32_t	rq_secflavor;	/* rq_flavor, or the pseudo flavor */
 	const char	*rq_principal;	/* under RPCSEC_GSS, for this call */
+	const void	*rq_gssctx;	/* and the context of its mechanism */
 	kauth_cred_t	rq_cred;	/* NULL for AUTH_NONE */
 	struct mbuf	*rq_nam;	/* peer, as MT_SONAME; may be NULL */
 	uint64_t	rq_connid;	/* the connection; none is used twice */

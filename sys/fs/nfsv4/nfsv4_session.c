@@ -58,6 +58,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/time.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/gss_mech.h>
+#include <oncrpc/gss_ssv.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_xdr.h>
 
@@ -478,6 +480,7 @@ nfsv4_op_sequence(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (c->c_seqstatus != NFS4_OK)
 		return c->c_seqstatus;
+	c->c_seqargs = *sa;
 	return nfsv4_xdr_sessionid(c->c_rx, &sa->sessionid) &&
 	    xdr_u_int32_t(c->c_rx, &sa->sequenceid) &&
 	    xdr_u_int32_t(c->c_rx, &sa->slotid) &&
@@ -524,6 +527,10 @@ put_impl(XDR *x)
 	    xdr_u_int64_t(x, &zero64) && xdr_u_int32_t(x, &zero);
 }
 
+static bool op_in(const struct nfsv4_bitmap *, uint32_t);
+static bool ssv_cred_is(const struct nfsv4_compound *,
+    const struct nfsv4_client *);
+
 /*
  * The machine credential of SP4_MACH_CRED, s18.35.3: the principal and
  * the GSS mechanism of the EXCHANGE_ID, which was sent with integrity or
@@ -550,7 +557,27 @@ client_same_principal(const struct nfsv4_compound *c,
 
 	if (cl->cl_sp4 == SP4_MACH_CRED)
 		return mach_cred_is(c, cl);
+	/*
+	 * s18.35.3: the machine credential of SP4_SSV too, and with
+	 * EXCHANGE_ID in spo_must_allow the SSV principal also, s18.35.4.
+	 */
+	if (cl->cl_sp4 == SP4_SSV)
+		return mach_cred_is(c, cl) ||
+		    (ssv_cred_is(c, cl) && op_in(&cl->cl_allow,
+		    NFSV4_OP_EXCHANGE_ID));
 	return cl->cl_uid == nfsv4_client_principal(c);
+}
+
+/* The SSV credential of SP4_SSV: an RPCSEC_GSS handle of its SSV. */
+static bool
+ssv_cred_is(const struct nfsv4_compound *c, const struct nfsv4_client *cl)
+{
+	const struct oncrpc_req *rq = c->c_rq;
+
+	return cl->cl_ssv != NULL && rq->rq_flavor == RPCSEC_GSS &&
+	    rq->rq_gssctx == cl->cl_ssv &&
+	    (rq->rq_secflavor == RPCSEC_GSS_KRB5I ||
+	    rq->rq_secflavor == RPCSEC_GSS_KRB5P);
 }
 
 static bool
@@ -573,10 +600,32 @@ nfsv4_mach_check(const struct nfsv4_compound *c, const struct nfsv4_client *cl,
     uint32_t op)
 {
 
-	if (cl == NULL || cl->cl_sp4 != SP4_MACH_CRED ||
+	if (cl == NULL || cl->cl_sp4 == SP4_NONE ||
 	    !op_in(&cl->cl_enforce, op))
 		return NFS4_OK;
-	return mach_cred_is(c, cl) ? NFS4_OK : NFS4ERR_WRONG_CRED;
+	if (cl->cl_sp4 == SP4_MACH_CRED)
+		return mach_cred_is(c, cl) ? NFS4_OK : NFS4ERR_WRONG_CRED;
+	/*
+	 * SP4_SSV: the SSV credential, but the CREATE_SESSION that confirms
+	 * the client ID, which MUST be let come with the machine
+	 * credential, s18.35.3, as there is no SSV before it.
+	 */
+	if (ssv_cred_is(c, cl))
+		return NFS4_OK;
+	if (op == NFSV4_OP_CREATE_SESSION && !cl->cl_confirmed &&
+	    mach_cred_is(c, cl))
+		return NFS4_OK;
+	return NFS4ERR_WRONG_CRED;
+}
+
+/* The SSV of a client going away: its handles are of no use any more. */
+void
+nfsv4_ssv_forget(struct nfsv4_client *cl)
+{
+
+	gss_ssv_kill(cl->cl_ssv);
+	gss_ssv_rele(cl->cl_ssv);
+	cl->cl_ssv = NULL;
 }
 
 /*
@@ -606,25 +655,136 @@ cbsec_gss(const struct nfsv4_cbsec *cs, struct oncrpc_gssc **gcp)
 	return NFS4_OK;
 }
 
-/* EXCHANGE_ID4resok, s18.35.2. */
+/* What EXCHANGE_ID answers of the state protection, s18.35.2. */
+struct ex_prot {
+	uint32_t	ep_how;
+	struct nfsv4_bitmap ep_enforce;
+	struct nfsv4_bitmap ep_allow;
+	struct gss_ssv	*ep_ssv;	/* SP4_SSV: held */
+	uint32_t	ep_hash;	/* spi_hash_alg */
+	uint32_t	ep_encr;	/* spi_encr_alg */
+	uint32_t	ep_window;
+};
+
+/* The most RPCSEC_GSS handles of SP4_SSV one EXCHANGE_ID makes; a choice. */
+#define	NFSV4_SSV_HANDLES	8
+
+static void
+ex_prot_of(const struct nfsv4_client *cl, struct ex_prot *ep)
+{
+
+	ep->ep_how = cl->cl_sp4;
+	ep->ep_enforce = cl->cl_enforce;
+	ep->ep_allow = cl->cl_allow;
+	ep->ep_ssv = cl->cl_ssv;
+	if (ep->ep_ssv != NULL)
+		gss_ssv_hold(ep->ep_ssv);
+	ep->ep_hash = cl->cl_ssvhash;
+	ep->ep_encr = cl->cl_ssvencr;
+	ep->ep_window = cl->cl_ssvwindow;
+}
+
+/*
+ * EXCHANGE_ID4resok, s18.35.2.  For SP4_SSV the handles are made here,
+ * nhandles of them, as making them sleeps and the state lock is not
+ * held.
+ */
 static uint32_t
 exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
-    uint32_t flags, uint32_t how, const struct nfsv4_bitmap *enforce,
-    const struct nfsv4_bitmap *allow)
+    uint32_t flags, struct ex_prot *ep, uint32_t nhandles)
 {
+	uint8_t handles[NFSV4_SSV_HANDLES][ONCRPC_GSS_HANDLELEN];
+	uint32_t i, made = 0, len, hlen = ONCRPC_GSS_HANDLELEN;
 	uint64_t minor = 0;
 	XDR *x = c->c_rx;
+	uint32_t st = NFS4_OK;
 
-	if (!xdr_u_int64_t(x, &id) || !xdr_u_int32_t(x, &seq) ||
-	    !xdr_u_int32_t(x, &flags) || !xdr_u_int32_t(x, &how))
-		return NFS4ERR_RESOURCE;
-	/* state_protect4_r: spr_mach_ops for SP4_MACH_CRED */
-	if (how == SP4_MACH_CRED &&
-	    (!nfsv4_xdr_bitmap(x, __UNCONST(enforce)) ||
-	    !nfsv4_xdr_bitmap(x, __UNCONST(allow))))
-		return NFS4ERR_RESOURCE;
+	if (ep->ep_how == SP4_SSV && nhandles > 0) {
+		u_int m;
+
+		(void)oncrpc_gss_ssv_handles(ep->ep_ssv, c->c_rq->rq_cred,
+		    c->c_rq->rq_principal, MIN(nhandles, NFSV4_SSV_HANDLES),
+		    handles, &m);
+		made = m;
+		/* s18.35.3: at least one when one is asked for, MUST. */
+		if (made == 0)
+			st = NFS4ERR_SERVERFAULT;
+	}
+	if (st == NFS4_OK &&
+	    (!xdr_u_int64_t(x, &id) || !xdr_u_int32_t(x, &seq) ||
+	    !xdr_u_int32_t(x, &flags) || !xdr_u_int32_t(x, &ep->ep_how)))
+		st = NFS4ERR_RESOURCE;
+	/* state_protect4_r: spr_mach_ops, or ssv_prot_info4 */
+	if (st == NFS4_OK && ep->ep_how != SP4_NONE &&
+	    (!nfsv4_xdr_bitmap(x, &ep->ep_enforce) ||
+	    !nfsv4_xdr_bitmap(x, &ep->ep_allow)))
+		st = NFS4ERR_RESOURCE;
+	if (st == NFS4_OK && ep->ep_how == SP4_SSV) {
+		len = gss_ssv_len(ep->ep_ssv);
+		if (!xdr_u_int32_t(x, &ep->ep_hash) ||
+		    !xdr_u_int32_t(x, &ep->ep_encr) ||
+		    !xdr_u_int32_t(x, &len) ||
+		    !xdr_u_int32_t(x, &ep->ep_window) ||
+		    !xdr_u_int32_t(x, &made))
+			st = NFS4ERR_RESOURCE;
+		for (i = 0; st == NFS4_OK && i < made; i++)
+			if (!xdr_u_int32_t(x, &hlen) ||
+			    !xdr_opaque(x, (char *)handles[i], hlen))
+				st = NFS4ERR_RESOURCE;
+	}
+	if (ep->ep_ssv != NULL)
+		gss_ssv_rele(ep->ep_ssv);
+	if (st != NFS4_OK)
+		return st;
 	return xdr_u_int64_t(x, &minor) && put_hostname(x) && put_hostname(x) &&
 	    put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/*
+ * s18.35.3: the hash and the cipher of SP4_SSV, as indexes of the lists
+ * offered.  id-sha1 is not chosen while another will do, nor a pair the
+ * RFC says SHOULD NOT be, while another will; a pair it says MUST NOT
+ * be never is (Table 21, and the key no longer than the hash).
+ */
+static uint32_t
+ssv_choose(const struct nfsv4_args_exchange_id *ea, uint32_t *hip,
+    uint32_t *eip, int *hp, int *ep)
+{
+	uint32_t i, j, nh = MIN(ea->nhash, NFSV4_SSV_ALGS);
+	uint32_t ne = MIN(ea->nencr, NFSV4_SSV_ALGS);
+	bool anyh = false;
+	int pass, h, e;
+
+	if (ea->nhash == 0 || ea->nencr == 0)
+		return NFS4ERR_INVAL;
+	for (pass = 0; pass < 3; pass++) {
+		for (i = 0; i < nh; i++) {
+			h = gss_ssv_hash_byoid(ea->hash[i].o_data,
+			    ea->hash[i].o_len);
+			if (h < 0)
+				continue;
+			anyh = true;
+			if (pass == 0 && h == GSS_SSV_SHA1)
+				continue;
+			for (j = 0; j < ne; j++) {
+				e = gss_ssv_encr_byoid(ea->encr[j].o_data,
+				    ea->encr[j].o_len);
+				if (e < 0)
+					continue;
+				if (!gss_ssv_pair_ok(h, e, pass < 2))
+					continue;
+				*hip = i;
+				*eip = j;
+				*hp = h;
+				*ep = e;
+				return NFS4_OK;
+			}
+		}
+	}
+	if (!anyh)
+		return NFS4ERR_HASH_ALG_UNSUPP;
+	/* No cipher known, or none that may go with a hash known. */
+	return NFS4ERR_ENCR_ALG_UNSUPP;
 }
 
 /* The numbered cases of s18.35.4 are marked. */
@@ -637,35 +797,45 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s18.35.3: referrals and migration can both be seen here. */
 	uint32_t flags = EXCHGID4_FLAG_USE_NON_PNFS |
 	    EXCHGID4_FLAG_SUPP_MOVED_REFER | EXCHGID4_FLAG_SUPP_MOVED_MIGR;
-	uint32_t seq, st, how;
+	uint32_t seq, st, hi = 0, ei = 0;
 	uint64_t id;
 	bool same_verf, same_uid;
-	struct nfsv4_bitmap enforce, allow;
+	struct gss_ssv *gs = NULL;
+	struct ex_prot ep;
+	int h, e;
 
 	/* s18.35.3 */
 	if ((ea->flags & ~EXCHGID4_ARG_FLAGS) != 0)
 		return NFS4ERR_INVAL;
 	/*
-	 * s18.35.3: SP4_MACH_CRED MUST come with RPCSEC_GSS and integrity
-	 * or privacy; the RFC names no error for a client that does not,
-	 * and the argument is taken for invalid.  SP4_SSV needs the SSV
-	 * mechanism of s2.10.9, which is not here.
+	 * s18.35.3: SP4_MACH_CRED and SP4_SSV MUST come with RPCSEC_GSS
+	 * and integrity or privacy; the RFC names no error for a client
+	 * that does not, and the argument is taken for invalid.
 	 */
-	if (ea->how == SP4_SSV)
-		return NFS4ERR_INVAL;
-	if (ea->how == SP4_MACH_CRED &&
+	if (ea->how != SP4_NONE &&
 	    (c->c_rq->rq_flavor != RPCSEC_GSS ||
 	    (c->c_rq->rq_secflavor != RPCSEC_GSS_KRB5I &&
 	    c->c_rq->rq_secflavor != RPCSEC_GSS_KRB5P)))
 		return NFS4ERR_INVAL;
+	if (ea->how == SP4_SSV) {
+		/* s18.35.3: ssp_window 0 is NFS4ERR_INVAL, MUST. */
+		if (ea->ssv_window == 0)
+			return NFS4ERR_INVAL;
+		st = ssv_choose(ea, &hi, &ei, &h, &e);
+		if (st != NFS4_OK)
+			return st;
+		if (gss_ssv_create(h, e, ea->ssv_window, &gs) != 0)
+			return NFS4ERR_SERVERFAULT;
+	}
 
+	memset(&ep, 0, sizeof(ep));
 	n = kmem_zalloc(sizeof(*n), KM_SLEEP);
 	mutex_enter(&nfsv4_state_lock);
 	conf = nfsv4_client_find(ea->id, ea->idlen, true, 1);
 	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
 	same_verf = conf != NULL && memcmp(&conf->cl_verf, &ea->verifier,
 	    sizeof(ea->verifier)) == 0;
-	/* s18.35.3: under SP4_MACH_CRED, the same machine credential. */
+	/* s18.35.3: under state protection, the same machine credential. */
 	same_uid = conf != NULL && client_same_principal(c, conf);
 
 	if ((ea->flags & EXCHGID4_FLAG_UPD_CONFIRMED_REC_A) != 0) {
@@ -679,19 +849,28 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 			goto existing;			/* 6 */
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
+		if (gs != NULL)
+			gss_ssv_rele(gs);
 		return st;
 	}
 	if (conf != NULL && same_verf && same_uid) {	/* 2 */
 existing:
+		/*
+		 * s18.35.3: the protection of a confirmed client ID does
+		 * not change; another EXCHANGE_ID of SP4_SSV makes it more
+		 * handles.
+		 */
 		id = conf->cl_id;
 		seq = conf->cl_csseq + 1;
 		flags |= EXCHGID4_FLAG_CONFIRMED_R;
-		how = conf->cl_sp4;
-		enforce = conf->cl_enforce;
-		allow = conf->cl_allow;
+		ex_prot_of(conf, &ep);
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
-		return exchange_reply(c, id, seq, flags, how, &enforce, &allow);
+		if (gs != NULL)
+			gss_ssv_rele(gs);
+		return exchange_reply(c, id, seq, flags, &ep,
+		    ea->how == SP4_SSV && ep.ep_how == SP4_SSV ?
+		    ea->ssv_nhandles : 0);
 	}
 	if (conf != NULL && !same_uid) {		/* 3 */
 		if (!conf->cl_expired && time_uptime <= conf->cl_expire &&
@@ -699,6 +878,8 @@ existing:
 		    !LIST_EMPTY(&conf->cl_sessions))) {
 			mutex_exit(&nfsv4_state_lock);
 			kmem_free(n, sizeof(*n));
+			if (gs != NULL)
+				gss_ssv_rele(gs);
 			return NFS4ERR_CLID_INUSE;
 		}
 		nfsv4_client_retire(conf);
@@ -727,16 +908,23 @@ existing:
 	n->cl_sp4 = ea->how;
 	n->cl_enforce = ea->must_enforce;
 	n->cl_allow = ea->must_allow;
-	how = n->cl_sp4;
-	enforce = n->cl_enforce;
-	allow = n->cl_allow;
+	if (ea->how == SP4_SSV) {
+		n->cl_ssv = gs;			/* the reference passes */
+		gs = NULL;
+		n->cl_ssvhash = hi;
+		n->cl_ssvencr = ei;
+		/* s18.35.3: at least one, at most ssp_window. */
+		n->cl_ssvwindow = MIN(ea->ssv_window, GSS_SSV_MAXWINDOW);
+	}
+	ex_prot_of(n, &ep);
 	seq = 1;
 	/* s18.36.4: the slot, and a contrived reply in it. */
 	n->cl_csseq = seq - 1;
 	n->cl_csstatus = NFS4ERR_SEQ_MISORDERED;
 	(void)nfsv4_client_insert(n);
 	mutex_exit(&nfsv4_state_lock);
-	return exchange_reply(c, id, seq, flags, how, &enforce, &allow);
+	return exchange_reply(c, id, seq, flags, &ep,
+	    ea->how == SP4_SSV ? ea->ssv_nhandles : 0);
 }
 
 static uint32_t
@@ -846,6 +1034,9 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (!cl->cl_confirmed) {
 		old = nfsv4_client_find(cl->cl_idstr, cl->cl_idlen, true, 1);
 		cl->cl_confirmed = true;
+		/* s18.35.3: the handles of SP4_SSV are usable from now. */
+		if (cl->cl_ssv != NULL)
+			gss_ssv_confirm(cl->cl_ssv);
 	}
 	cl->cl_expire = time_uptime + NFSV4_LEASE;
 
@@ -1019,12 +1210,55 @@ nfsv4_op_backchannel_ctl(struct nfsv4_compound *c, union nfsv4_args *a)
 	return NFS4_OK;
 }
 
-/* s18.47.3: only for SP4_SSV, which is not accepted. */
+/* s18.47.3 and s18.47.4 */
 uint32_t
 nfsv4_op_set_ssv(struct nfsv4_compound *c, union nfsv4_args *a)
 {
+	const struct nfsv4_args_set_ssv *sa = &a->set_ssv;
+	const struct nfsv4_args_sequence *q = &c->c_seqargs;
+	uint8_t din[NFS4_SESSIONID_SIZE + 16], dout[4 + NFS4_SESSIONID_SIZE + 20];
+	uint8_t rd[GSS_SSV_MAXHASH];
+	struct gss_ssv *gs;
+	size_t rdlen;
+	uint32_t st, rl;
+	int error;
 
-	return NFS4ERR_INVAL;
+	/* SET_SSV MUST follow SEQUENCE, which op_position() sees to. */
+	mutex_enter(&nfsv4_state_lock);
+	gs = c->c_client != NULL ? c->c_client->cl_ssv : NULL;
+	if (gs != NULL)
+		gss_ssv_hold(gs);
+	mutex_exit(&nfsv4_state_lock);
+	if (gs == NULL)
+		return NFS4ERR_INVAL;	/* not SP4_SSV, s18.47.3 */
+
+	/* ssa_digest_input4 { SEQUENCE4args } */
+	memcpy(din, q->sessionid.sid_data, NFS4_SESSIONID_SIZE);
+	be32enc(din + NFS4_SESSIONID_SIZE, q->sequenceid);
+	be32enc(din + NFS4_SESSIONID_SIZE + 4, q->slotid);
+	be32enc(din + NFS4_SESSIONID_SIZE + 8, q->highest_slotid);
+	be32enc(din + NFS4_SESSIONID_SIZE + 12, q->cachethis);
+	/* ssr_digest_input4 { SEQUENCE4res }, as nfsv4_op_sequence() put it */
+	be32enc(dout, NFS4_OK);
+	memcpy(dout + 4, q->sessionid.sid_data, NFS4_SESSIONID_SIZE);
+	be32enc(dout + 4 + NFS4_SESSIONID_SIZE, q->sequenceid);
+	be32enc(dout + 8 + NFS4_SESSIONID_SIZE, q->slotid);
+	be32enc(dout + 12 + NFS4_SESSIONID_SIZE, c->c_maxslot);
+	be32enc(dout + 16 + NFS4_SESSIONID_SIZE, c->c_maxslot);
+	be32enc(dout + 20 + NFS4_SESSIONID_SIZE, c->c_seqflags);
+
+	error = gss_ssv_set(gs, sa->ssv, sa->ssvlen, din, sizeof(din),
+	    sa->digest, sa->diglen, dout, sizeof(dout), rd, &rdlen);
+	gss_ssv_rele(gs);
+	if (error == EAUTH)
+		return NFS4ERR_BAD_SESSION_DIGEST;	/* s18.47.4 */
+	if (error != 0)
+		return NFS4ERR_INVAL;
+	rl = rdlen;
+	st = xdr_u_int32_t(c->c_rx, &rl) &&
+	    xdr_opaque(c->c_rx, (char *)rd, rl) ? NFS4_OK : NFS4ERR_RESOURCE;
+	explicit_memset(rd, 0, sizeof(rd));
+	return st;
 }
 
 /* s18.51.3, and s18.51.4 on a per-fs one: no migration, so it is ignored. */

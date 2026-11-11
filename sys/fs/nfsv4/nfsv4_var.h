@@ -130,6 +130,7 @@ struct nfsv4_compound {
 	bool		c_cachethis;
 	bool		c_uncached;	/* a retry with no reply kept */
 	uint32_t	c_seqflags;	/* sr_status_flags */
+	struct nfsv4_args_sequence c_seqargs;	/* for SET_SSV, s18.47.3 */
 	uint32_t	c_argsum;	/* of what follows SEQUENCE */
 	uint32_t	c_maxslot;	/* sr_highest_slotid */
 	uint32_t	c_resmax;	/* size of reply allowed, or 0 */
@@ -335,6 +336,7 @@ uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_lookupp(struct nfsv4_compound *);
 uint32_t nfsv4_mach_check(const struct nfsv4_compound *,
 	    const struct nfsv4_client *, uint32_t);
+void	nfsv4_ssv_forget(struct nfsv4_client *);
 uint32_t nfsv4_op_putfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putpubfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);

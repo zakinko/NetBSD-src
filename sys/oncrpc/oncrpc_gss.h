@@ -113,6 +113,12 @@ struct oncrpc_gss_call {
 };
 
 struct oncrpc_gss_key;
+struct gss_ssv;
+
+#define	ONCRPC_GSS_HANDLELEN	16	/* of this server's handles; chosen */
+
+int	oncrpc_gss_ssv_handles(struct gss_ssv *, kauth_cred_t, const char *,
+	    u_int, uint8_t (*)[ONCRPC_GSS_HANDLELEN], u_int *);
 struct oncrpc_gssc;
 struct oncrpc_opaque_auth;
 struct sockaddr;

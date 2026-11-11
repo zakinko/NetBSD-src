@@ -203,7 +203,8 @@ class RdmaPeer:
             return self.replies.pop(xid)
 
 def tcp_call_fn():
-    s = socket.create_connection((HOST, TPORT), timeout=30)
+    # The tunnel carries 2049 on the loopback only.
+    s = socket.create_connection(("127.0.0.1", TPORT), timeout=30)
     def call(xid, msg):
         s.sendall(u32(0x80000000 | len(msg)) + msg)
         while True:

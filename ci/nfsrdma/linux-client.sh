@@ -6,7 +6,7 @@
 # each version.  linux-client.sh OUT [VERSION...]
 OUT=$1
 shift
-VERSIONS=${*:-4.0 3 4.1 4.2}
+VERSIONS=${*:-4.0 4.1 3 4.2}
 LOG=$OUT/linux-client.txt
 BIN=$HOME/lc.bin
 M=/mnt/rdma
@@ -49,6 +49,12 @@ for V in $VERSIONS; do
 	esac
 	t sudo mount -v -t nfs -o $o,addr=$A,sec=sys,hard,timeo=100,retrans=2 \
 	    $A:/export/x "$M"
+	if ! mountpoint -q "$M"; then
+		# What rdma_cm saw: run 43021120172 had ENETUNREACH for 4.1
+		# after version 3 had mounted on the same address.
+		ip route get $A; ip -br addr; rdma link; rdma res show cm_id 2>&1 | head
+		sudo dmesg | tail -15
+	fi
 	if mountpoint -q "$M"; then
 		grep "$M" /proc/mounts
 		sudo grep -E 'device|xprt:' /proc/self/mountstats | grep -A1 "$M"

@@ -16,8 +16,11 @@ for c in $(git rev-list --reverse "$B..$tip"); do
 	git checkout -q "$c"
 	git log -1 --format='=== %h %s'
 	log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" -u kernel=NFSV4T
-	for d in sys/modules/oncrpc sys/modules/nfsv4; do
-		(cd "$d" && log "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall)
+	for d in sys/modules/oncrpc sys/modules/nfsxattr sys/modules/nfsv4; do
+		# nfsxattr is not there before the commit that adds it.
+		[ -d "$d" ] || continue
+		(cd "$d" && log "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
+		    log "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall)
 	done
 	(cd sys/modules/nfsserver && log "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
 	    log "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no NFSSERVER_ONCRPC=yes \

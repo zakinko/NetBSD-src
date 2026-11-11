@@ -42,3 +42,4 @@ file	nfs/nfs_subs.c		nfsserver | nfs
 file	nfs/nfs_syscalls.c	nfsserver
 file	nfs/nfs_vfsops.c	nfs
 file	nfs/nfs_vnops.c		nfs
+file	nfs/nfs_xattr.c		nfsserver_oncrpc

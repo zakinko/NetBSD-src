@@ -70,6 +70,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
 #include <nfs/nfs_var.h>
+#include <nfs/nfs_xattr.h>
 
 #include <oncrpc/oncrpc_gss.h>
 
@@ -325,7 +326,8 @@ nfsv4_cfh_setattr(struct nfsv4_cfh *cf, u_int kind, const char *name,
 		break;
 	case NFSV4_ATTR_FILE:
 		fh->fh_data[0] = NFSV4_FHT_ATTR;
-		nfsv4_xattr_hash(name, len, fh->fh_data + fh->fh_len);
+		nfs_xattr_key(name, len, fh->fh_data + fh->fh_len,
+		    NFSV4_ANAME_HASH);
 		fh->fh_len += NFSV4_ANAME_HASH;
 		memcpy(cf->cf_aname, name, len);
 		cf->cf_aname[len] = '\0';

@@ -245,11 +245,7 @@ uint32_t nfsv4_moved_gen(void);
 bool	nfsv4_moved_grace(void);
 bool	nfsv4_attr_absent_ok(const struct nfsv4_bitmap *);
 uint32_t nfsv4_xattr_byhash(struct nfsv4_cfh *, const uint8_t *);
-void	nfsv4_xattr_hash(const char *, size_t, uint8_t *);
 
-int	nfsv4_xattr_size(const struct nfsv4_cfh *, uint64_t *);
-int	nfsv4_xattr_list(const struct nfsv4_cfh *, char **, size_t *, size_t *);
-bool	nfsv4_xattr_any(const struct nfsv4_cfh *);
 uint32_t nfsv4_xattr_lookup(struct nfsv4_compound *, struct nfsv4_cfh *,
 	    const char *, struct nfsv4_cfh *);
 uint32_t nfsv4_xattr_prepare(struct nfsv4_cfh *, const char *, bool, bool,

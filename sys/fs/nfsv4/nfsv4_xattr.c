@@ -40,10 +40,9 @@
  * the name among the file's attributes.  There is no table to lose.
  *
  * Operations on those nodes come here first from nfsv4_one_op(), so
- * that the ones that do not know of them need not.  The VOPs have no
- * offset: an attribute is read and written whole, with the vnode locked
- * across the two for a partial WRITE, and NFSV4_ATTR_MAXSIZE keeps that
- * bounded.
+ * that the ones that do not know of them need not.  The attributes
+ * themselves are read and written by nfsxattr, nfs/nfs_xattr.c, which
+ * versions 2 and 3 share.
  *
  * Not delegated, s5.3 leaving it to the server, and not locked: lockf is
  * per vnode, and would mix them up with the file's own locks.
@@ -57,7 +56,6 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/extattr.h>
 #include <sys/kauth.h>
 #include <sys/kmem.h>
-#include <sys/sha2.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
 #include <sys/vnode.h>
@@ -65,52 +63,23 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
 
-/* A choice: what is held in memory for one attribute. */
-#define	NFSV4_ATTR_MAXSIZE	(64 * 1024)
+#include <nfs/nfs_xattr.h>
 
-#define	XA_NS			EXTATTR_NAMESPACE_USER
-
-/* The first bytes of SHA-256: nobody finds a pair by chance, nor needs to. */
-void
-nfsv4_xattr_hash(const char *name, size_t len, uint8_t *out)
-{
-	SHA256_CTX ctx;
-	uint8_t d[SHA256_DIGEST_LENGTH];
-
-	SHA256_Init(&ctx);
-	SHA256_Update(&ctx, (const uint8_t *)name, len);
-	SHA256_Final(d, &ctx);
-	memcpy(out, d, NFSV4_ANAME_HASH);
-}
+CTASSERT(NFSV4_ANAME_MAX == NFS_XATTR_NAMEMAX);
+CTASSERT(NFSV4_ANAME_HASH <= NFS_XATTR_KEYMAX);
 
 /* cf is a file; make it the attribute with this hash, or NFS4ERR_STALE. */
 uint32_t
 nfsv4_xattr_byhash(struct nfsv4_cfh *cf, const uint8_t *hash)
 {
-	uint8_t h[NFSV4_ANAME_HASH];
-	char *buf = NULL;
-	size_t len, alen, off;
-	uint32_t st = NFS4ERR_STALE;
-	u_int n;
+	char name[NFS_XATTR_NAMEMAX + 1];
 	int error;
 
-	error = nfsv4_xattr_list(cf, &buf, &len, &alen);
+	error = nfs_xattr_byhash(cf->cf_vp, cf->cf_cred, hash,
+	    NFSV4_ANAME_HASH, name);
 	if (error != 0)
 		return nfsv4_errno(error);
-	for (off = 0; off < len; off += n) {
-		n = (uint8_t)buf[off++];
-		if (n > len - off)
-			break;
-		nfsv4_xattr_hash(buf + off, n, h);
-		if (memcmp(h, hash, sizeof(h)) == 0) {
-			st = nfsv4_cfh_setattr(cf, NFSV4_ATTR_FILE, buf + off,
-			    n);
-			break;
-		}
-	}
-	if (alen != 0)
-		kmem_free(buf, alen);
-	return st;
+	return nfsv4_cfh_setattr(cf, NFSV4_ATTR_FILE, name, strlen(name));
 }
 
 static uint32_t
@@ -121,7 +90,7 @@ xa_errno(int error)
 }
 
 static void
-xa_uio(struct uio *uio, struct iovec *iov, void *buf, size_t len,
+xs_uio(struct uio *uio, struct iovec *iov, void *buf, size_t len,
     enum uio_rw rw)
 {
 
@@ -133,66 +102,6 @@ xa_uio(struct uio *uio, struct iovec *iov, void *buf, size_t len,
 	uio->uio_resid = len;
 	uio->uio_rw = rw;
 	UIO_SETUP_SYSSPACE(uio);
-}
-
-/* The size of an attribute, with the vnode locked. */
-static int
-xa_size_l(struct vnode *vp, const char *name, kauth_cred_t cred, size_t *sizep)
-{
-
-	*sizep = 0;
-	return VOP_GETEXTATTR(vp, XA_NS, name, NULL, sizep, cred);
-}
-
-int
-nfsv4_xattr_size(const struct nfsv4_cfh *cf, uint64_t *sizep)
-{
-	size_t size;
-	int error;
-
-	vn_lock(cf->cf_vp, LK_SHARED | LK_RETRY);
-	error = xa_size_l(cf->cf_vp, cf->cf_aname, cf->cf_cred, &size);
-	VOP_UNLOCK(cf->cf_vp);
-	if (error == 0)
-		*sizep = size;
-	return error;
-}
-
-/*
- * All the names, as the file system gives them with
- * EXTATTR_LIST_LENPREFIX: each a length byte and its bytes.  *bufp is to
- * be freed with kmem_free(*bufp, *alenp) if *alenp is not 0.
- */
-int
-nfsv4_xattr_list(const struct nfsv4_cfh *cf, char **bufp, size_t *lenp,
-    size_t *alenp)
-{
-	struct vnode *vp = cf->cf_vp;
-	struct iovec iov;
-	struct uio uio;
-	size_t size = 0;
-	char *buf = NULL;
-	int error;
-
-	*alenp = 0;
-	*lenp = 0;
-	vn_lock(vp, LK_SHARED | LK_RETRY);
-	error = VOP_LISTEXTATTR(vp, XA_NS, NULL, &size, EXTATTR_LIST_LENPREFIX,
-	    cf->cf_cred);
-	if (error == 0 && size != 0) {
-		buf = kmem_alloc(size, KM_SLEEP);
-		xa_uio(&uio, &iov, buf, size, UIO_READ);
-		error = VOP_LISTEXTATTR(vp, XA_NS, &uio, NULL,
-		    EXTATTR_LIST_LENPREFIX, cf->cf_cred);
-		if (error == 0) {
-			*alenp = size;
-			*lenp = size - uio.uio_resid;
-			*bufp = buf;
-		} else
-			kmem_free(buf, size);
-	}
-	VOP_UNLOCK(vp);
-	return error;
 }
 
 /*
@@ -224,7 +133,7 @@ xs_get(struct vnode *vp, const char *name, void *buf, size_t len, size_t *gotp)
 	struct uio uio;
 	int error;
 
-	xa_uio(&uio, &iov, buf, len, UIO_READ);
+	xs_uio(&uio, &iov, buf, len, UIO_READ);
 	vn_lock(vp, LK_SHARED | LK_RETRY);
 	error = VOP_GETEXTATTR(vp, XS_NS, name, &uio, NULL, NOCRED);
 	VOP_UNLOCK(vp);
@@ -239,7 +148,7 @@ xs_set(struct vnode *vp, const char *name, const void *buf, size_t len)
 	struct uio uio;
 	int error;
 
-	xa_uio(&uio, &iov, __UNCONST(buf), len, UIO_WRITE);
+	xs_uio(&uio, &iov, __UNCONST(buf), len, UIO_WRITE);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	error = VOP_SETEXTATTR(vp, XS_NS, name, &uio, NOCRED);
 	VOP_UNLOCK(vp);
@@ -319,33 +228,18 @@ nfsv4_xstore_apply(struct nfsv4_compound *c, struct vnode *vp,
 	return nfsv4_errno(error);
 }
 
-/* s5.8.1.8: does the object have any? */
-bool
-nfsv4_xattr_any(const struct nfsv4_cfh *cf)
-{
-	size_t size = 0;
-	int error;
-
-	vn_lock(cf->cf_vp, LK_SHARED | LK_RETRY);
-	error = VOP_LISTEXTATTR(cf->cf_vp, XA_NS, NULL, &size,
-	    EXTATTR_LIST_LENPREFIX, cf->cf_cred);
-	VOP_UNLOCK(cf->cf_vp);
-	return error == 0 && size != 0;
-}
-
 /* Make to the attribute name of the attribute directory dir. */
 uint32_t
 nfsv4_xattr_lookup(struct nfsv4_compound *c, struct nfsv4_cfh *dir,
     const char *name, struct nfsv4_cfh *to)
 {
-	size_t size, len = strlen(name);
+	size_t len = strlen(name);
+	uint64_t size;
 	int error;
 
 	if (len > NFSV4_ANAME_MAX)
 		return NFS4ERR_NAMETOOLONG;
-	vn_lock(dir->cf_vp, LK_SHARED | LK_RETRY);
-	error = xa_size_l(dir->cf_vp, name, dir->cf_cred, &size);
-	VOP_UNLOCK(dir->cf_vp);
+	error = nfs_xattr_size(dir->cf_vp, dir->cf_cred, name, &size);
 	if (error != 0)
 		return xa_errno(error);
 	if (to != dir)
@@ -353,74 +247,28 @@ nfsv4_xattr_lookup(struct nfsv4_compound *c, struct nfsv4_cfh *dir,
 	return nfsv4_cfh_setattr(to, NFSV4_ATTR_FILE, name, len);
 }
 
-/*
- * Write n bytes at off, the vnode locked across reading and writing.
- * With truncate, the attribute then ends after them.
- */
-static int
-xa_modify(const struct nfsv4_cfh *cf, const char *name, uint64_t off,
-    const char *data, size_t n, bool truncate)
-{
-	struct vnode *vp = cf->cf_vp;
-	struct iovec iov;
-	struct uio uio;
-	char *buf = NULL;
-	size_t old = 0, new;
-	int error;
-
-	if (off > NFSV4_ATTR_MAXSIZE || n > NFSV4_ATTR_MAXSIZE - off)
-		return EFBIG;
-
-	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	error = xa_size_l(vp, name, cf->cf_cred, &old);
-	if (error == ENOATTR) {
-		old = 0;
-		error = 0;
-	}
-	if (error != 0 || old > NFSV4_ATTR_MAXSIZE) {
-		VOP_UNLOCK(vp);
-		return error != 0 ? error : EFBIG;
-	}
-	new = truncate ? off : MAX(old, off + n);
-	if (new != 0) {
-		buf = kmem_zalloc(new, KM_SLEEP);
-		if (old != 0) {
-			xa_uio(&uio, &iov, buf, MIN(old, new), UIO_READ);
-			error = VOP_GETEXTATTR(vp, XA_NS, name, &uio, NULL,
-			    cf->cf_cred);
-		}
-		if (error == 0 && n != 0)
-			memcpy(buf + off, data, n);
-	}
-	if (error == 0) {
-		xa_uio(&uio, &iov, buf, new, UIO_WRITE);
-		error = VOP_SETEXTATTR(vp, XA_NS, name, &uio, cf->cf_cred);
-	}
-	VOP_UNLOCK(vp);
-	if (buf != NULL)
-		kmem_free(buf, new);
-	return error;
-}
-
 /* OPEN of a name in the attribute directory cf, s16.16.5. */
 uint32_t
 nfsv4_xattr_prepare(struct nfsv4_cfh *cf, const char *name, bool create,
     bool guarded, bool truncate)
 {
-	size_t size;
+	uint64_t size;
 	int error;
 
 	if (strlen(name) > NFSV4_ANAME_MAX)
 		return NFS4ERR_NAMETOOLONG;
-	vn_lock(cf->cf_vp, LK_SHARED | LK_RETRY);
-	error = xa_size_l(cf->cf_vp, name, cf->cf_cred, &size);
-	VOP_UNLOCK(cf->cf_vp);
-	if (error == 0 && create && guarded)
-		return NFS4ERR_EXIST;
-	if (error == ENOATTR && create)
-		return xa_errno(xa_modify(cf, name, 0, NULL, 0, true));
+	if (create) {
+		error = nfs_xattr_unique(cf->cf_vp, cf->cf_cred, name,
+		    NFSV4_ANAME_HASH);
+		if (error == 0)
+			error = nfs_xattr_create(cf->cf_vp, cf->cf_cred, name,
+			    guarded, truncate);
+		return xa_errno(error);
+	}
+	error = nfs_xattr_size(cf->cf_vp, cf->cf_cred, name, &size);
 	if (error == 0 && truncate)
-		return xa_errno(xa_modify(cf, name, 0, NULL, 0, true));
+		error = nfs_xattr_write(cf->cf_vp, cf->cf_cred, name, 0, NULL,
+		    0, true);
 	return xa_errno(error);
 }
 
@@ -429,18 +277,15 @@ uint32_t
 nfsv4_op_openattr(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	struct nfsv4_cfh *cf = &c->c_cur;
-	size_t size = 0;
+	bool any;
 	int error;
 
 	if (cf->cf_vp == NULL)
 		return NFS4ERR_NOTSUPP;
-	vn_lock(cf->cf_vp, LK_SHARED | LK_RETRY);
-	error = VOP_LISTEXTATTR(cf->cf_vp, XA_NS, NULL, &size,
-	    EXTATTR_LIST_LENPREFIX, cf->cf_cred);
-	VOP_UNLOCK(cf->cf_vp);
+	error = nfs_xattr_any(cf->cf_vp, cf->cf_cred, &any);
 	if (error != 0)
 		return nfsv4_errno(error);	/* s16.17.5 for EOPNOTSUPP */
-	if (size == 0 && !a->openattr.createdir)
+	if (!any && !a->openattr.createdir)
 		return NFS4ERR_NOENT;
 	return nfsv4_cfh_setattr(cf, NFSV4_ATTR_DIR, "", 0);
 }
@@ -450,40 +295,28 @@ xa_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	const struct nfsv4_args_read *ra = &a->read;
 	const struct nfsv4_cfh *cf = &c->c_cur;
-	struct vnode *vp = cf->cf_vp;
-	struct iovec iov;
-	struct uio uio;
-	char *buf = NULL;
-	size_t size;
-	uint32_t st, n = 0, eof = 1;
+	char *buf;
+	size_t len, got;
+	uint64_t size = 0;
+	uint32_t st, n, eof;
 	int error;
 
 	st = nfsv4_io_check(c, &ra->stateid, false);
 	if (st != NFS4_OK)
 		return st;
-	vn_lock(vp, LK_SHARED | LK_RETRY);
-	error = xa_size_l(vp, cf->cf_aname, cf->cf_cred, &size);
-	if (error == 0 && size > NFSV4_ATTR_MAXSIZE)
-		error = EFBIG;
-	if (error == 0 && size != 0) {
-		buf = kmem_alloc(size, KM_SLEEP);
-		xa_uio(&uio, &iov, buf, size, UIO_READ);
-		error = VOP_GETEXTATTR(vp, XA_NS, cf->cf_aname, &uio, NULL,
-		    cf->cf_cred);
-	}
-	VOP_UNLOCK(vp);
-	if (error == 0 && ra->offset < size) {
-		n = (uint32_t)MIN(size - ra->offset, ra->count);
-		eof = ra->offset + n >= size;
-	}
+	len = MIN(ra->count, NFS_XATTR_MAXSIZE);
+	buf = kmem_alloc(MAX(len, 1), KM_SLEEP);
+	error = nfs_xattr_read(cf->cf_vp, cf->cf_cred, cf->cf_aname,
+	    ra->offset, buf, len, &got, &size);
+	n = (uint32_t)got;
+	eof = ra->offset + n >= size;
 	if (error != 0)
 		st = xa_errno(error);
 	else if (!xdr_u_int32_t(c->c_rx, &eof) ||
 	    !xdr_u_int32_t(c->c_rx, &n) ||
-	    (n != 0 && !xdr_opaque(c->c_rx, buf + ra->offset, n)))
+	    (n != 0 && !xdr_opaque(c->c_rx, buf, n)))
 		st = NFS4ERR_RESOURCE;
-	if (buf != NULL)
-		kmem_free(buf, size);
+	kmem_free(buf, MAX(len, 1));
 	return st;
 }
 
@@ -506,7 +339,7 @@ xa_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_access_vp(cf, VWRITE);
 	if (error != 0)
 		return nfsv4_errno(error);
-	if (n > NFSV4_ATTR_MAXSIZE)
+	if (n > NFS_XATTR_MAXSIZE)
 		return NFS4ERR_FBIG;
 	if (n != 0) {
 		buf = kmem_alloc(n, KM_SLEEP);
@@ -517,7 +350,8 @@ xa_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 			kmem_free(buf, n);
 			return NFS4ERR_BADXDR;
 		}
-		error = xa_modify(cf, cf->cf_aname, wa->offset, buf, n, false);
+		error = nfs_xattr_write(cf->cf_vp, cf->cf_cred, cf->cf_aname,
+		    wa->offset, buf, n, false);
 		kmem_free(buf, n);
 		if (error != 0)
 			return xa_errno(error);
@@ -557,8 +391,8 @@ xa_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st == NFS4_OK) {
 		error = nfsv4_access_vp(cf, VWRITE);
 		if (error == 0)
-			error = xa_modify(cf, cf->cf_aname, va.va_size, NULL,
-			    0, true);
+			error = nfs_xattr_write(cf->cf_vp, cf->cf_cred,
+			    cf->cf_aname, va.va_size, NULL, 0, true);
 		st = xa_errno(error);
 	}
 	if (st != NFS4_OK)
@@ -618,9 +452,7 @@ xa_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_access_vp(cf, VWRITE);
 	if (error != 0)
 		return nfsv4_errno(error);
-	vn_lock(cf->cf_vp, LK_EXCLUSIVE | LK_RETRY);
-	error = VOP_DELETEEXTATTR(cf->cf_vp, XA_NS, nm->nm_str, cf->cf_cred);
-	VOP_UNLOCK(cf->cf_vp);
+	error = nfs_xattr_remove(cf->cf_vp, cf->cf_cred, nm->nm_str);
 	if (error != 0)
 		return xa_errno(error);
 	st = xa_change(cf, &ci, true);
@@ -637,17 +469,12 @@ xa_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_rename *ra = &a->rename;
 	struct nfsv4_cfh *cf = &c->c_cur, *sf = &c->c_saved;
 	struct nfsv4_change_info ci;
-	struct vnode *vp = cf->cf_vp;
-	struct iovec iov;
-	struct uio uio;
-	char *buf = NULL;
-	size_t size = 0;
 	uint32_t st;
 	int error;
 
 	if (!sf->cf_set)
 		return NFS4ERR_NOFILEHANDLE;
-	if (sf->cf_attr != NFSV4_ATTR_DIR || sf->cf_vp != vp)
+	if (sf->cf_attr != NFSV4_ATTR_DIR || sf->cf_vp != cf->cf_vp)
 		return NFS4ERR_XDEV;
 	st = nfsv4_name_check(c, &ra->oldname);
 	if (st == NFS4_OK)
@@ -663,30 +490,11 @@ xa_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_access_vp(cf, VWRITE);
 	if (error != 0)
 		return nfsv4_errno(error);
-
-	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	error = xa_size_l(vp, ra->oldname.nm_str, cf->cf_cred, &size);
-	if (error == 0 && size > NFSV4_ATTR_MAXSIZE)
-		error = EFBIG;
-	if (error == 0 && strcmp(ra->oldname.nm_str, ra->newname.nm_str) != 0) {
-		if (size != 0) {
-			buf = kmem_alloc(size, KM_SLEEP);
-			xa_uio(&uio, &iov, buf, size, UIO_READ);
-			error = VOP_GETEXTATTR(vp, XA_NS, ra->oldname.nm_str,
-			    &uio, NULL, cf->cf_cred);
-		}
-		if (error == 0) {
-			xa_uio(&uio, &iov, buf, size, UIO_WRITE);
-			error = VOP_SETEXTATTR(vp, XA_NS, ra->newname.nm_str,
-			    &uio, cf->cf_cred);
-		}
-		if (error == 0)
-			error = VOP_DELETEEXTATTR(vp, XA_NS,
-			    ra->oldname.nm_str, cf->cf_cred);
-		if (buf != NULL)
-			kmem_free(buf, size);
-	}
-	VOP_UNLOCK(vp);
+	error = nfs_xattr_unique(cf->cf_vp, cf->cf_cred, ra->newname.nm_str,
+	    NFSV4_ANAME_HASH);
+	if (error == 0)
+		error = nfs_xattr_rename(cf->cf_vp, cf->cf_cred,
+		    ra->oldname.nm_str, ra->newname.nm_str);
 	if (error != 0)
 		return xa_errno(error);
 	st = xa_change(cf, &ci, true);

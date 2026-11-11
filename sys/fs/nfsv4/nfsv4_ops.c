@@ -47,6 +47,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/rpcv2.h>
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
+#include <nfs/nfs_xattr.h>
 
 #include <oncrpc/oncrpc_gss.h>
 
@@ -423,7 +424,8 @@ readdir_xattr(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	u_int n;
 	int error;
 
-	error = nfsv4_xattr_list(rd->rd_dir, &buf, &len, &alen);
+	error = nfs_xattr_list(rd->rd_dir->cf_vp, rd->rd_dir->cf_cred, &buf,
+	    &len, &alen);
 	if (error != 0)
 		return nfsv4_errno(error);
 	first = cookie == 0 ? 0 : cookie - NFSV4_COOKIE_BASE + 1;

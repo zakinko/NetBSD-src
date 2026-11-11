@@ -212,6 +212,17 @@ struct nfsd_args {
 	int	namelen;	/* Length of name */
 };
 
+/*
+ * For NFSSVC_TLSWAIT and NFSSVC_TLSDONE.  TLSWAIT fills in nt_cookie and
+ * nt_fd, a new descriptor of the connection; TLSDONE names the connection
+ * by nt_cookie and gives nt_error, 0 when the handshake succeeded.
+ */
+struct nfsd_tlsarg {
+	uint64_t nt_cookie;
+	int	nt_fd;
+	int	nt_error;
+};
+
 struct nfsd_srvargs {
 	struct nfsd	*nsd_nfsd;	/* Pointer to in kernel nfsd struct */
 	uid_t		nsd_uid;	/* Effective uid mapped to cred */
@@ -301,6 +312,8 @@ struct nfsstats {
 #define	NFSSVC_MNTD	0x100
 #define	NFSSVC_SETEXPORTSLIST	0x200
 #define	NFSSVC_REPLACEEXPORTSLIST	0x400
+#define	NFSSVC_TLSWAIT	0x800	/* RFC 9289: take a connection to handshake */
+#define	NFSSVC_TLSDONE	0x1000	/* RFC 9289: the handshake's verdict */
 
 /*
  * fs.nfs sysctl(3) identifiers

@@ -72,6 +72,11 @@
 /* RFC 5531 s8.2, enum auth_flavor */
 #define	ONCRPC_AUTH_NONE	0
 #define	ONCRPC_AUTH_SYS		1
+#define	ONCRPC_AUTH_TLS		7	/* RFC 9289 s7.1 */
+
+/* RFC 9289 s4.1, the body of the reply's verifier to an AUTH_TLS probe */
+#define	ONCRPC_STARTTLS		"STARTTLS"
+#define	ONCRPC_STARTTLS_LEN	8
 
 #define	ONCRPC_MAX_AUTH_BYTES	400	/* RFC 5531 s8.2, opaque body<400> */
 #define	ONCRPC_MAX_MACHINENAME	255	/* RFC 5531 App. A, machinename<255> */
@@ -187,5 +192,9 @@ void	oncrpc_req_takemsg(struct oncrpc_req *, struct mbuf **, struct mbuf **,
 void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
 	    void (*)(void *));
 void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
+
+/* RPC-over-TLS, RFC 9289: the connections handed to the handshake daemon. */
+int	oncrpc_tls_wait(uint64_t *, int *);
+int	oncrpc_tls_done(uint64_t, int);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

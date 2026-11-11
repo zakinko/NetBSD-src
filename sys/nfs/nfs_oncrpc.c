@@ -474,6 +474,27 @@ nfs_oncrpc_run(void)
 	return oncrpc_svc_run(nfs_oncrpc_svc);
 }
 
+/* NFSSVC_TLSWAIT and NFSSVC_TLSDONE, for the TLS handshake daemon. */
+int
+nfs_oncrpc_tls(int flag, void *argp)
+{
+	struct nfsd_tlsarg nt;
+	int error;
+
+	error = copyin(argp, &nt, sizeof(nt));
+	if (error != 0)
+		return error;
+	if ((flag & NFSSVC_TLSDONE) != 0)
+		return oncrpc_tls_done(nt.nt_cookie, nt.nt_error);
+	error = oncrpc_tls_wait(&nt.nt_cookie, &nt.nt_fd);
+	if (error != 0)
+		return error;
+	error = copyout(&nt, argp, sizeof(nt));
+	if (error != 0)
+		(void)oncrpc_tls_done(nt.nt_cookie, error);
+	return error;
+}
+
 /* Connections that version 4 has used stay, served by its threads. */
 void
 nfs_oncrpc_closesocks(void)

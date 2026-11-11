@@ -65,6 +65,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/socket.h>
 #include <sys/socketvar.h>
 #include <sys/systm.h>
+#include <sys/timevar.h>
 #include <sys/uio.h>
 
 #include <netinet/in.h>
@@ -129,6 +130,17 @@ struct oncrpc_svc {
 #define	XP_SENDING	0x08	/* a worker is in xprt_send() */
 #define	XP_DEAD		0x10	/* shut down, off svc_xprts */
 
+/*
+ * xp_tls, RFC 9289.  After a probe answered with STARTTLS the stream is
+ * no longer RPC: nothing more is read as a call (s5.1.1) and the
+ * connection waits for the handshake daemon, which takes it with
+ * oncrpc_tls_wait() and gives its verdict with oncrpc_tls_done().
+ */
+#define	XT_NONE		0	/* plain RPC */
+#define	XT_PROBED	1	/* STARTTLS being sent */
+#define	XT_QUEUED	2	/* on oncrpc_tls_queue */
+#define	XT_HANDSHAKE	3	/* the daemon has it, on oncrpc_tls_busy */
+
 struct oncrpc_xprt {
 	struct oncrpc_svc	*xp_svc;
 	file_t			*xp_fp;
@@ -143,6 +155,8 @@ struct oncrpc_xprt {
 	u_int			 xp_flags;
 	u_int			 xp_nreqs;	/* calls in progress */
 	uint64_t		 xp_id;		/* rq_connid */
+	u_int			 xp_tls;	/* XT_*, under svc_lock */
+	TAILQ_ENTRY(oncrpc_xprt) xp_tlsq;	/* under oncrpc_tls_lock */
 	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
 	LIST_ENTRY(oncrpc_xprt)	 xp_list;
 	SIMPLEQ_HEAD(, oncrpc_ireq) xp_sendq;
@@ -161,9 +175,27 @@ struct oncrpc_ireq {
 	struct oncrpc_xdrmbuf	 ir_res;
 	struct oncrpc_call	 ir_call;
 	struct oncrpc_gss_call	 ir_gss;
+	bool			 ir_starttls;	/* the reply ends plain RPC */
 };
 
 static u_int oncrpc_nsvc;
+
+/* RFC 9289: connections between the STARTTLS reply and the daemon. */
+static kmutex_t oncrpc_tls_lock;
+static kcondvar_t oncrpc_tls_cv;
+static TAILQ_HEAD(, oncrpc_xprt) oncrpc_tls_queue =
+    TAILQ_HEAD_INITIALIZER(oncrpc_tls_queue);
+static TAILQ_HEAD(, oncrpc_xprt) oncrpc_tls_busy =
+    TAILQ_HEAD_INITIALIZER(oncrpc_tls_busy);
+static u_int oncrpc_tls_ndaemon;	/* threads in oncrpc_tls_wait() */
+static volatile u_int oncrpc_tls_seen;	/* time_uptime a daemon last left it */
+/*
+ * Not from the RFC.  A daemon out of oncrpc_tls_wait() with a connection
+ * is back within this long; until then a probe is still offered STARTTLS.
+ */
+#define	ONCRPC_TLS_GRACE	2
+
+static void svc_tls_purge(struct oncrpc_svc *);
 static kmutex_t oncrpc_named_lock;
 static LIST_HEAD(, oncrpc_svc) oncrpc_named =
     LIST_HEAD_INITIALIZER(oncrpc_named);
@@ -176,6 +208,7 @@ xprt_queue(struct oncrpc_xprt *xp)
 	KASSERT(mutex_owned(&svc->svc_lock));
 
 	if ((xp->xp_flags & (XP_QUEUED | XP_RECEIVING | XP_DEAD)) != 0 ||
+	    xp->xp_tls != XT_NONE ||
 	    xp->xp_nreqs >= ONCRPC_XPRT_MAXREQS)
 		return;
 	xp->xp_flags |= XP_QUEUED;
@@ -323,6 +356,44 @@ xprt_getmsg_dgram(struct oncrpc_xprt *xp, struct mbuf **namp)
 	}
 }
 
+/*
+ * An AUTH_TLS probe, RFC 9289 s4.1.  STARTTLS is offered only on a stream
+ * and only while a handshake daemon waits in oncrpc_tls_wait(); otherwise
+ * the reply is that of a server without TLS on this port, which s4.1
+ * leaves the client's policy to act on.  DTLS on UDP, s5.1.2, is not
+ * implemented.
+ */
+static uint32_t
+svc_tls_probe(struct oncrpc_ireq *ir, const struct oncrpc_call *c)
+{
+	struct oncrpc_xprt *xp = ir->ir_xprt;
+	struct oncrpc_svc *svc = xp->xp_svc;
+	uint32_t why = ONCRPC_AUTH_OK;
+
+	/*
+	 * s4.1 MUST: AUTH_BADCRED on any procedure but NULL and within a
+	 * TLS session.  The zero-length credential and verifier are the
+	 * client's MUSTs; a call breaking them is no probe either.
+	 */
+	if (c->c_proc != 0 || c->c_cred.oa_len != 0)
+		return ONCRPC_AUTH_BADCRED;
+	if (c->c_verf.oa_flavor != ONCRPC_AUTH_NONE || c->c_verf.oa_len != 0)
+		return ONCRPC_AUTH_BADVERF;
+
+	mutex_enter(&svc->svc_lock);
+	if (xp->xp_tls != XT_NONE)
+		why = ONCRPC_AUTH_BADCRED;
+	else if (xp->xp_so->so_type == SOCK_STREAM &&
+	    (atomic_load_relaxed(&oncrpc_tls_ndaemon) != 0 ||
+	     (u_int)time_uptime - atomic_load_relaxed(&oncrpc_tls_seen) <=
+	     ONCRPC_TLS_GRACE)) {
+		xp->xp_tls = XT_PROBED;
+		ir->ir_starttls = true;
+	}
+	mutex_exit(&svc->svc_lock);
+	return why;
+}
+
 static void
 req_free(struct oncrpc_ireq *ir)
 {
@@ -345,6 +416,59 @@ req_free(struct oncrpc_ireq *ir)
 	xprt_rele(xp);
 }
 
+static void
+xprt_rm_discard(struct oncrpc_xprt *xp)
+{
+
+	oncrpc_rm_fini(&xp->xp_rm);
+	oncrpc_rm_init(&xp->xp_rm, ONCRPC_MAXMSG);
+}
+
+/*
+ * The STARTTLS reply is out: hand the connection to the TLS handshake
+ * daemon, consuming a reference.  The ClientHello stays in the socket
+ * for the daemon to read; what xp_rm already holds came before it and
+ * is dropped, RFC 9289 s5.1.1.
+ */
+static void
+xprt_tls_handoff(struct oncrpc_xprt *xp)
+{
+	struct oncrpc_svc *svc = xp->xp_svc;
+	struct socket *so = xp->xp_so;
+	bool discard;
+
+	solock(so);
+	if (so->so_upcallarg == xp) {
+		so->so_upcall = NULL;
+		so->so_upcallarg = NULL;
+		so->so_rcv.sb_flags &= ~SB_UPCALL;
+	}
+	sounlock(so);
+
+	mutex_enter(&svc->svc_lock);
+	if ((xp->xp_flags & XP_DEAD) != 0) {
+		mutex_exit(&svc->svc_lock);
+		xprt_rele(xp);
+		return;
+	}
+	KASSERT(xp->xp_tls == XT_PROBED);
+	xp->xp_tls = XT_QUEUED;
+	if ((xp->xp_flags & XP_QUEUED) != 0) {
+		TAILQ_REMOVE(&svc->svc_pending, xp, xp_pending);
+		xp->xp_flags &= ~XP_QUEUED;
+	}
+	/* A receiver in progress empties it itself; see svc_loop(). */
+	discard = (xp->xp_flags & XP_RECEIVING) == 0;
+	mutex_exit(&svc->svc_lock);
+	if (discard)
+		xprt_rm_discard(xp);
+
+	mutex_enter(&oncrpc_tls_lock);
+	TAILQ_INSERT_TAIL(&oncrpc_tls_queue, xp, xp_tlsq);
+	cv_broadcast(&oncrpc_tls_cv);
+	mutex_exit(&oncrpc_tls_lock);
+}
+
 /*
  * Send the reply of ir, consuming it.  A worker finding one already
  * sending leaves its reply for that one rather than wait behind a peer
@@ -359,11 +483,17 @@ xprt_send(struct oncrpc_ireq *ir)
 	struct sockaddr *to;
 	struct mbuf *m, *n;
 	uint32_t *rm;
-	bool zap = false;
+	bool zap = false, handoff = false;
 	u_int len;
 	int error;
 
 	mutex_enter(&svc->svc_lock);
+	if (xp->xp_tls >= XT_QUEUED) {
+		/* No longer RPC; see xp_tls. */
+		mutex_exit(&svc->svc_lock);
+		req_free(ir);
+		return;
+	}
 	if ((xp->xp_flags & XP_SENDING) != 0) {
 		SIMPLEQ_INSERT_TAIL(&xp->xp_sendq, ir, ir_sendq);
 		mutex_exit(&svc->svc_lock);
@@ -375,6 +505,16 @@ xprt_send(struct oncrpc_ireq *ir)
 	for (;;) {
 		m = ir->ir_reply;
 		ir->ir_reply = NULL;
+		if (handoff) {
+			/*
+			 * Behind the STARTTLS reply the peer expects a
+			 * ServerHello, RFC 9289 s4.1; a reply to a call it
+			 * should not have sent is left unsent.
+			 */
+			m_freem(m);
+			req_free(ir);
+			goto next;
+		}
 		len = m->m_pkthdr.len;
 		to = NULL;
 		if (so->so_type == SOCK_STREAM) {
@@ -407,8 +547,15 @@ xprt_send(struct oncrpc_ireq *ir)
 		m_freem(m);
 		if (error != 0 && so->so_type == SOCK_STREAM)
 			zap = true;
+		else if (ir->ir_starttls) {
+			/* For xprt_tls_handoff(), past req_free()'s. */
+			handoff = true;
+			mutex_enter(&svc->svc_lock);
+			xp->xp_refs++;
+			mutex_exit(&svc->svc_lock);
+		}
 		req_free(ir);
-
+next:
 		mutex_enter(&svc->svc_lock);
 		ir = SIMPLEQ_FIRST(&xp->xp_sendq);
 		if (ir == NULL)
@@ -420,6 +567,8 @@ xprt_send(struct oncrpc_ireq *ir)
 	mutex_exit(&svc->svc_lock);
 	if (zap)
 		xprt_zap(xp);
+	else if (handoff)
+		xprt_tls_handoff(xp);
 }
 
 /*
@@ -618,6 +767,20 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 			svc_prog_rele(svc, pg);
 			goto drop;
 		}
+	} else if (c->c_cred.oa_flavor == ONCRPC_AUTH_TLS) {
+		/*
+		 * Answered here, not by the program: the NULL procedure
+		 * takes and gives nothing, and a program's own reply,
+		 * raw or deferred, would not carry the STARTTLS verifier.
+		 */
+		svc_prog_rele(svc, pg);
+		why = svc_tls_probe(ir, c);
+		if (why != ONCRPC_AUTH_OK) {
+			ok = oncrpc_msg_encode_denied_auth(x, c->c_xid, why);
+			goto reply;
+		}
+		stat = ONCRPC_SUCCESS;
+		goto accepted;
 	} else {
 		rq->rq_secflavor = c->c_cred.oa_flavor;
 		ao = oncrpc_auth_lookup(c->c_cred.oa_flavor);
@@ -704,6 +867,11 @@ accepted:
 			    ir->ir_gss.gg_verf, ir->ir_gss.gg_verfbody,
 			    ir->ir_gss.gg_verflen, stat, 0, 0);
 		}
+	} else if (ir->ir_starttls) {
+		/* RFC 9289 s4.1 */
+		ok = oncrpc_msg_encode_accepted_verf(x, c->c_xid,
+		    ONCRPC_AUTH_NONE, ONCRPC_STARTTLS, ONCRPC_STARTTLS_LEN,
+		    stat, 0, 0);
 	} else
 		ok = oncrpc_msg_encode_accepted(x, c->c_xid, stat, 0, 0);
 
@@ -724,6 +892,9 @@ reply:
 
 drop:
 	XDR_DESTROY(&hdr.xm_xdr);
+	/* A STARTTLS never sent leaves a stream read by no one. */
+	if (ir->ir_starttls)
+		xprt_zap(ir->ir_xprt);
 	req_free(ir);
 }
 
@@ -780,6 +951,20 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 			ir = kmem_zalloc(sizeof(*ir), KM_SLEEP);
 
 		mutex_enter(&svc->svc_lock);
+		if (xp->xp_tls != XT_NONE) {
+			/*
+			 * A probe answered while this was being read: what
+			 * came after it is no call, RFC 9289 s5.1.1.  Still
+			 * XP_RECEIVING, so xp_rm is ours to empty.
+			 */
+			mutex_exit(&svc->svc_lock);
+			m_freem(m);
+			if (ir != NULL)
+				kmem_free(ir, sizeof(*ir));
+			ir = NULL;
+			xprt_rm_discard(xp);
+			mutex_enter(&svc->svc_lock);
+		}
 		xp->xp_flags &= ~XP_RECEIVING;
 		if (ir != NULL) {
 			xp->xp_nreqs++;
@@ -905,6 +1090,7 @@ oncrpc_svc_destroy(struct oncrpc_svc *svc)
 	svc->svc_dying = true;
 	cv_broadcast(&svc->svc_cv);
 	mutex_exit(&svc->svc_lock);
+	svc_tls_purge(svc);
 
 	while ((wk = SLIST_FIRST(&svc->svc_workers)) != NULL) {
 		SLIST_REMOVE_HEAD(&svc->svc_workers, wk_list);
@@ -1239,6 +1425,150 @@ oncrpc_svc_nxprt(struct oncrpc_svc *svc)
 	return atomic_load_relaxed(&svc->svc_nxprt);
 }
 
+/*
+ * For the TLS handshake daemon: wait for a connection whose STARTTLS
+ * reply is out and take it as a new descriptor of the calling process,
+ * with the cookie oncrpc_tls_done() is to name it by.
+ */
+int
+oncrpc_tls_wait(uint64_t *cookiep, int *fdp)
+{
+	struct oncrpc_xprt *xp;
+	struct oncrpc_svc *svc;
+	file_t *fp;
+	bool dead;
+	int error, fd;
+
+	mutex_enter(&oncrpc_tls_lock);
+	oncrpc_tls_ndaemon++;
+	for (;;) {
+		while ((xp = TAILQ_FIRST(&oncrpc_tls_queue)) == NULL) {
+			error = cv_wait_sig(&oncrpc_tls_cv, &oncrpc_tls_lock);
+			if (error != 0) {
+				oncrpc_tls_ndaemon--;
+				mutex_exit(&oncrpc_tls_lock);
+				return error;
+			}
+		}
+		TAILQ_REMOVE(&oncrpc_tls_queue, xp, xp_tlsq);
+		svc = xp->xp_svc;
+		mutex_enter(&svc->svc_lock);
+		dead = (xp->xp_flags & XP_DEAD) != 0;
+		if (!dead)
+			xp->xp_tls = XT_HANDSHAKE;
+		mutex_exit(&svc->svc_lock);
+		if (!dead)
+			break;
+		mutex_exit(&oncrpc_tls_lock);
+		xprt_rele(xp);
+		mutex_enter(&oncrpc_tls_lock);
+	}
+	TAILQ_INSERT_TAIL(&oncrpc_tls_busy, xp, xp_tlsq);
+	oncrpc_tls_ndaemon--;
+	atomic_store_relaxed(&oncrpc_tls_seen, (u_int)time_uptime);
+	*cookiep = xp->xp_id;
+	mutex_exit(&oncrpc_tls_lock);
+
+	fp = xp->xp_fp;
+	error = fd_alloc(curproc, 0, &fd);
+	if (error != 0) {
+		(void)oncrpc_tls_done(*cookiep, error);
+		return error;
+	}
+	mutex_enter(&fp->f_lock);
+	fp->f_count++;
+	mutex_exit(&fp->f_lock);
+	fd_affix(curproc, fp, fd);
+	*fdp = fd;
+	return 0;
+}
+
+/*
+ * The daemon's verdict on the connection named by cookie: error is 0
+ * when the handshake succeeded.  There is no record layer yet, so every
+ * connection ends here, and a success is answered with EOPNOTSUPP.
+ */
+int
+oncrpc_tls_done(uint64_t cookie, int error)
+{
+	struct oncrpc_xprt *xp;
+
+	mutex_enter(&oncrpc_tls_lock);
+	TAILQ_FOREACH(xp, &oncrpc_tls_busy, xp_tlsq) {
+		if (xp->xp_id == cookie)
+			break;
+	}
+	if (xp == NULL) {
+		mutex_exit(&oncrpc_tls_lock);
+		return ESRCH;
+	}
+	TAILQ_REMOVE(&oncrpc_tls_busy, xp, xp_tlsq);
+	mutex_exit(&oncrpc_tls_lock);
+
+	xprt_zap(xp);
+	xprt_rele(xp);
+	/* For svc_tls_purge(). */
+	mutex_enter(&oncrpc_tls_lock);
+	cv_broadcast(&oncrpc_tls_cv);
+	mutex_exit(&oncrpc_tls_lock);
+	return error == 0 ? EOPNOTSUPP : 0;
+}
+
+/*
+ * The connections of svc, zapped already, out of the daemon's hands
+ * before svc goes: those queued are dropped, those held are waited for.
+ */
+static void
+svc_tls_purge(struct oncrpc_svc *svc)
+{
+	struct oncrpc_xprt *xp, *nxp;
+	bool held;
+
+	mutex_enter(&oncrpc_tls_lock);
+	for (;;) {
+		TAILQ_FOREACH_SAFE(xp, &oncrpc_tls_queue, xp_tlsq, nxp) {
+			if (xp->xp_svc != svc)
+				continue;
+			TAILQ_REMOVE(&oncrpc_tls_queue, xp, xp_tlsq);
+			mutex_exit(&oncrpc_tls_lock);
+			xprt_rele(xp);
+			mutex_enter(&oncrpc_tls_lock);
+			break;
+		}
+		if (xp != NULL)
+			continue;
+		held = false;
+		TAILQ_FOREACH(xp, &oncrpc_tls_busy, xp_tlsq)
+			held |= xp->xp_svc == svc;
+		if (!held)
+			break;
+		cv_wait(&oncrpc_tls_cv, &oncrpc_tls_lock);
+	}
+	mutex_exit(&oncrpc_tls_lock);
+}
+
+/* Drop the connections no daemon took; EBUSY while one holds any. */
+static int
+oncrpc_tls_fini(void)
+{
+	struct oncrpc_xprt *xp;
+
+	mutex_enter(&oncrpc_tls_lock);
+	if (!TAILQ_EMPTY(&oncrpc_tls_busy) || oncrpc_tls_ndaemon != 0) {
+		mutex_exit(&oncrpc_tls_lock);
+		return EBUSY;
+	}
+	while ((xp = TAILQ_FIRST(&oncrpc_tls_queue)) != NULL) {
+		TAILQ_REMOVE(&oncrpc_tls_queue, xp, xp_tlsq);
+		mutex_exit(&oncrpc_tls_lock);
+		xprt_zap(xp);
+		xprt_rele(xp);
+		mutex_enter(&oncrpc_tls_lock);
+	}
+	mutex_exit(&oncrpc_tls_lock);
+	return 0;
+}
+
 MODULE(MODULE_CLASS_MISC, oncrpc, "xdr,aes,des");
 
 static int
@@ -1251,11 +1581,16 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 			return EIO;
 		oncrpc_gss_init();
 		mutex_init(&oncrpc_named_lock, MUTEX_DEFAULT, IPL_NONE);
+		mutex_init(&oncrpc_tls_lock, MUTEX_DEFAULT, IPL_NONE);
+		cv_init(&oncrpc_tls_cv, "rpctls");
 		return 0;
 	case MODULE_CMD_FINI:
-		if (atomic_load_relaxed(&oncrpc_nsvc) != 0)
+		if (atomic_load_relaxed(&oncrpc_nsvc) != 0 ||
+		    oncrpc_tls_fini() != 0)
 			return EBUSY;
 		oncrpc_gss_fini();
+		cv_destroy(&oncrpc_tls_cv);
+		mutex_destroy(&oncrpc_tls_lock);
 		mutex_destroy(&oncrpc_named_lock);
 		return 0;
 	default:

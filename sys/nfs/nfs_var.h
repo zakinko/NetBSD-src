@@ -336,6 +336,8 @@ void nfs_oncrpc_closesocks(void);
 extern const char nfs_oncrpc_tag[];
 /* nfs_acl.c */
 extern const struct oncrpc_program nfs_acl_program;
+void nfs_acl_init(void);
+void nfs_acl_fini(void);
 #endif
 void nfsrv_zapsock(struct nfssvc_sock *);
 void nfsrv_slpderef(struct nfssvc_sock *);

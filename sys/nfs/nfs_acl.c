@@ -75,6 +75,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
 #include <sys/mount.h>
+#include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/unistd.h>
 #include <sys/vnode.h>
@@ -950,3 +951,38 @@ const struct oncrpc_program nfs_acl_program = {
 	.op_owner = nfs_oncrpc_tag,
 };
 
+/*
+ * vfs.nfsserver.nfsacl, the versions served as bits (1 << version), for
+ * nfsd(8) to register them with rpcbind as illumos' nfsd does
+ * (usr/src/cmd/fs.d/nfs/nfsd/nfsd.c:556-565).  Neither client looks
+ * there: both call on the address of the NFS mount (Linux
+ * rpc_bind_new_program(), illumos nfs_subr.c:506), but rpcinfo and
+ * anything that asks rpcbind see the program.
+ */
+static struct sysctllog *nfs_acl_sysctllog;
+static int nfs_acl_versions = (1 << NFS_ACL_V2) | (1 << NFS_ACL_V3);
+
+void
+nfs_acl_init(void)
+{
+	const struct sysctlnode *node = NULL;
+
+	sysctl_createv(&nfs_acl_sysctllog, 0, NULL, &node,
+	    CTLFLAG_PERMANENT, CTLTYPE_NODE, "nfsserver",
+	    SYSCTL_DESCR("NFS server, versions 2 and 3"),
+	    NULL, 0, NULL, 0, CTL_VFS, CTL_CREATE, CTL_EOL);
+	if (node == NULL)
+		return;
+	sysctl_createv(&nfs_acl_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READONLY, CTLTYPE_INT, "nfsacl",
+	    SYSCTL_DESCR("Versions of NFSACL served, as 1 << version"),
+	    NULL, 0, &nfs_acl_versions, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+}
+
+void
+nfs_acl_fini(void)
+{
+
+	sysctl_teardown(&nfs_acl_sysctllog);
+}

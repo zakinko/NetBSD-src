@@ -1750,6 +1750,7 @@
 ./usr/sbin/rpc.lockd				base-nfsserver-bin	nfs
 ./usr/sbin/rpc.pcnfsd				base-nfsserver-bin	nfs
 ./usr/sbin/rpc.statd				base-nfsserver-bin	nfs
+./usr/sbin/rpc.tlsservd				base-nfsserver-bin	nfs
 ./usr/sbin/rpc.yppasswdd			base-nis-bin		yp
 ./usr/sbin/rpcapd				base-netutil-bin
 ./usr/sbin/rpcbind				base-rpcbind-bin

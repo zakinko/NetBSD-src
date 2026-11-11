@@ -1295,6 +1295,7 @@
 ./usr/libdata/debug/usr/sbin/rpc.lockd.debug	comp-nfsserver-debug	nfs,debug
 ./usr/libdata/debug/usr/sbin/rpc.pcnfsd.debug	comp-nfsserver-debug	nfs,debug
 ./usr/libdata/debug/usr/sbin/rpc.statd.debug	comp-nfsserver-debug	nfs,debug
+./usr/libdata/debug/usr/sbin/rpc.tlsservd.debug	comp-nfsserver-debug	nfs,debug
 ./usr/libdata/debug/usr/sbin/rpc.yppasswdd.debug	comp-nis-debug		yp,debug
 ./usr/libdata/debug/usr/sbin/rpcapd.debug	comp-netutil-debug	debug
 ./usr/libdata/debug/usr/sbin/rpcbind.debug	comp-rpcbind-debug	debug

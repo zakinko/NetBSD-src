@@ -3367,6 +3367,7 @@
 ./usr/share/man/cat8/rpc.rwalld.0		man-rpcserver-catman	.cat
 ./usr/share/man/cat8/rpc.sprayd.0		man-rpcserver-catman	.cat
 ./usr/share/man/cat8/rpc.statd.0		man-nfsserver-catman	nfs,.cat
+./usr/share/man/cat8/rpc.tlsservd.0		man-nfsserver-catman	nfs,.cat
 ./usr/share/man/cat8/rpc.yppasswdd.0		man-nis-catman		yp,.cat
 ./usr/share/man/cat8/rpcapd.0			man-netutil-catman	.cat
 ./usr/share/man/cat8/rpcbind.0			man-rpcserver-catman	.cat
@@ -6980,6 +6981,7 @@
 ./usr/share/man/man8/rpc.rwalld.8		man-rpcserver-man	.man
 ./usr/share/man/man8/rpc.sprayd.8		man-rpcserver-man	.man
 ./usr/share/man/man8/rpc.statd.8		man-nfsserver-man	nfs,.man
+./usr/share/man/man8/rpc.tlsservd.8		man-nfsserver-man	nfs,.man
 ./usr/share/man/man8/rpc.yppasswdd.8		man-nis-man		yp,.man
 ./usr/share/man/man8/rpcapd.8			man-netutil-man	.man
 ./usr/share/man/man8/rpcbind.8			man-rpcserver-man	.man

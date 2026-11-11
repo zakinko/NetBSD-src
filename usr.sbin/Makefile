@@ -45,7 +45,7 @@ SUBDIR+= dumplfs
 .endif
 
 .if (${MKNFS} != "no")
-SUBDIR+= mountd nfsd rpc.lockd rpc.pcnfsd rpc.statd
+SUBDIR+= mountd nfsd rpc.lockd rpc.pcnfsd rpc.statd rpc.tlsservd
 .endif
 
 .if (${MKBLUETOOTH} != "no")

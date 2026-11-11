@@ -2995,6 +2995,7 @@
 ./usr/share/man/html8/rpc.rwalld.html		man-rpcserver-htmlman	html
 ./usr/share/man/html8/rpc.sprayd.html		man-rpcserver-htmlman	html
 ./usr/share/man/html8/rpc.statd.html		man-nfsserver-htmlman	nfs,html
+./usr/share/man/html8/rpc.tlsservd.html		man-nfsserver-htmlman	nfs,html
 ./usr/share/man/html8/rpc.yppasswdd.html	man-nis-htmlman		yp,html
 ./usr/share/man/html8/rpcapd.html		man-netutil-htmlman	html
 ./usr/share/man/html8/rpcbind.html		man-rpcserver-htmlman	html

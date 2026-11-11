@@ -36,6 +36,11 @@ scp netbsd:/var/tmp/nfsv4/client.keytab "$OUT/client.keytab"
 sudo install -m 600 "$OUT/client.keytab" /etc/krb5.keytab
 rm -f "$OUT/client.keytab"
 sudo useradd -m -u 2097 alice
+# As ci/nfsgss/client.sh: owners by name in the server's domain.
+printf '[General]\nDomain = nfsgss.test\n[Mapping]\nNobody-User = nobody\nNobody-Group = nogroup\n' |
+    sudo tee /etc/idmapd.conf
+sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
+sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
 sudo -u alice sh -c 'echo alice-pw | kinit alice' && sudo -u alice klist
 fails=0
 sudo -u alice python3 "$HERE/cbprobe.py" $S "$CERTS/ca.pem" || fails=$((fails + 1))

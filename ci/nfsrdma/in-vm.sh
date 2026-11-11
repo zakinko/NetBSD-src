@@ -21,7 +21,8 @@ chmod 1777 /export/x
 echo '/export/x -maproot=root -noresvport' >/etc/exports
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf
 /etc/rc.d/rpcbind onestart || :
-/usr/sbin/mountd
+# MOUNT on a port the tunnel knows, RFC 8267 s5.1.
+/usr/sbin/mountd -p 1234
 sleep 2
 
 cd "$D"

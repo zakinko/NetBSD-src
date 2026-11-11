@@ -136,6 +136,7 @@ class RdmaPeer:
         self.cv = threading.Condition()
         self.calls = []
         self.recall = None
+        self.recalled = threading.Event()
         self.answer = True
         threading.Thread(target=self.reader, daemon=True).start()
 
@@ -190,6 +191,8 @@ class RdmaPeer:
         # RFC 8167 s5.2: the XID of the Call, our version, a grant.
         with self.tx:
             self.p.send(struct.pack('>IIII', xid, 1, 4, 0) + bytes(12) + reply)
+        if self.recall is not None:
+            self.recalled.set()
 
     def call(self, xid, msg, t=20):
         with self.tx:
@@ -259,9 +262,9 @@ def conflict():
         done['st'] = repr(e)
 t = threading.Thread(target=conflict, daemon=True)
 t.start()
-end = time.time() + 20
-while rp.recall is None and time.time() < end:
-    time.sleep(0.2)
+# At once, as the Linux client is: its return reached the server while
+# the conflicting OPEN still waited on it, which polling here did not.
+rp.recalled.wait(20)
 check('CB_RECALL came as a reverse Call', rp.recall is not None,
       (rp.calls, rp.recall and rp.recall.hex(), dsid and dsid.hex()))
 if rp.recall is not None:

@@ -397,6 +397,9 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	else if (c->c_minor != 0 &&
 	    (st = stateid_args(c, op, a)) != NFS4_OK)
 		/* below */;
+	else if (c->c_minor != 0 &&
+	    (st = nfsv4_mach_check(c, c->c_client, op)) != NFS4_OK)
+		/* below */;
 	else {
 		if ((od->od_flags & NFSV4_OPF_DRC) != 0)
 			c->c_drc = true;

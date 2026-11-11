@@ -22,6 +22,10 @@
 #include <gssapi/gssapi.h>
 #include <gssapi/gssapi_krb5.h>
 
+#ifndef GSS_KRB5_MECHANISM	/* MIT krb5, for the tests of RFC 2623 s4.1 */
+#define	GSS_KRB5_MECHANISM	gss_mech_krb5
+#endif
+
 static uint8_t buf[65536];
 static size_t len;
 static int s;

@@ -64,6 +64,10 @@ __RCSID("$NetBSD$");
 #include <gssapi/gssapi_krb5.h>
 #include <krb5.h>
 
+#ifndef GSS_KRB5_MECHANISM	/* MIT krb5, for the tests of RFC 2623 s4.1 */
+#define	GSS_KRB5_MECHANISM	gss_mech_krb5
+#endif
+
 #define	GSSD_PATH	"/var/run/gssd.sock"
 #define	GSSD_PROG	0x40475353
 #define	GSSD_VERS	1

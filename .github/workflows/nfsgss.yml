@@ -92,11 +92,19 @@ jobs:
         with:
           name: out
           path: out
+      # For the FreeBSD VM: it reaches the NetBSD one through the runner.
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'
           cpu: 2
           mem: 4096
+          nat: |
+            udp:"2049": "2049"
+            udp:"4002": "4002"
+            "111": "111"
+            udp:"111": "111"
+            "18888": "8888"
           sync: rsync
           copyback: false
           run: uname -a
@@ -125,6 +133,14 @@ jobs:
         id: gss
         continue-on-error: true
         run: sh ci/nfsgss/client.sh "$PWD/out"
+      - name: DES MAC MD5 with MIT krb5 1.17 in the VM
+        id: mit
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          scp ci/nfsgss/vm-mit.sh netbsd:/var/tmp/nfsv4/
+          ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/nfsv4/vm-mit.sh' 2>&1 | tee out/mit-des.txt
+          test "${PIPESTATUS[0]}" = 0
       - name: Tunnel to the server
         run: |
           ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
@@ -136,6 +152,26 @@ jobs:
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
+      - name: The FreeBSD client
+        id: fbvm
+        continue-on-error: true
+        uses: vmactions/freebsd-vm@v1
+        with:
+          cpu: 2
+          mem: 2048
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: UDP from FreeBSD
+        id: udp
+        continue-on-error: true
+        run: |
+          scp netbsd:/var/tmp/nfsv4/freebsd.keytab out/fb.keytab
+          ssh freebsd 'mkdir -p /var/tmp/nfsgss'
+          scp out/fb.keytab ci/nfsgss/freebsd.sh freebsd:/var/tmp/nfsgss/
+          rm -f out/fb.keytab
+          ssh freebsd 'mv /var/tmp/nfsgss/fb.keytab /var/tmp/nfsgss/freebsd.keytab; sh /var/tmp/nfsgss/freebsd.sh' 2>&1 | tee out/freebsd-udp.txt
+          test "${PIPESTATUS[0]}" = 0
       - name: What the kernel said
         if: always()
         run: |
@@ -153,6 +189,8 @@ jobs:
           path: |
             out/pynfs*
             out/gss-client.txt
+            out/mit-des.txt
+            out/freebsd-udp.txt
             out/rpc.gssd.log
             out/summary.txt
             out/ctime-*.txt
@@ -162,4 +200,8 @@ jobs:
             out/kernel.txt
           retention-days: 30
       - name: The verdict of the Kerberos tests
-        run: test "${{ steps.gss.outcome }}" = success
+        run: |
+          echo "linux ${{ steps.gss.outcome }} mit ${{ steps.mit.outcome }} freebsd-vm ${{ steps.fbvm.outcome }} udp ${{ steps.udp.outcome }}"
+          test "${{ steps.gss.outcome }}" = success
+          test "${{ steps.mit.outcome }}" = success
+          test "${{ steps.udp.outcome }}" = success

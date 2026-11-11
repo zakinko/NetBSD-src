@@ -7,7 +7,16 @@ D=/var/tmp/nfsv4
 sysctl vfs.nfsserver.nfsacl
 (cd "$D/src/usr.sbin/nfsd" && cc -g -Wall -o "$D/nfsd" nfsd.c -lpthread)
 pkill -x nfsd || :
-sleep 2
+# The sockets close with the last thread of the old nfsd, which may be
+# in the kernel for a while yet; a new one that cannot bind registers
+# nothing.
+i=0
+while sockstat -l 2>/dev/null | grep -q '[.:]2049 '; do
+	i=$((i + 1))
+	[ $i -le 60 ] || { echo 'port 2049 still bound'; sockstat -l | grep 2049; exit 1; }
+	sleep 1
+done
+echo "port 2049 free after ${i}s"
 "$D/nfsd" -t -u -n 8
 sleep 2
 rpcinfo -p | tee "$D/rpcinfo.txt"

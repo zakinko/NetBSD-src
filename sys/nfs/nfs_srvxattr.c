@@ -1143,7 +1143,7 @@ xa_statfs(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
     struct lwp *lwp, struct mbuf **mrq)
 {
 	XA_LOCALS;
-	struct statvfs *sf;
+	struct statvfs *sf = NULL;
 	struct nfs_statfs *sfp;
 	struct xa_node xn;
 	struct vattr at;
@@ -1189,7 +1189,8 @@ xa_statfs(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		sfp->sf_bavail = txdr_unsigned(NFS_V2CLAMP32(sf->f_bavail));
 	}
 nfsmout:
-	kmem_free(sf, sizeof(*sf));
+	if (sf != NULL)
+		kmem_free(sf, sizeof(*sf));
 	return error;
 }
 

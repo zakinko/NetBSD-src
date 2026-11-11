@@ -1,0 +1,125 @@
+name: nfsacl
+on:
+  push:
+    branches: [nfsacl]
+    paths:
+      - 'sys/nfs/**'
+      - 'sys/oncrpc/**'
+      - 'sys/modules/nfsserver/**'
+      - 'ci/nfsacl/**'
+      - 'ci/nfsbridge/off-is-unchanged.sh'
+      - 'tests/oncrpc/**'
+      - '.github/workflows/nfsacl.yml'
+  workflow_dispatch:
+# The fast stage, on every push: the build, the unit tests of what was
+# changed, and NFSACL.  A new push may cancel it.  The regressions of
+# versions 2, 3 and 4 are nfsbridge.yml and nfsgss.yml, run by hand.
+concurrency:
+  group: nfsacl-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 120
+      - uses: actions/cache/restore@v4
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - name: The option off leaves sys/nfs as it was
+        run: |
+          sudo apt-get install -y -q unifdef >/dev/null
+          # From this series' base: the GSS series before it already
+          # changes nfs.h, nfs_socket.c and nfs_srvsubs.c with it off.
+          sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsacl/base)"
+      - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
+      - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
+      - continue-on-error: true
+        run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
+      - name: The unit tests of the RPC layer, if it was changed
+        run: |
+          if git diff --quiet "$(cat ci/nfsacl/base)" HEAD -- sys/oncrpc tests/oncrpc; then
+            echo 'sys/oncrpc unchanged'; exit 0
+          fi
+          sudo apt-get install -y -q libtirpc-dev libssl-dev >/dev/null
+          mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -ltirpc
+          ./t2
+          cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
+          ./t3
+      - name: Every commit of the series on its own
+        run: sh ci/nfsacl/each-commit.sh "$PWD/nb"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nfsv4
+            ci/nfsgss
+            ci/nfsacl
+            ci/oncrpc/swap.sh
+            sys/nfs/nfs.h
+            usr.sbin/mountd
+            usr.sbin/gssd
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: The ZFS userland, on the stock kernel
+        continue-on-error: true
+        run: |
+          ssh netbsd 'mkdir -p /var/tmp/nfsv4'
+          scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
+          ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
+      - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+          ssh netbsd 'sysctl -w ddb.onpanic=1 ddb.tee_msgbuf=1; sysctl -w ddb.commandonenter="bt;show all locks;reboot"' || :
+      - name: The KDC, the daemons, and the exports with POSIX.1e ACLs
+        run: |
+          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-acl.sh'
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
+          ssh netbsd 'showmount -e 127.0.0.1'
+      - name: getfacl and setfacl over version 3, AUTH_SYS and Kerberos, and the probe
+        run: sh ci/nfsacl/linux.sh "$PWD/out"
+      - name: Wireshark reads it
+        if: always()
+        run: sh ci/nfsacl/tshark.sh out/nfsacl.pcap out | tee out/nfsacl-tshark.txt; test "${PIPESTATUS[0]}" = 0
+        shell: bash
+      - name: What the kernel said
+        if: always()
+        run: |
+          ssh -o ConnectTimeout=20 netbsd "tail -40 /var/log/messages; uname -a; modstat | grep -E 'xdr|oncrpc|nfs'; dmesg | grep -n -A60 -E 'panic|fatal|trap type' | head -150; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results
+          path: |
+            out/nfsacl-*
+            out/nfsacl.pcap
+            out/kernel.txt
+          retention-days: 30

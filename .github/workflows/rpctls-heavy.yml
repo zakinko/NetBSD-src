@@ -1,0 +1,219 @@
+name: rpctls-heavy
+# The whole of it: pynfs plain and over TLS, the Linux client with tls,
+# mtls and krb5, every probe.  By hand, at a resting point of the work,
+# in a group of its own so that a push cannot cancel it.
+# A workflow GitHub has never run cannot be dispatched from a branch
+# other than the default one, so a push of the commit to measure to the
+# branch rpctls-heavy runs it as well:
+#   git push origin HEAD:refs/heads/rpctls-heavy
+on:
+  workflow_dispatch:
+  push:
+    branches: [rpctls-heavy]
+concurrency:
+  group: rpctls-heavy-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 120
+      # The kernel holds nothing of sys/fs/nfsv4, only the module does,
+      # so it stays good across pushes until the base moves or what the
+      # server needs of the kernel changes.  The tools outlast that.
+      - uses: actions/cache/restore@v4
+        id: tools
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/restore@v4
+        id: kernel
+        with:
+          path: nb/netbsd
+          key: rpctls-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
+      - uses: actions/cache/save@v4
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/save@v4
+        if: steps.kernel.outputs.cache-hit != 'true'
+        with:
+          path: nb/netbsd
+          key: rpctls-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
+      - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
+      - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
+      - run: |
+          sudo apt-get install -y -q libtirpc-dev >/dev/null
+          mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
+          ./t
+          mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
+          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -ltirpc
+          ./t2
+          sudo apt-get install -y -q libssl-dev >/dev/null
+          cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
+          ./t3
+          cc -g -fsanitize=address,undefined -Wall -Wno-deprecated-declarations -Isys/oncrpc -Itests/oncrpc/gss-shim -o t4 tests/oncrpc/t_tls13_crypto.c sys/oncrpc/tls13_crypto.c -lcrypto
+          ./t4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nfsv4
+            ci/rpctls
+            ci/nfsgss
+            ci/oncrpc/swap.sh
+            sys/nfs
+            usr.sbin/rpc.tlsservd
+            usr.sbin/mountd
+            usr.sbin/gssd
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: The ZFS userland, on the stock kernel, for in-vm.sh
+        run: |
+          ssh netbsd 'mkdir -p /var/tmp/nfsv4'
+          scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
+          ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
+      - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/fib.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+      - name: Tunnel to the server
+        run: |
+          ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+              -L 2049:127.0.0.1:2049 \
+              -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
+              -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 netbsd
+          sleep 2
+      - name: Certificates
+        run: |
+          sh ci/rpctls/mkcerts.sh "$PWD/certs"
+          tar -C "$PWD" -cf - certs | ssh netbsd 'tar -C /var/tmp/nfsv4 -xf -'
+      - name: The AUTH_TLS probe with no daemon
+        continue-on-error: true
+        run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 nodaemon 2>&1 | tee out/probe1-nodaemon.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: The stand-in daemon
+        run: |
+          tar -cf - sys/nfs/nfs.h | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/rpctls/tlsstub.c netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'cd /var/tmp/nfsv4 && cc -Wall -I/var/tmp/nfsv4/src/sys -o tlsstub tlsstub.c && (./tlsstub </dev/null >tlsstub.log 2>&1 & echo $! >tlsstub.pid) && sleep 1 && cat tlsstub.pid'
+      - name: The AUTH_TLS probe and the hand-off
+        continue-on-error: true
+        run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 daemon 2>&1 | tee out/probe1-daemon.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Linux with xprtsec=tls against the stand-in
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls && mv out/linux-tls.txt out/linux-tls-stub.txt && mv out/tlshd-tls.log out/tlshd-stub.log
+      - name: What the stand-in saw
+        if: always()
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsstub.pid); sleep 1; cat tlsstub.log' | tee out/tlsstub.txt
+      - name: rpc.tlsservd
+        run: |
+          tar -cf - usr.sbin/rpc.tlsservd | ssh netbsd 'tar -C /var/tmp/nfsv4/src -xf -'
+          ssh netbsd 'cd /var/tmp/nfsv4/src/usr.sbin/rpc.tlsservd && cc -Wall -Werror -I/var/tmp/nfsv4/src/sys -o /var/tmp/nfsv4/rpc.tlsservd rpc.tlsservd.c -lssl -lcrypto'
+          ssh netbsd 'cd /var/tmp/nfsv4 && (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-anon.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The handshake, anonymous clients allowed
+        continue-on-error: true
+        run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" anon 2>&1 | tee out/probe2-anon.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: RPC over the kernel's record layer
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -q libssl-dev >/dev/null
+          cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
+          ./probe3 127.0.0.1 2049 "$PWD/certs" 2>&1 | tee out/probe3.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: pynfs 4.0 over TLS, through a proxy that does the probe and handshake
+        run: |
+          nohup python3 ci/rpctls/tlsproxy.py 12049 127.0.0.1 "$PWD/certs/ca.pem" >out/tlsproxy.log 2>&1 &
+          sleep 1
+          PYNFS_URL=127.0.0.1:12049/export/pynfs sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-tls
+      - name: Linux with xprtsec=tls against rpc.tlsservd
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls
+      - name: rpc.tlsservd -m
+        if: always()
+        run: |
+          ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -m -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-mutual.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The handshake, mutual authentication
+        continue-on-error: true
+        run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" mutual 2>&1 | tee out/probe2-mutual.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Linux with xprtsec=mtls against rpc.tlsservd -m
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" mtls
+      - name: rpc.tlsservd again, anonymous clients allowed
+        if: always()
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-krb5.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The KDC and gssd
+        run: |
+          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
+      - name: Kerberos over TLS, and the channel bindings
+        run: sh ci/rpctls/cb-client.sh "$PWD/out" "$PWD/certs"
+      - name: What rpc.tlsservd said
+        if: always()
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log tlsservd-krb5.log; tail -20 gssd.log' | tee out/tlsservd.txt
+      - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - name: What the kernel said
+        if: always()
+        run: |
+          ssh -o ConnectTimeout=20 netbsd "uname -a; uptime; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -40; ls -l /var/crash; for z in /var/crash/netbsd.*.core.gz; do [ -f \$z ] && gunzip \$z; [ -f \${z%.core.gz}.gz ] && gunzip \${z%.core.gz}.gz; done; for c in /var/crash/netbsd.*.core; do [ -f \$c ] || continue; n=\${c%.core}; dmesg -M \$c -N \$n | tail -80; echo bt | crash -M \$c -N \$n 2>&1 | tail -60; done" | tee out/kernel.txt || echo no answer
+      - name: Summarise
+        if: always()
+        run: |
+          for n in pynfs pynfs-tls; do
+            python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          done
+          grep -h -E '^(ok|FAIL)|failures|mount exit|io ok|krb5 over tls' out/probe*.txt out/linux-*.txt out/cb-client.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+      - name: The verdict
+        run: |
+          if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt; then exit 1; fi
+          grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rpctls
+          path: |
+            out/pynfs*
+            out/probe1-*.txt
+            out/probe2-*.txt
+            out/probe3.txt
+            out/tlsproxy.log
+            out/tlsstub.txt
+            out/tlsservd.txt
+            out/linux-*.txt
+            out/tlshd-*.log
+            out/cb-client.txt
+            out/trace-krb5.txt
+            out/trace-krb5-noidmap.txt
+            out/rpc.gssd-tls.log
+            out/kernel.txt
+            out/summary.txt
+          retention-days: 30

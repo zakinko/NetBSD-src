@@ -50,6 +50,12 @@ for e in 20:aes256-cts-hmac-sha384-192:wide 18:aes256-cts-hmac-sha1-96:narrow; d
 	    python3 "$HERE/cbprobe.py" $S "$CERTS/ca.pem" $mode || fails=$((fails + 1))
 done
 
+# The fast CI stage stops here; the Linux client is the heavy one's.
+if [ "$3" = quick ]; then
+	echo "cb-client failures $fails"
+	exit 0
+fi
+
 # The Linux client: RPCSEC_GSS version 1 inside TLS.
 sudo modprobe rpcsec_gss_krb5
 sudo mkdir -p /run/rpc_pipefs

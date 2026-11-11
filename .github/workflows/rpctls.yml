@@ -21,6 +21,8 @@ on:
       - 'usr.sbin/mountd/**'
       - 'usr.sbin/rpc.tlsservd/**'
       - '.github/workflows/rpctls.yml'
+      - '!ci/rpctls/linux-tls.sh'
+      - '!ci/rpctls/tlsproxy.py'
   workflow_dispatch:
 concurrency:
   group: rpctls-${{ github.ref }}
@@ -28,11 +30,18 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      vm: ${{ steps.sel.outputs.vm }}
+      gss: ${{ steps.sel.outputs.gss }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 120
+      # What this push changed decides what runs after the build; see
+      # ci/rpctls/select.sh.
+      - id: sel
+        run: sh ci/rpctls/select.sh "${{ github.event.before }}" >>"$GITHUB_OUTPUT"
       # The kernel holds nothing of sys/fs/nfsv4, only the module does,
       # so it stays good across pushes until the base moves or what the
       # server needs of the kernel changes.  The tools outlast that.
@@ -60,6 +69,7 @@ jobs:
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
+        if: steps.sel.outputs.nfsv4 == 'true'
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
           mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
@@ -81,8 +91,9 @@ jobs:
           retention-days: 7
   test:
     needs: build
+    if: needs.build.outputs.vm == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 200
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,8 +152,6 @@ jobs:
         continue-on-error: true
         run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 daemon 2>&1 | tee out/probe1-daemon.txt; exit ${PIPESTATUS[0]}
         shell: bash
-      - name: Linux with xprtsec=tls against the stand-in
-        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls && mv out/linux-tls.txt out/linux-tls-stub.txt && mv out/tlshd-tls.log out/tlshd-stub.log
       - name: What the stand-in saw
         if: always()
         run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsstub.pid); sleep 1; cat tlsstub.log' | tee out/tlsstub.txt
@@ -162,13 +171,6 @@ jobs:
           cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
           ./probe3 127.0.0.1 2049 "$PWD/certs" 2>&1 | tee out/probe3.txt; exit ${PIPESTATUS[0]}
         shell: bash
-      - name: pynfs 4.0 over TLS, through a proxy that does the probe and handshake
-        run: |
-          nohup python3 ci/rpctls/tlsproxy.py 12049 127.0.0.1 "$PWD/certs/ca.pem" >out/tlsproxy.log 2>&1 &
-          sleep 1
-          PYNFS_URL=127.0.0.1:12049/export/pynfs sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-tls
-      - name: Linux with xprtsec=tls against rpc.tlsservd
-        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls
       - name: rpc.tlsservd -m
         if: always()
         run: |
@@ -177,22 +179,21 @@ jobs:
         continue-on-error: true
         run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" mutual 2>&1 | tee out/probe2-mutual.txt; exit ${PIPESTATUS[0]}
         shell: bash
-      - name: Linux with xprtsec=mtls against rpc.tlsservd -m
-        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" mtls
       - name: rpc.tlsservd again, anonymous clients allowed
         if: always()
         run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-krb5.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
       - name: The KDC and gssd
+        if: needs.build.outputs.gss == 'true'
         run: |
           tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
-      - name: Kerberos over TLS, and the channel bindings
-        run: sh ci/rpctls/cb-client.sh "$PWD/out" "$PWD/certs"
+      - name: The channel bindings
+        if: needs.build.outputs.gss == 'true'
+        run: sh ci/rpctls/cb-client.sh "$PWD/out" "$PWD/certs" quick
       - name: What rpc.tlsservd said
         if: always()
         run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log tlsservd-krb5.log; tail -20 gssd.log' | tee out/tlsservd.txt
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the kernel said
         if: always()
         run: |
@@ -200,14 +201,10 @@ jobs:
       - name: Summarise
         if: always()
         run: |
-          for n in pynfs pynfs-tls; do
-            python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
-          done
           grep -h -E '^(ok|FAIL)|failures|mount exit|io ok|krb5 over tls' out/probe*.txt out/linux-*.txt out/cb-client.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - name: The verdict
         run: |
-          if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt; then exit 1; fi
-          grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
+          if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt 2>/dev/null; then exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -35,6 +35,10 @@
  * 8446 s7), on linear buffers.
  */
 
+#ifdef _KERNEL
+#include <crypto/aes/aes.h>
+#endif
+
 #define	TLS13_AES_128_GCM_SHA256 0x1301	/* RFC 8446 App. B.4 */
 #define	TLS13_KEYLEN		16	/* AES-128 */
 #define	TLS13_IVLEN		12	/* RFC 8446 s5.3, iv_length */

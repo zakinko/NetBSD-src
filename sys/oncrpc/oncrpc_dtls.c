@@ -1154,11 +1154,13 @@ static int
 dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
     const uint8_t *ssecret, const uint8_t *rcid, size_t rcidlen,
     const uint8_t *tcid, size_t tcidlen, const uint8_t *exporter,
-    uint16_t hstx, uint16_t hsrx)
+    uint16_t hstx, uint16_t hsrx, uint64_t txseq, uint64_t rxseq)
 {
 	struct oncrpc_dtls *d = p->dp_dtls;
 
-	if (rcidlen > DTLS13_MAXCID || tcidlen > DTLS13_MAXCID)
+	/* s4.2.1: sequence numbers stop at 2^48. */
+	if (rcidlen > DTLS13_MAXCID || tcidlen > DTLS13_MAXCID ||
+	    txseq >= (1ULL << 48) || rxseq >= (1ULL << 48))
 		return EINVAL;
 #ifndef ONCRPC_DTLS_NOCID
 	/*
@@ -1184,6 +1186,19 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
 	memcpy(p->dp_exporter, exporter, sizeof(p->dp_exporter));
 	p->dp_hstx = hstx;
 	p->dp_hsrx = hsrx;
+	/*
+	 * The daemon may have used epoch 3 already, for the ACK of the
+	 * client's Finished that s7 makes a MUST: a sequence number used
+	 * again would repeat a GCM nonce.  What it read is taken as seen,
+	 * so the replay window refuses it again, s4.5.1.
+	 */
+	p->dp_tx.dd_seq = txseq;
+	if (rxseq != 0) {
+		p->dp_rx.dd_any = true;
+		p->dp_rx.dd_top = rxseq - 1;
+		p->dp_rx.dd_window = rxseq >= DTLS13_WINDOW ? ~0ULL :
+		    (1ULL << rxseq) - 1;
+	}
 	p->dp_rto = ONCRPC_DTLS_RTO0;
 	dtls_dgramq_free(&p->dp_hsq);
 	p->dp_hsqlen = 0;
@@ -1584,7 +1599,7 @@ oncrpc_dtls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
 			rv = dtls_establish(p, tp->tp_csecret, tp->tp_ssecret,
 			    tp->tp_rcid, tp->tp_rcidlen, tp->tp_tcid,
 			    tp->tp_tcidlen, tp->tp_exporter, tp->tp_hstxseq,
-			    tp->tp_hsrxseq);
+			    tp->tp_hsrxseq, tp->tp_txseq, tp->tp_rxseq);
 	} else if (error == 0)
 		rv = EINVAL;
 	if (error != 0 || rv != 0) {

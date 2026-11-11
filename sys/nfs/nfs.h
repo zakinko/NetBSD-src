@@ -250,6 +250,10 @@ struct nfsd_tlsarg {
 	 * next it expects, for the messages after the handshake */
 	uint16_t nt_hstxseq;
 	uint16_t nt_hsrxseq;
+	/* RFC 9147 s4: the records of epoch 3 the daemon sent (an ACK of the
+	 * client's Finished, s7) and read; the kernel goes on from there */
+	uint64_t nt_txseq;
+	uint64_t nt_rxseq;
 };
 
 /* nt_flags */

@@ -711,8 +711,10 @@ dtls_send(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *in,
 		m_freem(m);
 		return ENOBUFS;
 	}
-	return (*d->d_so->so_send)(d->d_so, (struct sockaddr *)&p->dp_addr,
+	error = (*d->d_so->so_send)(d->d_so, (struct sockaddr *)&p->dp_addr,
 	    NULL, m, NULL, 0, curlwp);
+	DTLS_DPRINTF("sent: %d\n", error);
+	return error;
 }
 
 /* (Re)transmit the pending message as a new record, s5.2.  dp_txlock. */

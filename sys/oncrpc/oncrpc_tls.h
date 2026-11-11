@@ -63,6 +63,9 @@ struct oncrpc_tls_params {
 	uint8_t		tp_tcidlen;
 	uint8_t		tp_rcid[ONCRPC_TLS_MAXCID];
 	uint8_t		tp_tcid[ONCRPC_TLS_MAXCID];
+	/* DTLS, RFC 9147 s5.2: the next message_seq of ours, of the peer's */
+	uint16_t	tp_hstxseq;
+	uint16_t	tp_hsrxseq;
 };
 #define	ONCRPC_TLS_PEERCERT	0x01
 

@@ -75,6 +75,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/callout.h>
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
@@ -121,6 +122,21 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	ONCRPC_DTLS_MAXQ	256	/* datagrams waiting for a worker */
 #define	ONCRPC_DTLS_MAXHSQ	16	/* per peer, for the handshake */
 #define	ONCRPC_DTLS_NHASH	64
+#define	ONCRPC_DTLS_MAXRETX	6	/* then the association is closed */
+#define	ONCRPC_DTLS_NACK	8	/* RecordNumbers in one ACK */
+#define	ONCRPC_DTLS_NPENDRN	8	/* transmissions of one message kept */
+
+/*
+ * RFC 9147 s5.8.2: "an initial timer value of 1000 ms and double the
+ * value at each retransmission, up to no less than 60 seconds".  The
+ * timer is looked at every ONCRPC_DTLS_TICK, ours.
+ */
+#define	ONCRPC_DTLS_RTO0	1000	/* ms */
+#define	ONCRPC_DTLS_RTOMAX	60000	/* ms */
+#define	ONCRPC_DTLS_TICK	(hz / 4)
+
+/* The largest post-handshake message of ours, a NewConnectionId of none. */
+#define	DTLS_PENDMAX		(DTLS13_HS_HDRLEN + 3)
 
 #define	DP_PROBED	1
 #define	DP_HANDSHAKE	2
@@ -172,8 +188,35 @@ struct oncrpc_dtlspeer {
 	/* One opener and one sealer at a time: */
 	kmutex_t		 dp_rxlock;
 	struct dtls13_dir	 dp_rx;
+	struct dtls13_dir	 dp_rxnext;	/* after the peer's KeyUpdate */
+	bool			 dp_rxnexton;
+	uint32_t		 dp_hsrx;	/* next message_seq expected */
 	kmutex_t		 dp_txlock;
 	struct dtls13_dir	 dp_tx;
+	uint16_t		 dp_hstx;	/* next message_seq of ours */
+	/* Our handshake message awaiting its ACK, RFC 9147 s7, s8: */
+	uint8_t			 dp_pend[DTLS_PENDMAX];
+	size_t			 dp_pendlen;	/* 0: none */
+	uint8_t			 dp_pendtype;
+	uint64_t		 dp_pendrn[ONCRPC_DTLS_NPENDRN][2];
+	u_int			 dp_npendrn;
+	u_int			 dp_rto;	/* ms */
+	u_int			 dp_tries;
+	int			 dp_due;	/* getticks() */
+	bool			 dp_txpend;	/* under d_lock: dp_pendlen */
+};
+
+/* What one datagram's records asked of the sending side. */
+struct dtls_ctl {
+	uint64_t		 c_ack[ONCRPC_DTLS_NACK][2];
+	u_int			 c_nack;
+	bool			 c_acked;	/* our pending message */
+	bool			 c_keyupdate;	/* the peer asked for ours */
+	bool			 c_reqcid;	/* RequestConnectionId came */
+	bool			 c_newcid;
+	uint8_t			 c_cid[DTLS13_MAXCID];
+	size_t			 c_cidlen;
+	int			 c_alert;	/* to send, fatal; or -1 */
 };
 
 struct oncrpc_dtls {
@@ -189,6 +232,9 @@ struct oncrpc_dtls {
 	struct workqueue	*d_wq;
 	struct work		 d_work;
 	bool			 d_workq;	/* d_work enqueued */
+	callout_t		 d_tick;	/* while d_npend */
+	u_int			 d_npend;	/* peers with dp_txpend */
+	bool			 d_dying;
 	SIMPLEQ_HEAD(, dtls_reap) d_reap;
 };
 
@@ -202,6 +248,7 @@ static void (*dtls_readyfn)(void);
 static volatile uint64_t dtls_nextid;
 
 static void dtls_work(struct work *, void *);
+static void dtls_tick(void *);
 static void dtls_reapall(struct oncrpc_dtls *);
 static void dtls_unpair(struct oncrpc_dtlspeer *);
 
@@ -305,6 +352,10 @@ dtls_peer_free(struct oncrpc_dtlspeer *p)
 	struct oncrpc_dtls *d = p->dp_dtls;
 
 	KASSERT(p->dp_refs == 0);
+	if (p->dp_txpend) {
+		KASSERT(mutex_owned(&d->d_lock));
+		d->d_npend--;
+	}
 	if (p->dp_kso != NULL) {
 		KASSERT(mutex_owned(&d->d_lock));
 		p->dp_reap->dr_so = p->dp_kso;
@@ -317,6 +368,7 @@ dtls_peer_free(struct oncrpc_dtlspeer *p)
 		kmem_free(p->dp_reap, sizeof(*p->dp_reap));
 	dtls_dgramq_free(&p->dp_hsq);
 	dtls13_dir_fini(&p->dp_rx);
+	dtls13_dir_fini(&p->dp_rxnext);
 	dtls13_dir_fini(&p->dp_tx);
 	explicit_memset(p->dp_exporter, 0, sizeof(p->dp_exporter));
 	mutex_destroy(&p->dp_rxlock);
@@ -419,6 +471,8 @@ oncrpc_dtls_create(struct socket *so, void (*wake)(void *), void *arg)
 
 	d = kmem_zalloc(sizeof(*d), KM_SLEEP);
 	d->d_so = so;
+	callout_init(&d->d_tick, CALLOUT_MPSAFE);
+	callout_setfunc(&d->d_tick, dtls_tick, d);
 	SIMPLEQ_INIT(&d->d_reap);
 	if (workqueue_create(&d->d_wq, "rpcdtls", dtls_work, d, PRI_NONE,
 	    IPL_NONE, WQ_MPSAFE) != 0)
@@ -446,6 +500,11 @@ oncrpc_dtls_destroy(struct oncrpc_dtls *d)
 
 	if (d == NULL)
 		return;
+	mutex_enter(&d->d_lock);
+	d->d_dying = true;
+	mutex_exit(&d->d_lock);
+	callout_halt(&d->d_tick, NULL);
+	callout_destroy(&d->d_tick);
 	/* The daemon's lists hold references too. */
 	mutex_enter(&dtls_glock);
 	for (i = 0; i < 2; i++) {
@@ -605,6 +664,266 @@ drop:
 }
 
 /*
+ * Send one record of type, under the current sending epoch, which s7
+ * makes a MUST for an ACK after the handshake.  With dp_txlock; *rnp is
+ * the record's RecordNumber when rnp is not NULL.
+ */
+static int
+dtls_send(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *in,
+    size_t len, uint64_t *rnp)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+	uint8_t buf[1 + DTLS13_MAXCID + 4 + 2 + 2 * ONCRPC_DTLS_NACK *
+	    DTLS13_RECNUMLEN + 1 + TLS13_TAGLEN];
+	size_t hmax = 1 + DTLS13_MAXCID + 2 + 2, reclen;
+	struct mbuf *m;
+	int error;
+
+	KASSERT(mutex_owned(&p->dp_txlock));
+	if (hmax + len + 1 + TLS13_TAGLEN > sizeof(buf))
+		return EMSGSIZE;
+	memcpy(buf + hmax, in, len);
+	if (rnp != NULL) {
+		rnp[0] = p->dp_tx.dd_epoch;
+		rnp[1] = p->dp_tx.dd_seq;
+	}
+	error = dtls13_seal(&p->dp_tx, type, p->dp_tcid, p->dp_tcidlen,
+	    buf + hmax, len, buf, &reclen);
+	explicit_memset(buf + hmax, 0, sizeof(buf) - hmax);
+	if (error != 0)
+		return error;
+	m = m_gethdr(M_WAIT, MT_DATA);
+	m->m_len = m->m_pkthdr.len = 0;
+	m_copyback(m, 0, reclen, buf);
+	if (m->m_pkthdr.len != (int)reclen) {
+		m_freem(m);
+		return ENOBUFS;
+	}
+	return (*d->d_so->so_send)(d->d_so, (struct sockaddr *)&p->dp_addr,
+	    NULL, m, NULL, 0, curlwp);
+}
+
+/* (Re)transmit the pending message as a new record, s5.2.  dp_txlock. */
+static void
+dtls_send_pend(struct oncrpc_dtlspeer *p)
+{
+	uint64_t rn[2];
+
+	KASSERT(mutex_owned(&p->dp_txlock));
+	if (dtls_send(p, TLS13_CT_HANDSHAKE, p->dp_pend, p->dp_pendlen,
+	    rn) != 0)
+		return;		/* the timer tries again */
+	if (p->dp_npendrn < ONCRPC_DTLS_NPENDRN) {
+		p->dp_pendrn[p->dp_npendrn][0] = rn[0];
+		p->dp_pendrn[p->dp_npendrn][1] = rn[1];
+		p->dp_npendrn++;
+	}
+	p->dp_due = getticks() + mstohz(p->dp_rto);
+}
+
+/* Queue a handshake message of ours, with dp_txlock and none pending. */
+static void
+dtls_pend(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *body,
+    size_t blen)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+
+	KASSERT(mutex_owned(&p->dp_txlock));
+	KASSERT(p->dp_pendlen == 0 && DTLS13_HS_HDRLEN + blen <= DTLS_PENDMAX);
+	p->dp_pendlen = dtls13_hs_build(p->dp_pend, type, p->dp_hstx++,
+	    body, blen);
+	p->dp_pendtype = type;
+	p->dp_npendrn = 0;
+	p->dp_tries = 0;
+	mutex_enter(&d->d_lock);
+	if (!p->dp_txpend) {
+		p->dp_txpend = true;
+		if (d->d_npend++ == 0 && !d->d_dying)
+			callout_schedule(&d->d_tick, ONCRPC_DTLS_TICK);
+	}
+	mutex_exit(&d->d_lock);
+	dtls_send_pend(p);
+}
+
+/* The pending message is acknowledged, or given up.  dp_txlock. */
+static void
+dtls_unpend(struct oncrpc_dtlspeer *p)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+
+	KASSERT(mutex_owned(&p->dp_txlock));
+	p->dp_pendlen = 0;
+	mutex_enter(&d->d_lock);
+	if (p->dp_txpend) {
+		p->dp_txpend = false;
+		d->d_npend--;
+	}
+	mutex_exit(&d->d_lock);
+}
+
+/*
+ * Do what the records of a datagram asked of the sending side: ACKs,
+ * s7; acting on the ACK of our KeyUpdate, s8, which only then changes
+ * our sending keys; our KeyUpdate when asked for, RFC 8446 s4.6.3; the
+ * connection ID messages, s9; and a fatal alert, which closes.
+ */
+static void
+dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
+{
+	uint8_t buf[2 + ONCRPC_DTLS_NACK * DTLS13_RECNUMLEN], b;
+	static const uint8_t nonecid[3] = { 0, 0, 1 };	/* cids<>, spare */
+	size_t n;
+
+	mutex_enter(&p->dp_txlock);
+	if (c->c_alert >= 0) {
+		buf[0] = ONCRPC_TLS_FATAL;
+		buf[1] = (uint8_t)c->c_alert;
+		(void)dtls_send(p, TLS13_CT_ALERT, buf, 2, NULL);
+		if (p->dp_pendlen != 0)
+			dtls_unpend(p);
+		mutex_exit(&p->dp_txlock);
+		mutex_enter(&d->d_lock);
+		if (p->dp_state == DP_ESTABLISHED)
+			dtls_close(p);
+		mutex_exit(&d->d_lock);
+		return;
+	}
+	if (c->c_acked && p->dp_pendlen != 0) {
+		/*
+		 * s8: the new sending keys only now; a retransmission
+		 * that succeeded at once also resets the timer, s5.8.2,
+		 * which keeps 1000 ms rather than measure the round trip.
+		 */
+		if (p->dp_pendtype == DTLS13_HS_KEY_UPDATE)
+			dtls13_dir_update(&p->dp_tx);
+		if (p->dp_tries == 0)
+			p->dp_rto = ONCRPC_DTLS_RTO0;
+		dtls_unpend(p);
+	}
+	if (c->c_newcid)
+		memcpy(p->dp_tcid, c->c_cid, p->dp_tcidlen = c->c_cidlen);
+	if (c->c_nack != 0) {
+		n = dtls13_ack_build(buf, sizeof(buf), &c->c_ack[0][0],
+		    c->c_nack);
+		(void)dtls_send(p, TLS13_CT_ACK, buf, n, NULL);
+	}
+	/*
+	 * Only one message of ours outstanding, s8 and s9: a request
+	 * finding one is dropped, and the peer, unanswered, asks again.
+	 * s8: "MUST NOT allow the epoch to exceed 2^48-1".
+	 */
+	if (c->c_keyupdate && p->dp_pendlen == 0 &&
+	    p->dp_tx.dd_epoch < (1ULL << 48) - 1) {
+		b = 0;		/* update_not_requested, RFC 8446 s4.6.3 */
+		dtls_pend(p, DTLS13_HS_KEY_UPDATE, &b, 1);
+	} else if (c->c_reqcid && p->dp_pendlen == 0) {
+		/* s9 MAY: "fewer than num_cids CIDs, including no CIDs" */
+		dtls_pend(p, DTLS13_HS_NEW_CID, nonecid, sizeof(nonecid));
+	}
+	mutex_exit(&p->dp_txlock);
+}
+
+/*
+ * The handshake messages of one record after the handshake, RFC 9147
+ * s5.2, opened under (epoch, seq).  With dp_rxlock.
+ */
+static void
+dtls_hs_input(struct oncrpc_dtlspeer *p, const uint8_t *q, size_t len,
+    uint64_t epoch, uint64_t seq, struct dtls_ctl *c)
+{
+	const uint8_t *body;
+	uint8_t type;
+	uint16_t mseq;
+	size_t blen, used, n;
+	bool cids = p->dp_rcidlen != 0 || p->dp_tcidlen != 0;
+	bool processed = false;
+	int error;
+
+	while (len > 0) {
+		error = dtls13_hs_parse(q, len, &type, &mseq, &body, &blen,
+		    &used);
+		if (error == EINPROGRESS)
+			break;	/* not processed: s7 MUST NOT ACK it */
+		if (error != 0) {
+			c->c_alert = ONCRPC_TLS_DECODE_ERROR;
+			return;
+		}
+		if (mseq < p->dp_hsrx) {
+			/* s7: a copy already received is ACKed too. */
+			processed = true;
+			q += used, len -= used;
+			continue;
+		}
+		switch (type) {
+		case DTLS13_HS_KEY_UPDATE:
+			/* RFC 8446 s4.6.3 */
+			if (blen != 1 || body[0] > 1) {
+				c->c_alert = blen != 1 ?
+				    ONCRPC_TLS_DECODE_ERROR :
+				    ONCRPC_TLS_ILLEGAL_PARAMETER;
+				return;
+			}
+			/*
+			 * s8 MUST: the old keys stay until a record opens
+			 * under the new.
+			 */
+			if (!p->dp_rxnexton) {
+				p->dp_rxnext = p->dp_rx;
+				dtls13_dir_update(&p->dp_rxnext);
+				p->dp_rxnexton = true;
+			}
+			if (body[0] == 1)
+				c->c_keyupdate = true;
+			break;
+		case DTLS13_HS_NEW_CID:
+		case DTLS13_HS_REQUEST_CID:
+			/* s9 MUST, without negotiated connection IDs */
+			if (!cids) {
+				c->c_alert = ONCRPC_TLS_UNEXPECTED_MESSAGE;
+				return;
+			}
+			if (type == DTLS13_HS_REQUEST_CID) {
+				if (blen != 1) {
+					c->c_alert = ONCRPC_TLS_DECODE_ERROR;
+					return;
+				}
+				c->c_reqcid = true;
+				break;
+			}
+			/* cids<0..2^16-1>, each ConnectionId<0..2^8-1> */
+			if (blen < 3 || (n = (size_t)body[0] << 8 | body[1]) !=
+			    blen - 3 || (n > 0 && (body[2] > n - 1))) {
+				c->c_alert = ONCRPC_TLS_DECODE_ERROR;
+				return;
+			}
+			/*
+			 * cid_immediate(0): the first is used from now on;
+			 * cid_spare(1) ones are discarded, as s9 allows.
+			 */
+			if (body[blen - 1] == 0 && n > 0 && body[2] != 0 &&
+			    body[2] <= DTLS13_MAXCID) {
+				c->c_newcid = true;
+				c->c_cidlen = body[2];
+				memcpy(c->c_cid, body + 3, body[2]);
+			}
+			break;
+		default:
+			/* RFC 8446 s4: no other after the handshake here */
+			c->c_alert = ONCRPC_TLS_UNEXPECTED_MESSAGE;
+			return;
+		}
+		p->dp_hsrx = mseq + 1;
+		processed = true;
+		q += used, len -= used;
+	}
+	if (processed && c->c_nack < ONCRPC_DTLS_NACK) {
+		c->c_ack[c->c_nack][0] = epoch;
+		c->c_ack[c->c_nack][1] = seq;
+		c->c_nack++;
+	}
+}
+
+/*
  * Open the records of one datagram, RFC 9147 s4.3, and queue the RPC
  * messages among them on d_msgs.  Each application data record is one
  * message, RFC 9289 s5.1.2.
@@ -614,12 +933,16 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 {
 	struct oncrpc_dtlspeer *p = dg->dg_peer;
 	struct dtls_dgram *out;
+	struct dtls_ctl c;
 	struct mbuf *m;
 	uint8_t *buf, *rec, *content, type;
 	size_t len, rest, used, clen;
-	bool closed = false;
+	uint64_t epoch;
+	bool closed = false, any = false;
 	int error;
 
+	memset(&c, 0, sizeof(c));
+	c.c_alert = -1;
 	len = dg->dg_m->m_pkthdr.len;
 	if (len == 0 || len > IP_MAXPACKET) {
 		m_freem(dg->dg_m);
@@ -630,7 +953,7 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 	m_freem(dg->dg_m);
 
 	mutex_enter(&p->dp_rxlock);
-	for (rec = buf, rest = len; rest > 0 && !closed;
+	for (rec = buf, rest = len; rest > 0 && !closed && c.c_alert < 0;
 	    rec += used, rest -= used) {
 		/*
 		 * s4.1 again for every record but the first, which the
@@ -639,14 +962,29 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 		 */
 		if (dtls13_demux(rec[0]) != DTLS13_CIPHERTEXT)
 			break;
+		epoch = p->dp_rx.dd_epoch;
 		error = dtls13_open(&p->dp_rx, p->dp_rcidlen, rec, rest,
 		    &used, &type, &content, &clen);
+		if (error == EAGAIN && p->dp_rxnexton) {
+			/* s8: the peer's new keys, used for the first time? */
+			epoch = p->dp_rxnext.dd_epoch;
+			error = dtls13_open(&p->dp_rxnext, p->dp_rcidlen, rec,
+			    rest, &used, &type, &content, &clen);
+			if (error == 0) {
+				dtls13_dir_fini(&p->dp_rx);
+				p->dp_rx = p->dp_rxnext;
+				explicit_memset(&p->dp_rxnext, 0,
+				    sizeof(p->dp_rxnext));
+				p->dp_rxnexton = false;
+			}
+		}
 		if (error != 0) {
 			/* s4.5.2 SHOULD: silently discarded. */
 			if (used == 0)
 				break;
 			continue;
 		}
+		any = true;
 		switch (type) {
 		case TLS13_CT_APPDATA:
 			if (clen == 0)
@@ -680,12 +1018,24 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 			    content[0] == ONCRPC_TLS_FATAL)
 				closed = true;
 			break;
+		case TLS13_CT_HANDSHAKE:
+			dtls_hs_input(p, content, clen, epoch,
+			    p->dp_rxnexton && epoch == p->dp_rxnext.dd_epoch ?
+			    p->dp_rxnext.dd_last : p->dp_rx.dd_last, &c);
+			break;
+		case TLS13_CT_ACK:
+			mutex_enter(&p->dp_txlock);
+			for (u_int i = 0; i < p->dp_npendrn; i++) {
+				if (dtls13_ack_has(content, clen,
+				    p->dp_pendrn[i][0],
+				    p->dp_pendrn[i][1]) == 1)
+					c.c_acked = true;
+			}
+			mutex_exit(&p->dp_txlock);
+			break;
 		default:
-			/*
-			 * Handshake (KeyUpdate, NewConnectionId) and ACK,
-			 * RFC 9147 s7-s9, have no handler yet: they are
-			 * dropped, and a peer's KeyUpdate goes unanswered.
-			 */
+			/* RFC 8446 s5: an unknown type */
+			c.c_alert = ONCRPC_TLS_UNEXPECTED_MESSAGE;
 			break;
 		}
 	}
@@ -698,7 +1048,8 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 		if (p->dp_state == DP_ESTABLISHED)
 			dtls_close(p);
 		mutex_exit(&d->d_lock);
-	}
+	} else if (any)
+		dtls_ctl(d, p, &c);
 out:
 	oncrpc_dtls_rele(p);
 	kmem_intr_free(dg, sizeof(*dg));
@@ -802,7 +1153,8 @@ oncrpc_dtls_probed(struct oncrpc_dtls *d, const struct sockaddr *sa)
 static int
 dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
     const uint8_t *ssecret, const uint8_t *rcid, size_t rcidlen,
-    const uint8_t *tcid, size_t tcidlen, const uint8_t *exporter)
+    const uint8_t *tcid, size_t tcidlen, const uint8_t *exporter,
+    uint16_t hstx, uint16_t hsrx)
 {
 	struct oncrpc_dtls *d = p->dp_dtls;
 
@@ -830,6 +1182,9 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
 	memcpy(p->dp_tcid, tcid, tcidlen);
 	p->dp_tcidlen = tcidlen;
 	memcpy(p->dp_exporter, exporter, sizeof(p->dp_exporter));
+	p->dp_hstx = hstx;
+	p->dp_hsrx = hsrx;
+	p->dp_rto = ONCRPC_DTLS_RTO0;
 	dtls_dgramq_free(&p->dp_hsq);
 	p->dp_hsqlen = 0;
 	dtls_unpair(p);
@@ -1022,6 +1377,44 @@ dtls_carry(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 	}
 }
 
+/* The retransmission timer: d_work looks at what is due. */
+static void
+dtls_tick(void *arg)
+{
+	struct oncrpc_dtls *d = arg;
+
+	mutex_enter(&d->d_lock);
+	dtls_kick(d);
+	if (d->d_npend != 0 && !d->d_dying)
+		callout_schedule(&d->d_tick, ONCRPC_DTLS_TICK);
+	mutex_exit(&d->d_lock);
+}
+
+/* A pending message whose time came: s5.8.2, or the end of the peer. */
+static void
+dtls_retransmit(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
+{
+	bool giveup = false;
+
+	mutex_enter(&p->dp_txlock);
+	if (p->dp_pendlen != 0 && getticks() - p->dp_due >= 0) {
+		if (++p->dp_tries > ONCRPC_DTLS_MAXRETX) {
+			dtls_unpend(p);
+			giveup = true;
+		} else {
+			p->dp_rto = MIN(p->dp_rto * 2, ONCRPC_DTLS_RTOMAX);
+			dtls_send_pend(p);
+		}
+	}
+	mutex_exit(&p->dp_txlock);
+	if (giveup) {
+		mutex_enter(&d->d_lock);
+		if (p->dp_state == DP_ESTABLISHED)
+			dtls_close(p);
+		mutex_exit(&d->d_lock);
+	}
+}
+
 static void
 dtls_work(struct work *wk, void *arg)
 {
@@ -1038,7 +1431,7 @@ dtls_work(struct work *wk, void *arg)
 	mutex_enter(&d->d_lock);
 	for (i = 0; i < ONCRPC_DTLS_NHASH; i++) {
 		LIST_FOREACH(p, &d->d_hash[i], dp_hash) {
-			if (n == nv || p->dp_kso == NULL)
+			if (n == nv || (p->dp_kso == NULL && !p->dp_txpend))
 				continue;
 			p->dp_refs++;
 			v[n++] = p;
@@ -1047,6 +1440,7 @@ dtls_work(struct work *wk, void *arg)
 	mutex_exit(&d->d_lock);
 	for (i = 0; i < n; i++) {
 		dtls_carry(d, v[i]);
+		dtls_retransmit(d, v[i]);
 		oncrpc_dtls_rele(v[i]);
 	}
 	if (v != NULL)
@@ -1189,7 +1583,8 @@ oncrpc_dtls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
 		else
 			rv = dtls_establish(p, tp->tp_csecret, tp->tp_ssecret,
 			    tp->tp_rcid, tp->tp_rcidlen, tp->tp_tcid,
-			    tp->tp_tcidlen, tp->tp_exporter);
+			    tp->tp_tcidlen, tp->tp_exporter, tp->tp_hstxseq,
+			    tp->tp_hsrxseq);
 	} else if (error == 0)
 		rv = EINVAL;
 	if (error != 0 || rv != 0) {

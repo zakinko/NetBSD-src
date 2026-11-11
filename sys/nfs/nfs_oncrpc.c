@@ -509,6 +509,8 @@ nfs_oncrpc_tls(int flag, void *argp)
 		tp.tp_tcidlen = MIN(nt.nt_tcidlen, sizeof(tp.tp_tcid));
 		memcpy(tp.tp_rcid, nt.nt_rcid, sizeof(tp.tp_rcid));
 		memcpy(tp.tp_tcid, nt.nt_tcid, sizeof(tp.tp_tcid));
+		tp.tp_hstxseq = nt.nt_hstxseq;
+		tp.tp_hsrxseq = nt.nt_hsrxseq;
 		cookie = nt.nt_cookie;
 		verdict = nt.nt_error;
 		explicit_memset(&nt, 0, sizeof(nt));

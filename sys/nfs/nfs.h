@@ -246,6 +246,10 @@ struct nfsd_tlsarg {
 	uint8_t	nt_tcidlen;		/* the peer's, on what we send */
 	uint8_t	nt_rcid[NFSD_TLS_MAXCID];
 	uint8_t	nt_tcid[NFSD_TLS_MAXCID];
+	/* RFC 9147 s5.2: the next message_seq the server sends, and the
+	 * next it expects, for the messages after the handshake */
+	uint16_t nt_hstxseq;
+	uint16_t nt_hsrxseq;
 };
 
 /* nt_flags */

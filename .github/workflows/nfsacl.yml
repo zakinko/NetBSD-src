@@ -27,6 +27,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 120
+      # azure.archive.ubuntu.com has failed to resolve for hours at a time.
+      - name: The main Ubuntu archive for apt
+        run: |
+          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || :
+          sudo apt-get update -q >/dev/null || :
       - uses: actions/cache/restore@v4
         with:
           path: nb/tools
@@ -83,6 +88,11 @@ jobs:
         with:
           name: out
           path: out
+      # azure.archive.ubuntu.com has failed to resolve for hours at a time.
+      - name: The main Ubuntu archive for apt
+        run: |
+          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || :
+          sudo apt-get update -q >/dev/null || :
       # For the OmniOS VM: it reaches the NetBSD one through the runner.
       - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - uses: vmactions/netbsd-vm@v1

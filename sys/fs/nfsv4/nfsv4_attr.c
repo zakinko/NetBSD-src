@@ -87,11 +87,17 @@ static const uint64_t attr_supported =
 
 /* Of those, the ones that version 4.0 has no number for. */
 static const uint64_t attr_v41 =
-    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS) | BIT(FATTR4_DACL);
+    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS) | BIT(FATTR4_DACL) |
+    BIT(FATTR4_FS_LAYOUT_TYPE) | BIT(FATTR4_LAYOUT_HINT);
+
+/* RFC 8881 s5.12, of pNFS, while it is on; layout_hint is W only. */
+static const uint64_t attr_pnfs =
+    BIT(FATTR4_FS_LAYOUT_TYPE) | BIT(FATTR4_LAYOUT_HINT);
 
 /* RFC 7530 s5.7, those with access W */
 static const uint64_t attr_setonly =
-    BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_MODIFY_SET);
+    BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_MODIFY_SET) |
+    BIT(FATTR4_LAYOUT_HINT);
 
 /* Where they are kept is optional, so they are not always supported. */
 static const uint64_t attr_stored =
@@ -139,9 +145,13 @@ static uint64_t
 attr_supported_by(struct vnode *vp)
 {
 
+	uint64_t m = attr_supported;
+
+	if (vp != NULL && nfsv4_pnfs_on())
+		m |= attr_pnfs;
 	if (nfsv4_acl_supported(vp))
-		return attr_supported;
-	return attr_supported & ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
+		return m;
+	return m & ~(BIT(FATTR4_ACL) | BIT(FATTR4_ACLSUPPORT));
 }
 
 /* The same with the ones that cost a VOP to find out about. */
@@ -224,13 +234,19 @@ const uint64_t nfsv4_attr_exclcreat =
 #define	W2_RETENTION	(W2_RETGET | W2_RETSET | W2_EVTGET | W2_EVTSET | \
 			    W2_HOLD)
 #define	W2_SETONLY	(W2_RETSET | W2_EVTSET)		/* s5.5 */
+/* s5.12, of pNFS while it is on, R */
+#define	W2_PNFS		((1U << (FATTR4_LAYOUT_TYPE - 64)) | \
+			    (1U << (FATTR4_LAYOUT_BLKSIZE - 64)) | \
+			    (1U << (FATTR4_LAYOUT_ALIGNMENT - 64)))
 
 static uint32_t
 attr_w2_supported(struct vnode *vp)
 {
+	uint32_t m = W2_ALL;
 
-	return vp != NULL && nfsv4_xstore_ok(vp) ? W2_ALL | W2_RETENTION :
-	    W2_ALL;
+	if (vp != NULL && nfsv4_pnfs_on())
+		m |= W2_PNFS;
+	return vp != NULL && nfsv4_xstore_ok(vp) ? m | W2_RETENTION : m;
 }
 
 /* Words past two that this minor version has nothing to say of. */
@@ -241,7 +257,7 @@ attr_more(const struct nfsv4_bitmap *bm, uint32_t minor)
 
 	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
 	if (minor != 0)
-		w2 &= ~(W2_ALL | W2_RETENTION);
+		w2 &= ~(W2_ALL | W2_RETENTION | W2_PNFS);
 	return bm->bm_more || w2 != 0;
 }
 
@@ -264,7 +280,9 @@ nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm, uint32_t minor)
 	if (minor != 0 && bm->bm_n > 2 &&
 	    (bm->bm_w[2] & (W2_SETONLY | W2_MODEMASK)) != 0)
 		return false;
-	return (attr_mask(bm) & attr_setonly) == 0;
+	/* layout_hint has no number in 4.0, and is not known there. */
+	return (attr_mask(bm) & attr_setonly &
+	    ~(minor == 0 ? attr_v41 : 0)) == 0;
 }
 
 /* RFC 8881 s6.2.5: mode_set_masked in CREATE or OPEN MUST be refused. */
@@ -780,6 +798,10 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
 			break;
+		case FATTR4_FS_LAYOUT_TYPE:		/* s5.12.1 */
+			ok = attr_u32(&x, 1) &&
+			    attr_u32(&x, LAYOUT4_NFSV4_1_FILES);
+			break;
 		case FATTR4_DACL:
 			ok = nfsv4_dacl_put(&x, acl, nfsv4_dacl_flags(vp));
 			break;
@@ -987,6 +1009,17 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		    (cf->cf_ref != NULL ? W2_LOCINFO :		/* s11.17 */
 		    cf->cf_attr == 0 && (want->bm_w[2] & W2_RETENTION) != 0 ?
 		    attr_w2_supported(vp) & ~W2_SETONLY : W2_ALL);
+	/* s5.12.5, s5.12.3, s5.12.2; 64 to 66 in order, before 67. */
+	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2 &&
+	    cf->cf_ref == NULL && cf->cf_attr == 0)
+		w2 |= want->bm_w[2] & attr_w2_supported(vp) & W2_PNFS;
+	if (ok && (w2 & (1U << (FATTR4_LAYOUT_TYPE - 64))) != 0)
+		ok = vp->v_type == VREG ? attr_u32(&x, 1) &&
+		    attr_u32(&x, LAYOUT4_NFSV4_1_FILES) : attr_u32(&x, 0);
+	if (ok && (w2 & (1U << (FATTR4_LAYOUT_BLKSIZE - 64))) != 0)
+		ok = attr_u32(&x, nfsv4_layout_blksize());
+	if (ok && (w2 & (1U << (FATTR4_LAYOUT_ALIGNMENT - 64))) != 0)
+		ok = attr_u32(&x, nfsv4_layout_blksize());
 	if ((w2 & W2_LOCINFO) != 0) {
 		ok = attr_fs_locations_info(&x, cf);
 		if (cf->cf_ref != NULL)
@@ -1195,7 +1228,8 @@ static const uint64_t attr_settable =
     BIT(FATTR4_SIZE) | BIT(FATTR4_ACL) | BIT(FATTR4_MODE) |
     BIT(FATTR4_OWNER) | BIT(FATTR4_OWNER_GROUP) |
     BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_CREATE) |
-    BIT(FATTR4_TIME_MODIFY_SET) | BIT(FATTR4_DACL) | attr_stored;
+    BIT(FATTR4_TIME_MODIFY_SET) | BIT(FATTR4_DACL) | attr_stored |
+    BIT(FATTR4_LAYOUT_HINT);
 
 /*
  * Read the fattr4 in the arguments into va, and the mask of what was
@@ -1231,7 +1265,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		return NFS4ERR_INVAL;
 	if (attr_more(&fa->fa_mask, c->c_minor) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota |
-	    BIT(FATTR4_DACL))) != 0)
+	    BIT(FATTR4_DACL) | (nfsv4_pnfs_on() ? attr_pnfs : 0))) != 0)
+		return NFS4ERR_ATTRNOTSUPP;
+	/* s5.12: none of them in 4.0. */
+	if (c->c_minor == 0 && (m & attr_pnfs) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	/*
 	 * RFC 8881 s6.2.2, of 4.1 and where nfsv4_dacl_supported(); and
@@ -1271,6 +1308,12 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		case FATTR4_ACL:
 			st = nfsv4_acl_parse(x, c->c_rq->rq_flavor,
 			    &c->c_setacl);
+			break;
+		case FATTR4_LAYOUT_HINT:
+			/* s5.12.4: layouthint4, s3.3.19; it may be ignored. */
+			if (!xdr_u_int32_t(x, &v) ||
+			    !xdr_u_int32_t(x, &id) || !nfsv4_xdr_skip(x, id))
+				st = NFS4ERR_BADXDR;
 			break;
 		case FATTR4_DACL:
 			st = nfsv4_dacl_parse(x, c->c_rq->rq_flavor,

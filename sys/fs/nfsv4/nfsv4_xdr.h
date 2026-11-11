@@ -394,6 +394,55 @@ struct nfsv4_args_u32 {			/* RECLAIM_COMPLETE, SECINFO_NO_NAME */
 	uint32_t	value;
 };
 
+/* RFC 8881 s18.40.1 to s18.44.1, of pNFS */
+struct nfsv4_args_getdeviceinfo {
+	uint8_t		devid[NFS4_DEVICEID4_SIZE];
+	uint32_t	type;
+	uint32_t	maxcount;
+	struct nfsv4_bitmap notify;
+};
+
+struct nfsv4_args_getdevicelist {
+	uint32_t	type;
+	uint32_t	maxdevices;
+	uint64_t	cookie;
+	struct nfsv4_verifier verf;
+};
+
+struct nfsv4_args_layoutcommit {
+	uint64_t	offset;
+	uint64_t	length;
+	uint32_t	reclaim;
+	struct nfsv4_stateid stateid;
+	uint32_t	newoffset;	/* no_newoffset */
+	uint64_t	lastoffset;
+	uint32_t	newtime;	/* nt_timechanged */
+	uint64_t	sec;
+	uint32_t	nsec;
+	uint32_t	type;		/* lou_type; the body is skipped */
+};
+
+struct nfsv4_args_layoutget {
+	uint32_t	signal;
+	uint32_t	type;
+	uint32_t	iomode;
+	uint64_t	offset;
+	uint64_t	length;
+	uint64_t	minlength;
+	struct nfsv4_stateid stateid;
+	uint32_t	maxcount;
+};
+
+struct nfsv4_args_layoutreturn {
+	uint32_t	reclaim;
+	uint32_t	type;
+	uint32_t	iomode;
+	uint32_t	rtype;		/* lr_returntype */
+	uint64_t	offset;		/* LAYOUTRETURN4_FILE only */
+	uint64_t	length;
+	struct nfsv4_stateid stateid;
+};
+
 struct nfsv4_args_get_dir_delegation {
 	uint32_t	signal;		/* gdda_signal_deleg_avail */
 };
@@ -407,6 +456,11 @@ struct nfsv4_args_want_delegation {
 union nfsv4_args {
 	struct nfsv4_args_want_delegation want_delegation;
 	struct nfsv4_args_get_dir_delegation get_dir_delegation;
+	struct nfsv4_args_getdeviceinfo	getdeviceinfo;
+	struct nfsv4_args_getdevicelist	getdevicelist;
+	struct nfsv4_args_layoutcommit	layoutcommit;
+	struct nfsv4_args_layoutget	layoutget;
+	struct nfsv4_args_layoutreturn	layoutreturn;
 	struct nfsv4_args_exchange_id	exchange_id;
 	struct nfsv4_args_create_session create_session;
 	struct nfsv4_args_backchannel_ctl backchannel_ctl;

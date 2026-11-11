@@ -112,12 +112,18 @@ struct cb_recall_args {
 	struct nfsv4_fh	ra_fh;
 };
 
-/* CB_NOTIFY_LOCK4args, RFC 8881 s20.11.1, and whom to. */
+/*
+ * CB_NOTIFY_LOCK4args, RFC 8881 s20.11.1, or with cn_op of
+ * CB_LAYOUTRECALL, the LAYOUTRECALL4_FILE of s20.3.1, and whom to.
+ */
 struct cb_notify {
 	TAILQ_ENTRY(cb_notify) cn_list;
 	const struct cb_target *cn_ct;
+	uint32_t	cn_op;
 	uint64_t	cn_clientid;
 	struct nfsv4_fh	cn_fh;
+	uint64_t	cn_other;	/* the layout, by st_other */
+	struct nfsv4_stateid cn_stateid;
 	uint32_t	cn_olen;
 	uint8_t		cn_owner[NFS4_OPAQUE_LIMIT];
 };
@@ -338,8 +344,20 @@ static bool
 cb_notify_encode(XDR *x, void *arg)
 {
 	struct cb_notify *cn = arg;
-	uint32_t op = NFSV4_OP_CB_NOTIFY_LOCK;
+	uint32_t op = cn->cn_op, zero = 0;
+	uint32_t type = LAYOUT4_NFSV4_1_FILES, any = LAYOUTIOMODE4_ANY;
+	uint32_t file = LAYOUT4_RET_REC_FILE;
+	uint64_t len = UINT64_MAX;
 
+	/* s20.3.1: all of the file, of any mode; not changed, s20.3.3. */
+	if (op == NFSV4_OP_CB_LAYOUTRECALL)
+		return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
+		    xdr_u_int32_t(x, &type) && xdr_u_int32_t(x, &any) &&
+		    xdr_u_int32_t(x, &zero) && xdr_u_int32_t(x, &file) &&
+		    nfsv4_xdr_fh(x, &cn->cn_fh) &&
+		    xdr_u_int64_t(x, &(uint64_t){ 0 }) &&
+		    xdr_u_int64_t(x, &len) &&
+		    nfsv4_xdr_stateid(x, &cn->cn_stateid);
 	return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
 	    nfsv4_xdr_fh(x, &cn->cn_fh) &&
 	    xdr_u_int64_t(x, &cn->cn_clientid) &&
@@ -609,7 +627,8 @@ cb_do_notify(struct cb_notify *cn)
 {
 	struct nfsv4_client *cl;
 	struct cb_target ct;
-	uint32_t status;
+	struct nfsv4_reap reap;
+	uint32_t status = NFS4_OK;
 	int error;
 
 	cl = nfsv4_client_byid(cn->cn_clientid);
@@ -622,6 +641,13 @@ cb_do_notify(struct cb_notify *cn)
 	mutex_enter(&nfsv4_state_lock);
 	cb_target_put(&ct, error);
 	cb_path(&ct, error == 0);
+	if (cn->cn_op == NFSV4_OP_CB_LAYOUTRECALL) {
+		SLIST_INIT(&reap);
+		nfsv4_layout_recalled(cn->cn_other, error, status, &reap);
+		mutex_exit(&nfsv4_state_lock);
+		nfsv4_reap_finish(&reap);
+		mutex_enter(&nfsv4_state_lock);
+	}
 }
 
 static void
@@ -758,6 +784,7 @@ nfsv4_cb_notify_lock(const struct nfsv4_lockwait *lw,
 	cn = kmem_zalloc(sizeof(*cn), KM_NOSLEEP);
 	if (cn == NULL)
 		return;
+	cn->cn_op = NFSV4_OP_CB_NOTIFY_LOCK;
 	cn->cn_clientid = lw->lw_clientid;
 	cn->cn_fh = *fh;
 	cn->cn_olen = lw->lw_olen;
@@ -765,6 +792,33 @@ nfsv4_cb_notify_lock(const struct nfsv4_lockwait *lw,
 	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
 	cb_nnotifies++;
 	cv_signal(&cb_cv);
+}
+
+/*
+ * RFC 8881 s20.3: recall the layout st, whose seqid has been moved on.
+ * Queued as the notifications are, but not dropped for their bound.
+ */
+bool
+nfsv4_cb_layoutrecall(struct nfsv4_state *st)
+{
+	struct cb_notify *cn;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (cb_dying)
+		return false;
+	cn = kmem_zalloc(sizeof(*cn), KM_NOSLEEP);
+	if (cn == NULL)
+		return false;
+	cn->cn_op = NFSV4_OP_CB_LAYOUTRECALL;
+	cn->cn_clientid = st->st_owner->sw_client->cl_id;
+	cn->cn_fh = st->st_file->f_fh;
+	cn->cn_other = st->st_other;
+	nfsv4_stateid_out(st, &cn->cn_stateid);
+	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
+	cb_nnotifies++;
+	cv_signal(&cb_cv);
+	return true;
 }
 
 void

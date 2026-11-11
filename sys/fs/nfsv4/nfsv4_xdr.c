@@ -425,6 +425,41 @@ xdr_args_test_stateid(XDR *x, struct nfsv4_args_test_stateid *a)
 	return nfsv4_xdr_skip(x, a->count * 16);
 }
 
+/* RFC 8881 s18.42.1; the layoutupdate4 body, s3.3.18, is skipped. */
+static bool
+xdr_args_layoutcommit(XDR *x, struct nfsv4_args_layoutcommit *a)
+{
+
+	if (!U64(x, &a->offset) || !U64(x, &a->length) ||
+	    !U32(x, &a->reclaim) || a->reclaim > 1 ||
+	    !nfsv4_xdr_stateid(x, &a->stateid) || !U32(x, &a->newoffset) ||
+	    a->newoffset > 1 || (a->newoffset && !U64(x, &a->lastoffset)) ||
+	    !U32(x, &a->newtime) || a->newtime > 1 ||
+	    (a->newtime && (!U64(x, &a->sec) || !U32(x, &a->nsec))))
+		return false;
+	return U32(x, &a->type) && xdr_skip_opaque(x);
+}
+
+/* RFC 8881 s18.44.1; the lrf_body, of the layout type, is skipped. */
+static bool
+xdr_args_layoutreturn(XDR *x, struct nfsv4_args_layoutreturn *a)
+{
+
+	if (!U32(x, &a->reclaim) || a->reclaim > 1 || !U32(x, &a->type) ||
+	    !U32(x, &a->iomode) || !U32(x, &a->rtype))
+		return false;
+	switch (a->rtype) {
+	case LAYOUT4_RET_REC_FILE:
+		return U64(x, &a->offset) && U64(x, &a->length) &&
+		    nfsv4_xdr_stateid(x, &a->stateid) && xdr_skip_opaque(x);
+	case LAYOUT4_RET_REC_FSID:
+	case LAYOUT4_RET_REC_ALL:
+		return true;
+	default:
+		return false;	/* no default arm */
+	}
+}
+
 static bool
 xdr_args_close(XDR *x, struct nfsv4_args_close *a)
 {
@@ -725,6 +760,30 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 		}
 	case NFSV4_OP_SET_SSV:
 		return xdr_skip_opaque(x) && xdr_skip_opaque(x);
+	case NFSV4_OP_GETDEVICEINFO:
+		return XDR_GETBYTES(x, (char *)a->getdeviceinfo.devid,
+		    NFS4_DEVICEID4_SIZE) && U32(x, &a->getdeviceinfo.type) &&
+		    U32(x, &a->getdeviceinfo.maxcount) &&
+		    nfsv4_xdr_bitmap(x, &a->getdeviceinfo.notify);
+	case NFSV4_OP_GETDEVICELIST:
+		return U32(x, &a->getdevicelist.type) &&
+		    U32(x, &a->getdevicelist.maxdevices) &&
+		    U64(x, &a->getdevicelist.cookie) &&
+		    nfsv4_xdr_verifier(x, &a->getdevicelist.verf);
+	case NFSV4_OP_LAYOUTCOMMIT:
+		return xdr_args_layoutcommit(x, &a->layoutcommit);
+	case NFSV4_OP_LAYOUTGET:
+		return U32(x, &a->layoutget.signal) &&
+		    a->layoutget.signal <= 1 &&
+		    U32(x, &a->layoutget.type) &&
+		    U32(x, &a->layoutget.iomode) &&
+		    U64(x, &a->layoutget.offset) &&
+		    U64(x, &a->layoutget.length) &&
+		    U64(x, &a->layoutget.minlength) &&
+		    nfsv4_xdr_stateid(x, &a->layoutget.stateid) &&
+		    U32(x, &a->layoutget.maxcount);
+	case NFSV4_OP_LAYOUTRETURN:
+		return xdr_args_layoutreturn(x, &a->layoutreturn);
 	case NFSV4_OP_TEST_STATEID:
 		return xdr_args_test_stateid(x, &a->test_stateid);
 	case NFSV4_OP_RECLAIM_COMPLETE:

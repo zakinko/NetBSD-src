@@ -544,11 +544,11 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_client *conf, *unconf, *n;
 	uid_t uid = nfsv4_client_principal(c);
 	/* s18.35.3: referrals and migration can both be seen here. */
-	uint32_t flags = EXCHGID4_FLAG_USE_NON_PNFS |
-	    EXCHGID4_FLAG_SUPP_MOVED_REFER | EXCHGID4_FLAG_SUPP_MOVED_MIGR;
-	uint32_t seq, st;
+	uint32_t flags = EXCHGID4_FLAG_SUPP_MOVED_REFER |
+	    EXCHGID4_FLAG_SUPP_MOVED_MIGR;
+	uint32_t seq, st, role;
 	uint64_t id;
-	bool same_verf, same_uid;
+	bool same_verf, same_uid, pnfs;
 
 	/* s18.35.3 */
 	if ((ea->flags & ~EXCHGID4_ARG_FLAGS) != 0)
@@ -559,6 +559,8 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	n = kmem_zalloc(sizeof(*n), KM_SLEEP);
 	mutex_enter(&nfsv4_state_lock);
+	/* s13.1: the roles, MDS and DS together while pNFS is on. */
+	role = nfsv4_pnfs_flags(ea->flags, &pnfs);
 	conf = nfsv4_client_find(ea->id, ea->idlen, true, 1);
 	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
 	same_verf = conf != NULL && memcmp(&conf->cl_verf, &ea->verifier,
@@ -589,7 +591,10 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 existing:
 		id = conf->cl_id;
 		seq = conf->cl_csseq + 1;
-		flags |= EXCHGID4_FLAG_CONFIRMED_R;
+		/* The record's roles stay what they were made with. */
+		flags |= EXCHGID4_FLAG_CONFIRMED_R | (conf->cl_pnfs ?
+		    EXCHGID4_FLAG_USE_PNFS_MDS | EXCHGID4_FLAG_USE_PNFS_DS :
+		    EXCHGID4_FLAG_USE_NON_PNFS);
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
 		return exchange_reply(c, id, seq, flags);
@@ -614,6 +619,8 @@ existing:
 	n->cl_verf = ea->verifier;
 	n->cl_uid = uid;
 	n->cl_pflavor = c->c_rq->rq_flavor;
+	n->cl_pnfs = pnfs;
+	flags |= role;
 	n->cl_idlen = ea->idlen;
 	memcpy(n->cl_idstr, ea->id, ea->idlen);
 	seq = 1;

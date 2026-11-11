@@ -162,6 +162,13 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	[NFSV4_OP_DESTROY_SESSION] =
 				  { nfsv4_op_destroy_session, NFSV4_OPF_NOSEQ },
 	[NFSV4_OP_FREE_STATEID]	= { nfsv4_op_free_stateid, 0 },
+	[NFSV4_OP_GETDEVICEINFO] = { nfsv4_op_getdeviceinfo, 0 },
+	[NFSV4_OP_GETDEVICELIST] = { nfsv4_op_getdevicelist, NFSV4_OPF_FH },
+	[NFSV4_OP_LAYOUTCOMMIT]	= { nfsv4_op_layoutcommit,
+				    NFSV4_OPF_FH | NFSV4_OPF_DRC },
+	[NFSV4_OP_LAYOUTGET]	= { nfsv4_op_layoutget,	NFSV4_OPF_FH },
+	/* LAYOUTRETURN4_ALL has no use for one, s18.44.3. */
+	[NFSV4_OP_LAYOUTRETURN]	= { nfsv4_op_layoutreturn, 0 },
 	[NFSV4_OP_GET_DIR_DELEGATION] =
 				  { nfsv4_op_get_dir_delegation, NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO_NO_NAME] =
@@ -258,6 +265,15 @@ stateid_args(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 		return stateid_current(c, &a->write.stateid, false);
 	case NFSV4_OP_SETATTR:
 		return stateid_current(c, &a->setattr.stateid, false);
+	/* s12.5.3: a layout stateid's seqid is never 0. */
+	case NFSV4_OP_LAYOUTGET:
+		return stateid_current(c, &a->layoutget.stateid, true);
+	case NFSV4_OP_LAYOUTCOMMIT:
+		return stateid_current(c, &a->layoutcommit.stateid, true);
+	case NFSV4_OP_LAYOUTRETURN:
+		if (a->layoutreturn.rtype != LAYOUT4_RET_REC_FILE)
+			return NFS4_OK;
+		return stateid_current(c, &a->layoutreturn.stateid, true);
 	case NFSV4_OP_DELEGRETURN:
 	case NFSV4_OP_FREE_STATEID:
 		return stateid_current(c, &a->stateid.stateid, false);
@@ -761,6 +777,28 @@ nfsv4_sysctl_referral(SYSCTLFN_ARGS)
 }
 
 static int
+nfsv4_sysctl_pnfs_ds(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_layout_setds);
+}
+
+/* Writing anything recalls every layout, RFC 8881 s12.5.5. */
+static int
+nfsv4_sysctl_layout_recall(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	int error, v = 0;
+
+	node.sysctl_data = &v;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error != 0 || newp == NULL)
+		return error;
+	nfsv4_layout_recall_all();
+	return 0;
+}
+
+static int
 nfsv4_sysctl_moved(SYSCTLFN_ARGS)
 {
 
@@ -902,6 +940,14 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_trace", SYSCTL_DESCR("Log GETATTR under write delegations"),
 	    NULL, 0, &nfsv4_cb_trace, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "pnfs_ds", SYSCTL_DESCR("netid and uaddr of the pNFS data server; empty for no pNFS"),
+	    nfsv4_sysctl_pnfs_ds, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layout_recall", SYSCTL_DESCR("Recall every layout"),
+	    nfsv4_sysctl_layout_recall, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_getattr", SYSCTL_DESCR("Fail the nth GETATTR as if a value could not be had"),

@@ -189,6 +189,12 @@ jobs:
           cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
+      - name: pNFS, the file layout, RFC 8881 s12 and s13
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfs '))
+        run: |
+          cp ci/nfsv4/pnfs.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 300 python3 ./pnfs.py /export/pynfs 2>&1 | tee "$OLDPWD/out/pnfs.txt" || true
       - name: Retention, RFC 8881 s5.13, where extended attributes are
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' retention '))
         run: |
@@ -310,6 +316,7 @@ jobs:
             out/aclcreate.txt
             out/cbgetattr.txt
             out/fault.txt
+            out/pnfs.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

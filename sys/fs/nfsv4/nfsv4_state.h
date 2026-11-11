@@ -121,6 +121,7 @@ struct nfsv4_client {
 	u_int		cl_refs;	/* COMPOUNDs; the lease scan waits */
 	bool		cl_retired;	/* being forgotten; no name finds it */
 	bool		cl_reclaimed;	/* RECLAIM_COMPLETE was done, s18.51 */
+	bool		cl_pnfs;	/* USE_PNFS_MDS and _DS, RFC 8881 s13.1 */
 	u_int		cl_nrevoked;	/* of st_revoked */
 	uint32_t	cl_csseq;	/* the CREATE_SESSION slot, s18.36.4 */
 	uint32_t	cl_csstatus;
@@ -156,6 +157,7 @@ struct nfsv4_client {
 #define	NFSV4_OWNER_OPEN	1
 #define	NFSV4_OWNER_LOCK	2
 #define	NFSV4_OWNER_DELEG	3	/* the client's delegations */
+#define	NFSV4_OWNER_LAYOUT	4	/* the client's layouts */
 
 /* An open-owner or lock-owner, RFC 7530 s9.1.1. */
 struct nfsv4_owner_s {
@@ -207,6 +209,7 @@ struct nfsv4_file {
 #define	NFSV4_ST_OPEN		1
 #define	NFSV4_ST_LOCK		2
 #define	NFSV4_ST_DELEG		3
+#define	NFSV4_ST_LAYOUT		4	/* RFC 8881 s12.5.3 */
 
 /* What of a file a lock state has locked, s9.5.  lr_end is past the last. */
 struct nfsv4_lrange {
@@ -255,6 +258,11 @@ struct nfsv4_state {
 	uint32_t	st_refseq;
 	time_t		st_recall_end;	/* when it is revoked */
 	time_t		st_cbnext;	/* when to call again, if not 0 */
+	/* layout, of nfsv4_layout.c: all of the file, in these modes */
+	uint32_t	st_liomode;	/* bits 1 << LAYOUTIOMODE4_* */
+	bool		st_lrecall;	/* CB_LAYOUTRECALL sent, s12.5.5.2 */
+	bool		st_lanswered;	/* and the client has answered it */
+	time_t		st_lrend;	/* when it is let go regardless */
 };
 
 SLIST_HEAD(nfsv4_reap, nfsv4_state);
@@ -318,6 +326,8 @@ struct nfsv4_client *
 	nfsv4_client_find(const uint8_t *, uint32_t, bool, uint32_t);
 struct nfsv4_client *
 	nfsv4_client_byid(uint64_t);
+struct nfsv4_client *
+	nfsv4_client_next(struct nfsv4_client *);
 struct nfsv4_client *
 	nfsv4_client_insert(struct nfsv4_client *);
 void	nfsv4_client_retire(struct nfsv4_client *);
@@ -393,8 +403,12 @@ void	nfsv4_deleg_carry(struct nfsv4_client *, struct nfsv4_client *,
 void	nfsv4_deleg_drop_prev(struct nfsv4_client *, struct nfsv4_reap *);
 void	nfsv4_deleg_scan(struct nfsv4_reap *);
 bool	nfsv4_deleg_path_down(struct nfsv4_client *);
+bool	nfsv4_cb_layoutrecall(struct nfsv4_state *);
+void	nfsv4_layout_recalled(uint64_t, int, uint32_t, struct nfsv4_reap *);
+void	nfsv4_layout_scan(struct nfsv4_reap *);
 
 /* These do not. */
+void	nfsv4_layout_recall_all(void);
 struct vnode *nfsv4_file_vp_byfh(const struct nfsv4_fh *);
 uint32_t nfsv4_seq_stateid(const struct nfsv4_compound *,
 	    const struct nfsv4_stateid *, uint32_t, uint32_t,

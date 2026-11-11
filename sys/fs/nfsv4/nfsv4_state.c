@@ -366,6 +366,17 @@ nfsv4_lease_moved(const struct nfsv4_client *cl)
 	return false;
 }
 
+/* The clients in turn, from NULL to NULL; the lock is not let go. */
+struct nfsv4_client *
+nfsv4_client_next(struct nfsv4_client *cl)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	return cl == NULL ? LIST_FIRST(&nfsv4_clients) :
+	    LIST_NEXT(cl, cl_list);
+}
+
 /* The client with this ID, confirmed, if it still exists. */
 struct nfsv4_client *
 nfsv4_client_byid(uint64_t id)
@@ -795,6 +806,7 @@ lease_thread(void *arg)
 		    NFSV4_LEASE_SCAN * hz);
 		SLIST_INIT(&reap);
 		nfsv4_deleg_scan(&reap);
+		nfsv4_layout_scan(&reap);
 		LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
 			if (cl->cl_prevend != 0 &&
 			    time_uptime >= cl->cl_prevend)

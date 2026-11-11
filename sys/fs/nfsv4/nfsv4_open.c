@@ -802,6 +802,11 @@ nfsv4_op_open(struct nfsv4_compound *c, union nfsv4_args *a)
 		    oa->want > OPEN4_SHARE_ACCESS_WANT_CANCEL)
 			return NFS4ERR_INVAL;
 		oa->share_access &= OPEN4_SHARE_ACCESS_MASK;
+		/* RFC 8881 s18.16.3: not under a metadata server's client ID. */
+		if (oa->opentype == OPEN4_CREATE &&
+		    oa->createmode == EXCLUSIVE4 && c->c_client != NULL &&
+		    c->c_client->cl_pnfs)
+			return NFS4ERR_INVAL;
 	}
 
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
@@ -1157,7 +1162,8 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 		if (status != NFS4_OK)
 			goto out;
 		open = st->st_type == NFSV4_ST_LOCK ? st->st_open : st;
-		if (open == NULL) {
+		/* RFC 8881 s13.9.1: never a layout stateid for I/O. */
+		if (open == NULL || st->st_type == NFSV4_ST_LAYOUT) {
 			status = NFS4ERR_BAD_STATEID;
 			goto out;
 		}

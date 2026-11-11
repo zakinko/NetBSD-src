@@ -463,6 +463,7 @@ xa_lookup(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 	struct vattr va, dirattr;
 	nfsrvfh_t nsfh, fh;
 	uint64_t size;
+	char *cp;
 	int kind = 0, dirattr_ret = 1;
 
 	fh.nsfh_size = 0;
@@ -661,7 +662,7 @@ xa_write(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		off = fxdr_unsigned(u_int32_t, *++tl);
 		tl += 2;
 	}
-	len = fxdr_signed(int32_t, *tl);
+	len = (int32_t)fxdr_unsigned(uint32_t, *tl);
 	if (len < 0 || len > NFS_MAXDATA)
 		error = EIO;
 	else if (len > NFS_XATTR_MAXSIZE)
@@ -735,6 +736,7 @@ xa_create(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 	struct xa_node xn;
 	struct vattr va, sa, dirfor, diraft;
 	nfsrvfh_t nsfh, fh;
+	char *cp;
 	int how = NFSV3CREATE_UNCHECKED, dirfor_ret = 1, diraft_ret = 1;
 	int32_t tsize;
 

@@ -691,7 +691,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 
 	sup = attr_supported_by(vp);
 	if ((attr_mask(want) & (BIT(FATTR4_SUPPORTED_ATTRS) | attr_stored |
-	    attr_quota)) != 0 && cf->cf_attr == 0)
+	    attr_quota | BIT(FATTR4_DACL))) != 0 && cf->cf_attr == 0)
 		sup = attr_supported_full(vp);
 	if (c->c_minor == 0)
 		sup &= ~attr_v41;

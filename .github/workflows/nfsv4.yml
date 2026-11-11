@@ -299,6 +299,7 @@ jobs:
             out/t41.txt
             out/t41b.txt
             out/retention.txt
+            out/dacl.txt
             out/t40rm.txt
             out/aclcreate.txt
             out/cbgetattr.txt

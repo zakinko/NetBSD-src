@@ -63,9 +63,11 @@ def vm(cmd):
         return 124, "timed out"
     return p.returncode, p.stdout.decode(errors="replace").strip()
 V = lambda n: "/%s/%s" % (b"/".join(export).decode(), (stamp + n).decode())
+# UF_IMMUTABLE, 0x2 in <sys/stat.h>, from the flags as a number: the
+# stat(1) of the VM says "%Sf: bad format" (run 43065146629).
 def uchg(n):
-    out = vm("stat -f %%Sf %s" % V(n))[1].splitlines()
-    return bool(out) and "uchg" in out[-1].split(",")
+    out = vm("stat -f %%f %s" % V(n))[1].splitlines()
+    return bool(out) and out[-1].isdigit() and (int(out[-1]) & 0x2) != 0
 # s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049;
 # -u for NFS on UDP, -U for the mount protocol.
 v3 = vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
@@ -118,9 +120,7 @@ def body():
     # Not asked for by s5.13; UF_IMMUTABLE refuses it in ufs_setattr().
     t("s5.13 SETATTR mode", setattr(fh, {FATTR4_MODE: 0o644}), NFS4ERR_PERM)
     # UF_IMMUTABLE, so local processes and NFSv3 are refused too.
-    # What uchg() reads, as it is: run 43062806284 still saw no uchg
-    # here with ssh quiet, while local writes were refused.
-    print("  raw:", repr(vm("stat -f %%Sf %s; ls -lo %s; id" % (V(b"a"), V(b"a")))))
+    print("  raw:", repr(vm("stat -f %%f %s; ls -lo %s" % (V(b"a"), V(b"a")))))
     t("uchg while retained", uchg(b"a"), True)
     t("local append refused", vm("echo x >> %s" % V(b"a"))[0] != 0, True)
     t("local rm refused", vm("rm -f %s" % V(b"a"))[0] != 0, True)

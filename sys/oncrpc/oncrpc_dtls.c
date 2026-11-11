@@ -239,11 +239,10 @@ struct oncrpc_dtls {
 };
 
 /* Peers for the daemon, and those it has, under dtls_glock. */
+LIST_HEAD(dtls_peerlist, oncrpc_dtlspeer);
 static kmutex_t dtls_glock;
-static LIST_HEAD(, oncrpc_dtlspeer) dtls_ready =
-    LIST_HEAD_INITIALIZER(dtls_ready);
-static LIST_HEAD(, oncrpc_dtlspeer) dtls_busy =
-    LIST_HEAD_INITIALIZER(dtls_busy);
+static struct dtls_peerlist dtls_ready = LIST_HEAD_INITIALIZER(dtls_ready);
+static struct dtls_peerlist dtls_busy = LIST_HEAD_INITIALIZER(dtls_busy);
 static void (*dtls_readyfn)(void);
 static volatile uint64_t dtls_nextid;
 

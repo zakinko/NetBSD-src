@@ -209,7 +209,9 @@ const uint64_t nfsv4_attr_exclcreat =
 #define	W2_LOCINFO	(1U << (FATTR4_FS_LOCATIONS_INFO - 64))
 #define	W2_EXCLCREAT	(1U << (FATTR4_SUPPATTR_EXCLCREAT - 64))
 #define	W2_CHARSET	(1U << (FATTR4_FS_CHARSET_CAP - 64))
-#define	W2_ALL		(W2_LOCINFO | W2_EXCLCREAT | W2_CHARSET)
+/* s6.2.5: W only, and of any file system, as mode is. */
+#define	W2_MODEMASK	(1U << (FATTR4_MODE_SET_MASKED - 64))
+#define	W2_ALL		(W2_LOCINFO | W2_EXCLCREAT | W2_CHARSET | W2_MODEMASK)
 /* s5.13; kept as attr_stored is, so supported only where those are. */
 #define	W2_RETGET	(1U << (FATTR4_RETENTION_GET - 64))
 #define	W2_RETSET	(1U << (FATTR4_RETENTION_SET - 64))
@@ -256,9 +258,44 @@ bool
 nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm, uint32_t minor)
 {
 
-	if (minor != 0 && bm->bm_n > 2 && (bm->bm_w[2] & W2_SETONLY) != 0)
+	if (minor != 0 && bm->bm_n > 2 &&
+	    (bm->bm_w[2] & (W2_SETONLY | W2_MODEMASK)) != 0)
 		return false;
 	return (attr_mask(bm) & attr_setonly) == 0;
+}
+
+/* RFC 8881 s6.2.5: mode_set_masked in CREATE or OPEN MUST be refused. */
+uint32_t
+nfsv4_attr_create_ok(const struct nfsv4_compound *c)
+{
+
+	return (c->c_xs.xs_set2 & W2_MODEMASK) != 0 ? NFS4ERR_INVAL : NFS4_OK;
+}
+
+/*
+ * RFC 8881 s6.2.5: put the masked bits of mode_set_masked over the mode
+ * vp has, into va, for SETATTR.  False if it was not asked for.  The
+ * mode is read here and set by the caller's VOP_SETATTR, not under one
+ * lock; a chmod between the two is lost, as one between a client's
+ * GETATTR and SETATTR of mode would be.
+ */
+bool
+nfsv4_attr_mode_masked(struct nfsv4_compound *c, struct vnode *vp,
+    struct vattr *va)
+{
+	struct vattr cur;
+	int error;
+
+	if ((c->c_xs.xs_set2 & W2_MODEMASK) == 0)
+		return false;
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_GETATTR(vp, &cur, c->c_cur.cf_cred);
+	VOP_UNLOCK(vp);
+	if (error != 0)
+		return false;
+	va->va_mode = (cur.va_mode & 07777U & ~c->c_xs.xs_mmask) |
+	    (c->c_xs.xs_mmode & c->c_xs.xs_mmask);
+	return true;
 }
 
 /* s8.3.1: VERIFY in an absent file system. */
@@ -1175,13 +1212,14 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	w2 = c->c_minor != 0 && fa->fa_mask.bm_n > 2 ? fa->fa_mask.bm_w[2] : 0;
 	/* RFC 8881 s5.5: it is known, and get-only. */
 	if (!attr_more(&fa->fa_mask, c->c_minor) &&
-	    (w2 & ~(W2_SETONLY | W2_HOLD)) != 0)
+	    (w2 & ~(W2_SETONLY | W2_HOLD | W2_MODEMASK)) != 0)
 		return NFS4ERR_INVAL;
 	if (attr_more(&fa->fa_mask, c->c_minor) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	/* Whether these can be set depends on the file system. */
-	if (((m & attr_stored) != 0 || w2 != 0) && (c->c_cur.cf_vp == NULL ||
+	if (((m & attr_stored) != 0 || (w2 & W2_RETENTION) != 0) &&
+	    (c->c_cur.cf_vp == NULL ||
 	    !nfsv4_xstore_ok(c->c_cur.cf_vp)))
 		return NFS4ERR_ATTRNOTSUPP;
 	if ((m & ~attr_settable) != 0)
@@ -1282,6 +1320,18 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	if (st == NFS4_OK && (w2 & W2_HOLD) != 0 &&
 	    !xdr_u_int64_t(x, &c->c_xs.xs_hold))
 		st = NFS4ERR_BADXDR;
+	/*
+	 * mode_set_masked, s6.2.5: bits mode does not have are INVAL in
+	 * either word (s6.2.2), and so is mode with it.
+	 */
+	if (st == NFS4_OK && (w2 & W2_MODEMASK) != 0) {
+		if (!xdr_u_int32_t(x, &c->c_xs.xs_mmode) ||
+		    !xdr_u_int32_t(x, &c->c_xs.xs_mmask))
+			st = NFS4ERR_BADXDR;
+		else if (((c->c_xs.xs_mmode | c->c_xs.xs_mmask) &
+		    ~07777U) != 0 || (m & BIT(FATTR4_MODE)) != 0)
+			st = NFS4ERR_INVAL;
+	}
 	if (st == NFS4_OK)
 		c->c_xs.xs_set2 = w2;
 	if (st == NFS4_OK && XDR_GETPOS(x) != fa->fa_pos + fa->fa_len)

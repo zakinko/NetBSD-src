@@ -100,6 +100,8 @@ struct nfsv4_xstore {
 		uint64_t	rs_duration;
 	}		xs_ret[2];	/* NFSV4_RET_* */
 	uint64_t	xs_hold;
+	/* mode_set_masked, RFC 8881 s6.2.5: the value, then the mask. */
+	uint32_t	xs_mmode, xs_mmask;
 };
 #define	NFSV4_RET		0	/* retention_set */
 #define	NFSV4_RETEVT		1	/* retentevt_set */
@@ -208,6 +210,9 @@ uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    struct nfsv4_bitmap *, u_int *);
 uint64_t nfsv4_attr_change(const struct vnode *, const struct vattr *);
 bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *, uint32_t);
+uint32_t nfsv4_attr_create_ok(const struct nfsv4_compound *);
+bool	nfsv4_attr_mode_masked(struct nfsv4_compound *, struct vnode *,
+	    struct vattr *);
 bool	nfsv4_attr_supported(const struct nfsv4_compound *,
 	    const struct nfsv4_bitmap *, struct vnode *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);

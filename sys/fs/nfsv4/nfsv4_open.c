@@ -154,6 +154,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 			return NFS4ERR_ROFS;	/* s7.3 */
 		if (oa->createmode != EXCLUSIVE4) {
 			st = nfsv4_attr_parse(c, &oa->createattrs, &sva, &set);
+			if (st == NFS4_OK)
+				st = nfsv4_attr_create_ok(c);
 			if (st != NFS4_OK)
 				return st;
 		}
@@ -538,6 +540,8 @@ open_attr(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	vattr_null(&sva);
 	if (create) {
 		st = nfsv4_attr_parse(c, &oa->createattrs, &sva, &set);
+		if (st == NFS4_OK)
+			st = nfsv4_attr_create_ok(c);
 		if (st != NFS4_OK)
 			return st;
 	}

@@ -125,6 +125,36 @@ if res.status == NFS4_OK:
 t("s6.2.4 VERIFY of a bad mode", s.compound(nofh(fh, op.verify({FATTR4_MODE: 0o110000}))).status,
   NFS4ERR_INVAL)
 
+# s6.2.5 mode_set_masked: only the masked bits change; W only; INVAL with
+# mode, with bits mode has not, and in CREATE or OPEN.
+fm, sm = mk(b"mm")
+close_file(s, fm, sm)
+def mode_of(fh):
+    res = s.compound(nofh(fh, op.getattr(nfs4lib.list2bitmap([FATTR4_MODE]))))
+    return res.resarray[-1].obj_attributes[FATTR4_MODE] if res.status == 0 else res.status
+MM = lambda v, m: {FATTR4_MODE_SET_MASKED: mode_masked4(v, m)}
+t("s6.2.5 set 0644", s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12),
+  {FATTR4_MODE: 0o644}))).status, NFS4_OK)
+res = s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12), MM(0o1070, 0o1050))))
+t("s6.2.5 SETATTR", res.status, NFS4_OK)
+t("s6.2.5 attrsset", res.status == 0 and nfs4lib.bitmap2list(res.resarray[-1].attrsset),
+  [[FATTR4_MODE_SET_MASKED]])
+t("s6.2.5 the masked bits alone", mode_of(fm), 0o1664)
+t("s6.2.5 with mode", s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12),
+  dict(MM(0, 0o7), **{FATTR4_MODE: 0o600})))).status, NFS4ERR_INVAL)
+t("s6.2.5 an undefined bit", s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12),
+  MM(0, 0o10000)))).status, NFS4ERR_INVAL)
+t("s6.2.5 GETATTR", s.compound(nofh(fm, op.getattr(nfs4lib.list2bitmap(
+  [FATTR4_MODE_SET_MASKED])))).status, NFS4ERR_INVAL)
+res = s.compound(nofh(dirfh, op.getattr(nfs4lib.list2bitmap([FATTR4_SUPPORTED_ATTRS]))))
+t("s6.2.5 supported", res.status == 0 and FATTR4_MODE_SET_MASKED in
+  nfs4lib.bitmap2list(res.resarray[-1].obj_attributes[FATTR4_SUPPORTED_ATTRS]), True)
+t("s6.2.5 CREATE", s.compound(nofh(dirfh, op.create(createtype4(NF4DIR),
+  stamp + b"mmd", MM(0o755, 0o777)))).status, NFS4ERR_INVAL)
+t("s6.2.5 OPEN", s.compound(nofh(dirfh, op.open(0, OPEN4_SHARE_ACCESS_READ, 0,
+  open_owner4(0, b"mm"), openflag4(OPEN4_CREATE, createhow4(UNCHECKED4,
+  MM(0o644, 0o777))), open_claim4(CLAIM_NULL, stamp + b"mmo")))).status, NFS4ERR_INVAL)
+
 # s18.16.3
 res = s.compound(nofh(fh, op.open(0, OPEN4_SHARE_ACCESS_READ, 0, open_owner4(0, b"p"),
     openflag4(OPEN4_NOCREATE), open_claim4(CLAIM_DELEG_PREV_FH))))

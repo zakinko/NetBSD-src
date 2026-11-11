@@ -115,6 +115,8 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		return st;
 	st = nfsv4_attr_parse(c, &ca->attrs, &sva, &set);
+	if (st == NFS4_OK)
+		st = nfsv4_attr_create_ok(c);
 	if (st != NFS4_OK)
 		return st;
 	if ((set & (1ULL << FATTR4_SIZE)) != 0)
@@ -548,6 +550,7 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct vattr va;
 	uint64_t set = 0;
 	uint32_t st, w2;
+	bool masked = false;
 	int error;
 
 	st = nfsv4_attr_parse(c, &sa->attrs, &va, &set);
@@ -577,8 +580,11 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break(vp, c->c_client, c->c_rq->rq_connid,
 		    NFSV4_DC_WRITE);
+	/* s6.4.1.3: mode_set_masked, as mode, before the ACL. */
+	if (st == NFS4_OK)
+		masked = nfsv4_attr_mode_masked(c, vp, &va);
 	if (st == NFS4_OK) {
-		if ((set & ~(1ULL << FATTR4_ACL)) != 0) {
+		if ((set & ~(1ULL << FATTR4_ACL)) != 0 || masked) {
 			vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 			error = VOP_SETATTR(vp, &va, cf->cf_cred);
 			VOP_UNLOCK(vp);
@@ -587,6 +593,9 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		if (st != NFS4_OK)
 			set = 0;
 		else {
+			if (masked)
+				c->c_xs.xs_did2 |=
+				    1U << (FATTR4_MODE_SET_MASKED - 64);
 			st = nfsv4_acl_set(c, vp, cf->cf_cred);
 			if (st != NFS4_OK)
 				set &= ~(1ULL << FATTR4_ACL);

@@ -70,15 +70,21 @@ jobs:
       - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
         if: steps.sel.outputs.nfsv4 == 'true'
+      - uses: actions/cache@v4
+        with:
+          path: tirpc
+          key: tirpc-${{ hashFiles('ci/rpctls/tirpc.sh') }}
+      - run: sh ci/rpctls/tirpc.sh "$PWD/tirpc"
+        timeout-minutes: 10
       - run: |
-          sudo apt-get install -y -q libtirpc-dev >/dev/null
           mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
-          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
+          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c "$PWD/tirpc/lib/libtirpc.a"
           ./t
           mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
-          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -ltirpc
+          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c "$PWD/tirpc/lib/libtirpc.a"
           ./t2
-          sudo apt-get install -y -q libssl-dev >/dev/null
+          # libssl-dev is in the runner image; no apt here.
+          test -f /usr/include/openssl/evp.h
           cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
           ./t3
           cc -g -fsanitize=address,undefined -Wall -Wno-deprecated-declarations -Isys/oncrpc -Itests/oncrpc/gss-shim -o t4 tests/oncrpc/t_tls13_crypto.c sys/oncrpc/tls13_crypto.c -lcrypto
@@ -167,7 +173,7 @@ jobs:
       - name: RPC over the kernel's record layer
         continue-on-error: true
         run: |
-          sudo apt-get install -y -q libssl-dev >/dev/null
+          test -f /usr/include/openssl/ssl.h  # in the runner image
           cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
           ./probe3 127.0.0.1 2049 "$PWD/certs" 2>&1 | tee out/probe3.txt; exit ${PIPESTATUS[0]}
         shell: bash

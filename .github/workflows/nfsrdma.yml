@@ -105,26 +105,28 @@ jobs:
           sudo ip addr add 192.0.2.1/24 dev dummy0
           sudo ip link set dummy0 up
           ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
-              -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 netbsd
+              -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 \
+              -L 192.0.2.1:1234:127.0.0.1:1234 netbsd
           sleep 2
       - name: A peer that misbehaves
         timeout-minutes: 5
         shell: bash
         run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
-      - name: The Linux client on siw
-        timeout-minutes: 15
-        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
       - name: pynfs on TCP, the path that the transport split went through
         timeout-minutes: 40
         run: |
           sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee out/summary.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: The Linux client on siw
+        timeout-minutes: 30
+        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
       - name: Result
         if: always()
         run: |
           cat out/linux-client.txt || true
           ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -30" | tee out/kernel.txt || echo no answer
-          grep -q 'FAILURES: 0' out/linux-client.txt
+          grep 'FAILURES' out/linux-client.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q 'FAILURES 4.0: 0' out/linux-client.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

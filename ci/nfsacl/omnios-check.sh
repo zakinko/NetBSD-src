@@ -17,5 +17,23 @@ for w in "$OUT"/acl.*.where; do
 	if cmp -s "$c" "$c.server"; then echo "same: ${c##*/acl.}"; else
 		echo "DIFFERENT: ${c##*/acl.}"; diff "$c" "$c.server"; fi
 done | tee -a "$L"
+# Named attributes: the list runat gives against the server's, and the
+# bytes of a: as the client wrote them, and as the server keeps them
+# (getextattr ends its print with a newline).
+for v in 3 2; do
+	c=$(sed -n "s/^xattr-ls v$v //p" "$L")
+	s=$(ssh -o LogLevel=ERROR netbsd "lsextattr -q user /export/pacl/x$v" |
+	    tr ' \t' '\n\n' | grep -v '^$' | sort | tr '\n' ' ')
+	if [ -n "$c" ] && [ "$c" = "$s" ]; then echo "same: xattr-ls v$v: $c"; else
+		echo "DIFFERENT: xattr-ls v$v: client '$c' server '$s'"; fi
+	c=$(sed -n "s/^xattr-cat v$v //p" "$L")
+	w=$(sed -n "s/^xattr-want v$v //p" "$L")
+	if [ -n "$c" ] && [ "$c" = "$w" ]; then echo "same: xattr-cat v$v"; else
+		echo "DIFFERENT: xattr-cat v$v: '$c' want '$w'"; fi
+	s=$(ssh -o LogLevel=ERROR netbsd "getextattr -q user a /export/pacl/x$v | cksum")
+	w=$(sed -n "s/^xattr-wantnl v$v //p" "$L")
+	if [ -n "$s" ] && [ "$s" = "$w" ]; then echo "same: xattr-server v$v"; else
+		echo "DIFFERENT: xattr-server v$v: '$s' want '$w'"; fi
+done | tee -a "$L"
 cat "$L"
 grep -q '^failures: 0$' "$L" && ! grep -q '^DIFFERENT' "$L"

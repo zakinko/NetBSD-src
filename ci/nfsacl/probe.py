@@ -4,6 +4,7 @@
 # (fs/nfsd/nfs3acl.c, fs/nfs_common/nfsacl.c).  Every reply is decoded
 # to its last byte, so that a word too many or too few is a failure.
 # probe.py HOST MOUNTPORT
+import hashlib
 import os
 import socket
 import struct
@@ -179,7 +180,7 @@ for v in (1, 4):
     check('version %d is PROG_MISMATCH 2..3' % v,
           st == PROG_MISMATCH and (lo, hi) == (2, 3) and r.done(),
           '(%s %s %s)' % (st, lo, hi))
-for v, p in ((3, 3), (3, 4), (3, 100), (2, 5), (2, 6)):
+for v, p in ((3, 4), (3, 100), (2, 6)):
     st, r = call(2049, PROG, v, p)
     check('v%d procedure %d is PROC_UNAVAIL' % (v, p),
           st == PROC_UNAVAIL and r.done(), '(%s)' % st)
@@ -423,5 +424,219 @@ if ssh('test -d /tank/x && echo y || :').strip() == 'y':
 else:
     print('(no /tank/x)')
 ssh('rm -rf /export/pacl/pf /export/pacl/pm /export/pacl/pd')
+
+
+# Named attributes: GETXATTRDIR, then NFS itself on the handles it
+# leads to (nfs_srvxattr.c), and handles made to be wrong.
+def nfs3(proc, args, cred=None):
+    st, r = call(2049, NFS, 3, proc, args, cred)
+    return st, r
+
+
+def wcc(r):
+    if r.u():
+        r.opaque(24)
+    post_op_attr(r)
+
+
+def ftype_mode(attr):
+    return struct.unpack('>2I', attr[:8])
+
+
+SATTR3_NONE = u32(0, 0, 0, 0, 0, 0)
+
+print('=== named attributes, version 3')
+ssh('cd /export/pacl && rm -f xf xe && touch xf xe && chmod 640 xf && '
+    'setextattr user a1 hello xf && lsextattr user xf')
+root = mnt('/export/pacl')
+xf, xe = lookup(root, 'xf'), lookup(root, 'xe')
+st, r = call(2049, PROG, 3, 3, opq(xe) + u32(0))
+s3 = r.u()
+check('GETXATTRDIR3 of a file with none: NOENT, status alone',
+      st == SUCCESS and s3 == 2 and r.done(), str((st, s3)))
+st, r = call(2049, PROG, 3, 3, opq(xf) + u32(0))
+s3 = r.u()
+dfh = r.opaque(r.u()) if s3 == OK else b''
+da = post_op_attr(r) if s3 == OK else None
+check('GETXATTRDIR3: the handle and a directory of 01777, to the end',
+      s3 == OK and r.done() and da is not None and
+      ftype_mode(da) == (2, 0o1777) and len(dfh) % 4 == 0 and
+      len(dfh) > len(xf), str((s3, len(dfh), da and ftype_mode(da))))
+st, r = call(2049, PROG, 3, 3, opq(xe) + u32(1))
+s3 = r.u()
+check('GETXATTRDIR3 with create of a file with none', s3 == OK, str(s3))
+
+st, r = nfs3(3, opq(dfh) + opq(b'a1'))
+s3 = r.u()
+afh = r.opaque(r.u()) if s3 == OK else b''
+check('LOOKUP3 of a1', s3 == OK, str(s3))
+st, r = nfs3(1, opq(afh))
+s3 = r.u()
+aa = r.opaque(84) if s3 == OK else None
+check('GETATTR3 of a1: a regular file of 5 bytes',
+      s3 == OK and r.done() and ftype_mode(aa)[0] == 1 and
+      struct.unpack('>Q', aa[20:28])[0] == 5, str(s3))
+st, r = nfs3(6, opq(afh) + u32(0, 0, 100))
+s3 = r.u()
+if s3 == OK:
+    post_op_attr(r)
+    cnt, eof, data = r.u(), r.u(), r.opaque(r.u())
+check('READ3 of a1', s3 == OK and r.done() and data == b'hello' and eof == 1,
+      str(s3))
+st, r = nfs3(16, opq(dfh) + u32(0, 0, 0, 0, 4096))
+s3 = r.u()
+names = []
+if s3 == OK:
+    post_op_attr(r)
+    r.opaque(8)
+    while r.u():
+        r.u(); r.u()
+        names.append(r.opaque(r.u()).decode())
+        r.u(); r.u()
+    eof = r.u()
+check('READDIR3: . .. a1', s3 == OK and r.done() and names == ['.', '..', 'a1'],
+      str((s3, names)))
+st, r = nfs3(8, opq(dfh) + opq(b'a2') + u32(1) + SATTR3_NONE)
+s3 = r.u()
+a2 = b''
+if s3 == OK and r.u():
+    a2 = r.opaque(r.u())
+check('CREATE3 GUARDED of a2 gives its handle', s3 == OK and a2, str(s3))
+st, r = nfs3(7, opq(a2) + u32(0, 0, 3, 2) + opq(b'xyz'))
+s3 = r.u()
+check('WRITE3 to a2', s3 == OK, str(s3))
+check('the server has a2', ssh('getextattr -q user a2 /export/pacl/xf').strip()
+      == 'xyz')
+st, r = nfs3(8, opq(dfh) + opq(b'a2') + u32(1) + SATTR3_NONE)
+s3 = r.u()
+check('CREATE3 GUARDED of a2 again: EXIST', s3 == 17, str(s3))
+st, r = nfs3(14, opq(dfh) + opq(b'a2') + opq(dfh) + opq(b'a3'))
+s3 = r.u()
+check('RENAME3 a2 to a3', s3 == OK and
+      sorted(ssh('lsextattr -q user /export/pacl/xf').split()) == ['a1', 'a3'],
+      str(s3))
+st, r = nfs3(12, opq(dfh) + opq(b'a3'))
+s3 = r.u()
+check('REMOVE3 of a3', s3 == OK and
+      ssh('lsextattr -q user /export/pacl/xf').split() == ['a1'], str(s3))
+
+print('=== named attributes: handles that are wrong')
+for proc, args, what in (
+        (9, opq(dfh) + opq(b'd') + SATTR3_NONE, 'MKDIR3 in it'),
+        (5, opq(afh), 'READLINK3 of an attribute'),
+        (15, opq(afh) + opq(root) + opq(b'l'), 'LINK3 of an attribute'),
+        (14, opq(dfh) + opq(b'a1') + opq(root) + opq(b'x'),
+         'RENAME3 out of it'),
+        (2, opq(afh) + u32(1, 0o777) + u32(0, 0, 0, 0, 0, 0),
+         'SETATTR3 of the mode')):
+    st, r = nfs3(proc, args)
+    s3 = r.u() if st == SUCCESS else None
+    check('%s is refused' % what, s3 not in (None, OK), str(s3))
+check('the file\'s mode is untouched',
+      ssh('stat -f %Lp /export/pacl/xf').strip() == '640')
+for proc, args, what in (
+        (15, opq(xe) + opq(dfh) + opq(b'l'), 'LINK3 into it'),
+        (14, opq(root) + opq(b'xe') + opq(dfh) + opq(b'x'), 'RENAME3 into it')):
+    st, r = nfs3(proc, args)
+    s3 = r.u() if st == SUCCESS else None
+    check('%s: STALE, not taken for the file' % what, s3 == STALE, str(s3))
+check('nothing was linked or renamed',
+      ssh('ls /export/pacl').split().count('xe') == 1 and
+      'l' not in ssh('ls /export/pacl').split())
+bad = afh[:-1] + bytes([afh[-1] ^ 1]) if afh[-1] != 0 else \
+    afh[:len(xf) + 1] + bytes([afh[len(xf) + 1] ^ 1]) + afh[len(xf) + 2:]
+st, r = nfs3(1, opq(bad))
+s3 = r.u() if st == SUCCESS else None
+check('a key changed: STALE', s3 == STALE, str(s3))
+for n, what in ((63, '63 bytes'), (64, '64 bytes')):
+    h = (dfh + b'\x07' * 64)[:n]
+    st, r = nfs3(1, opq(h))
+    s3 = r.u() if st == SUCCESS else None
+    check('a handle of %s past the mark: STALE' % what, s3 in (STALE, BADHANDLE),
+          str((st, s3)))
+st, r = nfs3(1, opq(dfh + b'\x07' * (65 - len(dfh))))
+check('65 bytes: GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+h = bytearray(dfh)
+h[len(xf)] = 3
+st, r = nfs3(1, opq(bytes(h)))
+s3 = r.u() if st == SUCCESS else None
+check('a mark of type 3: STALE', s3 == STALE, str(s3))
+g = getacl(afh, NA_ACL)
+check('GETACL3 of an attribute is not the file\'s', g['status'] != OK,
+      str(g['status']))
+ssh('rmextattr user a1 /export/pacl/xf')
+st, r = nfs3(1, opq(afh))
+s3 = r.u() if st == SUCCESS else None
+check('an attribute gone: STALE', s3 == STALE, str(s3))
+for e in ('/export/tmpfs',):
+    ssh('touch %s/xn' % e)
+    fh = lookup(mnt(e), 'xn')
+    st, r = call(2049, PROG, 3, 3, opq(fh) + u32(1))
+    s3 = r.u()
+    check('GETXATTRDIR3 where there are no extended attributes: NOTSUPP',
+          s3 == NOTSUPP and r.done(), str(s3))
+    ssh('rm -f %s/xn' % e)
+
+print('=== named attributes, version 2')
+ssh('setextattr user a1 hello /export/pacl/xf')
+root2 = mnt2('/export/pacl')
+xf2 = lookup2(root2, 'xf')
+r = v2(5, xf2 + u32(0))
+st = r.u()
+d2 = r.opaque(32) if st == OK else b''
+fa = r.opaque(68) if st == OK else None
+check('GETXATTRDIR2: the handle, all ones at the end, and a directory',
+      st == OK and r.done() and d2[28:] == b'\xff' * 4 and
+      ftype_mode(fa)[0] == 2, str(st))
+
+
+def nfs2(proc, args):
+    st, r = call(2049, NFS, 2, proc, args)
+    return r.u() if st == SUCCESS else None, r
+
+
+s2, r = nfs2(4, d2 + opq(b'a1'))
+a12 = r.opaque(32) if s2 == OK else b''
+check('LOOKUP2 of a1', s2 == OK, str(s2))
+s2, r = nfs2(6, a12 + u32(0, 100, 0))
+data = (r.opaque(68), r.opaque(r.u()))[1] if s2 == OK else None
+check('READ2 of a1', s2 == OK and r.done() and data == b'hello', str(s2))
+SATTR2 = u32(0o100644, 0xffffffff, 0xffffffff, 0, 0xffffffff, 0xffffffff,
+             0xffffffff, 0xffffffff)
+s2, r = nfs2(9, d2 + opq(b'b1') + SATTR2)
+b12 = r.opaque(32) if s2 == OK else b''
+check('CREATE2 of b1', s2 == OK, str(s2))
+s2, r = nfs2(8, b12 + u32(0, 0, 0) + opq(b'abc'))
+check('WRITE2 to b1', s2 == OK and
+      ssh('getextattr -q user b1 /export/pacl/xf').strip() == 'abc', str(s2))
+s2, r = nfs2(1, xf2[:28] + b'\xff' * 4)
+fa = r.opaque(68) if s2 == OK else None
+check('GETATTR2 of the four bytes all ones: the directory',
+      s2 == OK and ftype_mode(fa)[0] == 2, str(s2))
+
+
+def key4(name):
+    v, = struct.unpack('>I', hashlib.sha256(name.encode()).digest()[:4])
+    return 1 if v == 0 else 0xfffffffe if v == 0xffffffff else v
+
+
+seen, pair = {}, None
+for i in range(1 << 20):
+    n = 'c%d' % i
+    k = key4(n)
+    if k in seen:
+        pair = (seen[k], n)
+        break
+    seen[k] = n
+print('names of one 32-bit key: %s' % (pair,))
+ssh('setextattr user %s one /export/pacl/xf' % pair[0])
+s2, r = nfs2(9, d2 + opq(pair[1].encode()) + SATTR2)
+check('CREATE2 of a name whose key another has: EXIST', s2 == 17, str(s2))
+s2, r = nfs2(4, d2 + opq(pair[0].encode()))
+h0 = r.opaque(32) if s2 == OK else b''
+ssh('setextattr user %s two /export/pacl/xf' % pair[1])
+s2, r = nfs2(1, h0)
+check('two names of one key behind a handle: IO, not either', s2 == 5, str(s2))
+ssh('rm -f /export/pacl/xf /export/pacl/xe')
 print('failures: %d' % fails)
 sys.exit(1 if fails else 0)

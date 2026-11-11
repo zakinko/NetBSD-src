@@ -43,7 +43,17 @@ sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
 sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
 sudo -u alice sh -c 'echo alice-pw | kinit alice' && sudo -u alice klist
 fails=0
-sudo -u alice python3 "$HERE/cbprobe.py" $S "$CERTS/ca.pem" || fails=$((fails + 1))
+# The bindings need the 192-bit checksum of enctype 20 (RFC 5403 s9 as
+# taken here); a 96-bit one, enctype 18, is to be refused.
+for e in 20:aes256-cts-hmac-sha384-192:wide 18:aes256-cts-hmac-sha1-96:narrow; do
+	n=${e%%:*}; r=${e#*:}; name=${r%%:*}; mode=${r#*:}
+	c=/var/tmp/krb5-$n.conf
+	sed "s/^\[libdefaults\]/[libdefaults]\n\tpermitted_enctypes = $name\n\tdefault_tgs_enctypes = $name\n\tdefault_tkt_enctypes = $name/" /etc/krb5.conf >"$c"
+	chmod 644 "$c"
+	sudo -u alice env KRB5_CONFIG="$c" KRB5CCNAME=FILE:/var/tmp/cc-alice-$n sh -c 'echo alice-pw | kinit alice'
+	sudo -u alice env KRB5_CONFIG="$c" KRB5CCNAME=FILE:/var/tmp/cc-alice-$n \
+	    python3 "$HERE/cbprobe.py" $S "$CERTS/ca.pem" $mode || fails=$((fails + 1))
+done
 
 # The Linux client: RPCSEC_GSS version 1 inside TLS.
 sudo modprobe rpcsec_gss_krb5

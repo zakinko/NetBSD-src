@@ -7,6 +7,8 @@ import gssapi
 from OpenSSL import SSL
 
 HOST, CA = sys.argv[1:3]
+MODE = sys.argv[3] if len(sys.argv) > 3 else 'wide'
+TOOWEAK = 5
 PROG, VERS, GSS, AUTH_NONE, AUTH_TLS = 100003, 4, 6, 0, 7
 DATA, INIT, BIND = 0, 1, 4
 NONE, INTEG, PRIV, CHANNEL = 1, 2, 3, 4
@@ -134,6 +136,14 @@ COMPOUND = opaque(b'') + p32(0, 2, 24, 9, 1, 1 << 1)
 
 c1 = Conn()
 x = Ctx(c1)
+if MODE == 'narrow':
+    # RFC 5403 s9 SHOULD, a context whose checksum is narrower than the
+    # 192 bits of RFC 8009 s5: no binding.
+    r = x.bind(c1.exporter)
+    check('BIND_CHANNEL on a 96-bit-checksum context: AUTH_TOOWEAK (RFC 5403 s9)',
+          denied(r, TOOWEAK), r.__dict__.get('why'))
+    print('cbprobe failures', fails)
+    sys.exit(1 if fails else 0)
 r = x.bind(c1.exporter)
 st, _ = x.verify_bind(r, r.hash)
 check('BIND_CHANNEL over TLS, tls-exporter, SHA-256: RGSS2_BIND_CHAN_OK (s3.3)',

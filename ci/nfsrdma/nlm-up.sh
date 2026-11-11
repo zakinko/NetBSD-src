@@ -28,6 +28,12 @@ sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p tcp -m multiport \
     ! --dports 2049,1234,20049 -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p udp -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A POSTROUTING -o nb0 -j MASQUERADE
+# What the server starts, NLM_GRANTED above all, has to come from the
+# address the client knows the server by: the client's lockd takes a
+# grant only from the host of the blocked lock (rpc_cmp_addr() in
+# nlmclnt_grant(), fs/lockd/clntlock.c), and in run 43075641108 denied
+# one from 10.77.0.2, so the lock waited for the 30 s retry.
+sudo iptables -t nat -A INPUT -i nb0 -s 10.77.0.2 -j SNAT --to-source 192.0.2.1
 resolvectl query archive.ubuntu.com 2>&1 | head -2
 sudo systemctl start rpcbind rpc-statd
 # TCP across the link, seen at both ends, as ping alone went through in
@@ -39,19 +45,17 @@ timeout 8 bash -c 'exec 3<>/dev/tcp/10.77.0.2/111' && echo 'tcp 111 connects' ||
 sleep 14
 cat "$OUT/nb0.txt" "$OUT/tun0.txt"
 # Both ways, to tell the link from the redirection when one fails.
-# A TCP connection to 111 completes (run 43016625749) and rpcinfo still
-# gets nothing: watch what it sends, by TCP and by UDP.
+# rpcinfo asked by program goes to the address the server's rpcbind
+# gives for itself, and in run 43075641108 that was 192.168.122.10, the
+# VM's address behind qemu, which the runner cannot reach: rpcinfo hung
+# in connect().  Ask NLM at its address and port directly instead.
 sudo timeout 25 tcpdump -n -i nb0 -c 40 -v >"$OUT/nb0-rpc.txt" 2>&1 &
 sleep 2
-timeout -s KILL 10 rpcinfo -T tcp 10.77.0.2 100000 2 || echo 'rpcinfo -T tcp: no answer'
-# Run 43065072777: rpcbind answered within 2ms and rpcinfo closed the
-# connection, then waited on.  What it waits on, after the answer:
-sudo timeout -s KILL 10 strace -f -tt -e trace=network,poll,ppoll,select,connect,sendto,recvfrom,openat \
-    rpcinfo -T tcp 10.77.0.2 100000 2 2>&1 | tail -25
-timeout -s KILL 10 rpcinfo -T udp 10.77.0.2 100000 2 || echo 'rpcinfo -T udp: no answer'
-timeout -s KILL 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
+p=$(ssh netbsd rpcinfo -p | awk '$1 == 100021 && $2 == 4 && $3 == "tcp" { print $4 }')
+echo "NLM 4 by TCP on the server's port $p"
+timeout -s KILL 10 rpcinfo -n "$p" -t 10.77.0.2 100021 4 || echo 'NLM 4: no answer'
+timeout -s KILL 10 rpcinfo -n "$p" -t 192.0.2.1 100021 4 || echo 'NLM 4 by 192.0.2.1: no answer'
 sleep 3
 cat "$OUT/nb0-rpc.txt"
-timeout -s KILL 20 rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 192.0.2.1'
 sudo iptables -t nat -L -n -v
 ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\.111 "'

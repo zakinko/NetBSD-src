@@ -221,8 +221,12 @@ nfsv4_referral_allowed(uint32_t op, const union nfsv4_args *a)
 	case NFSV4_OP_RELEASE_LOCKOWNER:
 		return true;
 	case NFSV4_OP_GETATTR:
-		return a->getattr.mask.bm_n > 0 &&
-		    (a->getattr.mask.bm_w[0] & (1U << FATTR4_FS_LOCATIONS)) != 0;
+		/* RFC 8881 s11.17: fs_locations_info as well. */
+		return (a->getattr.mask.bm_n > 0 &&
+		    (a->getattr.mask.bm_w[0] & (1U << FATTR4_FS_LOCATIONS)) !=
+		    0) || (a->getattr.mask.bm_n > 2 &&
+		    (a->getattr.mask.bm_w[2] &
+		    (1U << (FATTR4_FS_LOCATIONS_INFO - 64))) != 0);
 	case NFSV4_OP_VERIFY:
 	case NFSV4_OP_NVERIFY:
 		return nfsv4_attr_absent_ok(&a->verify.attrs.fa_mask);

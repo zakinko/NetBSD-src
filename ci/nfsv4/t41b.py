@@ -319,6 +319,27 @@ if v3 == 0:
         t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=120), 0)
     subprocess.call(["ssh", "netbsd", "umount /mnt/v3"])
 
+# s11.17 fs_locations_info, here and at the referral in.vm.sh sets up
+gli = lambda ops: s.compound(ops + [op.getattr(nfs4lib.list2bitmap([FATTR4_FS_LOCATIONS_INFO]))])
+res = gli(nofh(dirfh))
+t("s11.17 GETATTR fs_locations_info", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    li = res.resarray[-1].obj_attributes[FATTR4_FS_LOCATIONS_INFO]
+    print("  ", li)
+    t("s11.17.2 one item here", len(li.fli_items), 1)
+    e = li.fli_items[0].fli_entries
+    t("s11.17.1 this replica: CUR_REQ, WRITABLE", [(x.fls_info[0], len(x.fls_info), x.fls_server) for x in e],
+      [[(FSLI4GF_CUR_REQ | FSLI4GF_WRITABLE, 12, b"")]])
+res = gli(use_obj([b"export", b"ref", b"there"]))
+t("s11.17 at a referral", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    li = res.resarray[-1].obj_attributes[FATTR4_FS_LOCATIONS_INFO]
+    print("  ", li)
+    t("s11.17.2 the referral's locations, no CUR_REQ",
+      [([x.fls_server for x in i.fli_entries], [x.fls_info[0] for x in i.fli_entries])
+       for i in li.fli_items],
+      [[([b"srv1", b"srv2"], [0, 0]), ([b"srv3"], [0])]])
+
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
 res = create_file(s3, stamp + b"exp", path=P(b"exp"))

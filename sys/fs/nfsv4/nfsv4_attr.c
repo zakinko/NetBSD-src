@@ -206,9 +206,10 @@ const uint64_t nfsv4_attr_exclcreat =
     BIT(FATTR4_OWNER_GROUP) | BIT(FATTR4_TIME_MODIFY_SET);
 
 /* The bits of the third word, all of version 4.1. */
+#define	W2_LOCINFO	(1U << (FATTR4_FS_LOCATIONS_INFO - 64))
 #define	W2_EXCLCREAT	(1U << (FATTR4_SUPPATTR_EXCLCREAT - 64))
 #define	W2_CHARSET	(1U << (FATTR4_FS_CHARSET_CAP - 64))
-#define	W2_ALL		(W2_EXCLCREAT | W2_CHARSET)
+#define	W2_ALL		(W2_LOCINFO | W2_EXCLCREAT | W2_CHARSET)
 
 /* Words past two that this minor version has nothing to say of. */
 static inline bool
@@ -394,6 +395,22 @@ attr_fs_location(XDR *x, const char *p, const char *end)
  * only fs_root says anything: the mount point, which is the path a client
  * reaches it by through the pseudo file system.
  */
+static const char *
+attr_fs_root(const struct nfsv4_cfh *cf, size_t *lenp)
+{
+	const char *p;
+
+	if (cf->cf_ref != NULL) {
+		p = cf->cf_ref->rf_path;
+		*lenp = strlen(p);
+	} else if (cf->cf_vp != NULL) {
+		p = cf->cf_vp->v_mount->mnt_stat.f_mntonname;
+		*lenp = strlen(p);
+	} else
+		p = nfsv4_cfh_path(cf, lenp);
+	return p;
+}
+
 static bool
 attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
 {
@@ -401,14 +418,7 @@ attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
 	size_t len;
 	uint32_t n;
 
-	if (cf->cf_ref != NULL) {
-		p = cf->cf_ref->rf_path;
-		len = strlen(p);
-	} else if (cf->cf_vp != NULL) {
-		p = cf->cf_vp->v_mount->mnt_stat.f_mntonname;
-		len = strlen(p);
-	} else
-		p = nfsv4_cfh_path(cf, &len);
+	p = attr_fs_root(cf, &len);
 	if (!attr_pathname(x, p, p + len))
 		return false;
 	if (cf->cf_ref == NULL) {
@@ -425,6 +435,95 @@ attr_fs_locations(XDR *x, const struct nfsv4_cfh *cf)
 		if (e == NULL)
 			e = end;
 		if (!attr_fs_location(x, p, e))
+			return false;
+		p = e < end ? e + 1 : e;
+	}
+	return true;
+}
+
+/*
+ * An fs_locations_server4, s11.17.1: the bytes of fls_info that s11.17.1
+ * defines and no others, as it SHOULD.  Class 0 matches nothing, so it
+ * is what a replica gets whose relation to this one is not known.
+ */
+static bool
+attr_fls(XDR *x, int32_t currency, uint8_t gflags, uint8_t class,
+    const char *srv, uint32_t srvlen)
+{
+	uint8_t info[FSLI4BX_WRITEORDER + 1];
+	uint32_t l = sizeof(info);
+
+	memset(info, 0, sizeof(info));
+	info[FSLI4BX_GFLAGS] = gflags;
+	memset(info + FSLI4BX_CLSIMUL, class,
+	    FSLI4BX_CLREADDIR - FSLI4BX_CLSIMUL + 1);
+	return xdr_int32_t(x, &currency) && xdr_u_int32_t(x, &l) &&
+	    xdr_opaque(x, info, l) && xdr_u_int32_t(x, &srvlen) &&
+	    xdr_opaque(x, __UNCONST(srv), srvlen);
+}
+
+/*
+ * fs_locations_info, RFC 8881 s11.17, from what fs_locations is made of.
+ * The file system here, present or migrated away (s11.17.2: ABSENT with
+ * CUR_REQ), is one item of one entry: currency 0, the server string empty
+ * for the address in use (s11.17.1 MAY), class 1 in every relation, as it
+ * is the same as itself.  Not for a referral, which has no such entry.
+ * The replicas named by vfs.nfsv4.referral or the moved table follow, one
+ * item for each location, of currency -1 (no useful value) and class 0:
+ * nothing is known of them.  fli_valid_for is 0, as no replica is ever
+ * GOING, and VAR_SUB is not used.
+ */
+static bool
+attr_fs_locations_info(XDR *x, const struct nfsv4_cfh *cf)
+{
+	const struct nfsv4_referral *rf = cf->cf_ref;
+	const char *p, *end, *e, *colon, *s, *se;
+	size_t len;
+	uint32_t n, m;
+	uint8_t g;
+
+	p = attr_fs_root(cf, &len);
+	n = (rf == NULL || rf->rf_moved) +
+	    (rf != NULL ? attr_count(rf->rf_locs,
+	    rf->rf_locs + strlen(rf->rf_locs), ';') : 0);
+	if (!attr_u32(x, 0) || !attr_u32(x, 0) ||	/* fli_flags, valid_for */
+	    !attr_pathname(x, p, p + len) || !xdr_u_int32_t(x, &n))
+		return false;
+	if (rf == NULL || rf->rf_moved) {
+		g = FSLI4GF_CUR_REQ;
+		if (rf != NULL)
+			g |= FSLI4GF_ABSENT;
+		else if ((cf->cf_exflags & MNT_EXRDONLY) == 0 &&
+		    (cf->cf_vp == NULL ||
+		    (cf->cf_vp->v_mount->mnt_flag & MNT_RDONLY) == 0))
+			g |= FSLI4GF_WRITABLE;
+		m = 1;
+		if (!xdr_u_int32_t(x, &m) || !attr_fls(x, 0, g, 1, "", 0) ||
+		    !attr_pathname(x, p, p + len))
+			return false;
+	}
+	if (rf == NULL)
+		return true;
+	p = rf->rf_locs;
+	end = p + strlen(p);
+	while (p < end) {
+		e = memchr(p, ';', end - p);
+		if (e == NULL)
+			e = end;
+		colon = memchr(p, ':', e - p);
+		if (colon == NULL)
+			return false;
+		m = attr_count(p, colon, ',');
+		if (!xdr_u_int32_t(x, &m))
+			return false;
+		for (s = p; s < colon; s = se < colon ? se + 1 : se) {
+			se = memchr(s, ',', colon - s);
+			if (se == NULL)
+				se = colon;
+			if (!attr_fls(x, -1, 0, 0, s, (uint32_t)(se - s)))
+				return false;
+		}
+		if (!attr_pathname(x, colon + 1, e))
 			return false;
 		p = e < end ? e + 1 : e;
 	}
@@ -809,10 +908,15 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 
 	/* The third word comes after all the others, s5.8.1.14. */
 	w2 = 0;
-	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2 &&
-	    cf->cf_ref == NULL)
-		w2 = want->bm_w[2] & W2_ALL;
-	if ((w2 & W2_EXCLCREAT) != 0) {
+	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2)
+		w2 = want->bm_w[2] &
+		    (cf->cf_ref == NULL ? W2_ALL : W2_LOCINFO);	/* s11.17 */
+	if ((w2 & W2_LOCINFO) != 0) {
+		ok = attr_fs_locations_info(&x, cf);
+		if (cf->cf_ref != NULL)
+			c->c_probed = true;	/* as for fs_locations */
+	}
+	if (ok && (w2 & W2_EXCLCREAT) != 0) {
 		sup = nfsv4_attr_exclcreat & attr_supported_by(vp);
 		ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
 		    attr_u32(&x, W1(sup));

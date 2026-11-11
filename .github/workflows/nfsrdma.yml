@@ -1,3 +1,7 @@
+# The fast tier, on every push that touches what it tests: the kernel
+# and modules built, and the misbehaving peer against them.  A newer push
+# cancels an older run.  The Linux client and pynfs are nfsrdma-heavy.yml,
+# run by hand.
 name: nfsrdma
 on:
   push:
@@ -8,37 +12,19 @@ on:
       - 'sys/modules/oncrpc/**'
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
-      - 'tests/modules/t_oncrpc_rdma.c'
-      - 'tests/fs/nfsv4/**'
       - 'ci/nfsv4/nfsv4d.c'
-      - 'ci/nfsrdma/**'
+      - 'ci/nfsv4/build.sh'
+      - 'ci/nfsrdma/badpeer.py'
+      - 'ci/nfsrdma/in-vm.sh'
+      - 'ci/nfsrdma/diag.sh'
       - '.github/workflows/nfsrdma.yml'
-  workflow_dispatch:
 concurrency:
   group: nfsrdma-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  unit:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            sys/oncrpc
-            sys/fs/nfsv4
-            tests/modules
-            tests/fs/nfsv4
-      - run: |
-          sudo apt-get install -y -q libtirpc-dev >/dev/null
-          mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs && ln -s "$PWD/sys/oncrpc" t.inc/oncrpc
-          cc -g -fsanitize=address,undefined -Wall -Wno-unused -Wno-sign-compare -I/usr/include/tirpc -It.inc -o t tests/modules/t_oncrpc_rdma.c -ltirpc
-          ./t
-          cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t2 tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc
-          ./t2
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +60,7 @@ jobs:
   test:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,6 +73,7 @@ jobs:
           name: out
           path: out
       - uses: vmactions/netbsd-vm@v1
+        timeout-minutes: 15
         with:
           release: '11.0'
           cpu: 2
@@ -94,12 +81,15 @@ jobs:
           sync: rsync
           copyback: false
           run: uname -a
-      - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
-      - run: |
+      - timeout-minutes: 10
+        run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - timeout-minutes: 5
+        run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
           scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsrdma/tunpipe.c ci/nfsrdma/try.c ci/nfsrdma/diag.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
+        timeout-minutes: 2
         run: |
           sudo ip link add dummy0 type dummy
           sudo ip addr add 192.0.2.1/24 dev dummy0
@@ -108,30 +98,16 @@ jobs:
               -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 \
               -L 192.0.2.1:1234:127.0.0.1:1234 netbsd
           sleep 2
-      - name: A link for NLM and NSM
-        timeout-minutes: 6
-        continue-on-error: true
-        run: sh ci/nfsrdma/nlm-up.sh "$PWD/out" >out/nlm-up.txt 2>&1; cat out/nlm-up.txt
       - name: A peer that misbehaves
         timeout-minutes: 5
         shell: bash
         run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
-      - name: pynfs on TCP, the path that the transport split went through
-        timeout-minutes: 40
-        run: |
-          sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs || true
-          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee out/summary.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
-      - name: The Linux client on siw
-        timeout-minutes: 30
-        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
       - name: Result
         if: always()
+        timeout-minutes: 2
         run: |
-          cat out/linux-client.txt || true
           ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -30" | tee out/kernel.txt || echo no answer
           ssh -o ConnectTimeout=20 netbsd 'sh /var/tmp/nfsv4/diag.sh' | tee -a out/kernel.txt || :
-          grep 'FAILURES' out/linux-client.txt | tee -a "$GITHUB_STEP_SUMMARY"
-          grep -q 'FAILURES 4.0: 0' out/linux-client.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

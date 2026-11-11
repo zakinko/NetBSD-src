@@ -28,7 +28,11 @@ jobs:
           key: nfsbridge-tools-${{ hashFiles('ci/nfsv4/base') }}
       - name: The option off leaves sys/nfs as it was
         run: |
-          sudo apt-get install -y -q unifdef >/dev/null
+          # unifdef from this tree, not apt: the archive did not resolve
+          # from the runner in run 43042524113, and its index had gone
+          # stale in 43033388367.
+          mkdir -p "$HOME/bin" && cc -O -w -D__dead= -D"__printflike(a,b)=" -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
+          export PATH=$HOME/bin:$PATH
           sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsbridge/base)"
       - run: sh ci/nfsbridge/build.sh "$PWD/nb" "$PWD/out"
       - name: Every commit on its own
@@ -107,7 +111,9 @@ jobs:
   atf:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 170
+    # The userland alone took two hours on a cache miss (run 43088026832),
+    # and the job was cancelled 33 minutes into the tests.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
@@ -119,7 +125,7 @@ jobs:
         id: dest
         with:
           path: out-dest
-          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh') }}
+          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh', 'tests/fs/nfs/**', 'tests/lib/librumphijack/**') }}
       - if: steps.dest.outputs.cache-hit != 'true'
         run: |
           sh ci/nfsbridge/atf-build.sh "$PWD/nb" "$PWD/out-dest"
@@ -128,7 +134,7 @@ jobs:
         if: steps.dest.outputs.cache-hit != 'true'
         with:
           path: out-dest
-          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh') }}
+          key: nfsbridge-dest-${{ hashFiles('sys/nfs/**', 'sys/oncrpc/**', 'sys/rump/fs/lib/libnfsserver/**', 'sys/rump/librump/rumpkern/lwproc.c', 'ci/nfsbridge/atf-build.sh', 'tests/fs/nfs/**', 'tests/lib/librumphijack/**') }}
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'

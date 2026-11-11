@@ -205,6 +205,9 @@ jobs:
           ssh netbsd "sysctl -w 'vfs.nfsv4.ff_ds=tcp 127.0.0.1.8.2 /export/ffds'"
           SUITE=nfs4.1 LIMIT=300 PYNFS_ARGS="--minorversion=1 flex" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-flex || true
           ssh netbsd "sysctl -w vfs.nfsv4.ff_ds=; ls -l /export/ffds"
+      - name: Whether the block layout, RFC 5663, can be measured (iSCSI)
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' iscsi '))
+        run: timeout 400 sh ci/nfsv4/iscsi-probe.sh 2>&1 | tee out/iscsi-probe.txt || true
       - name: Retention, RFC 8881 s5.13, where extended attributes are
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' retention '))
         run: |
@@ -328,6 +331,7 @@ jobs:
             out/fault.txt
             out/pnfs.txt
             out/pnfs-ff.txt
+            out/iscsi-probe.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

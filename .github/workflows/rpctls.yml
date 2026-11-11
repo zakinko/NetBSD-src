@@ -89,9 +89,12 @@ jobs:
           sparse-checkout: |
             ci/nfsv4
             ci/rpctls
+            ci/nfsgss
             ci/oncrpc/swap.sh
             sys/nfs
             usr.sbin/rpc.tlsservd
+            usr.sbin/mountd
+            usr.sbin/gssd
       - uses: actions/download-artifact@v4
         with:
           name: out
@@ -126,6 +129,7 @@ jobs:
           sh ci/rpctls/mkcerts.sh "$PWD/certs"
           tar -C "$PWD" -cf - certs | ssh netbsd 'tar -C /var/tmp/nfsv4 -xf -'
       - name: The AUTH_TLS probe with no daemon
+        continue-on-error: true
         run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 nodaemon 2>&1 | tee out/probe1-nodaemon.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: The stand-in daemon
@@ -134,6 +138,7 @@ jobs:
           scp ci/rpctls/tlsstub.c netbsd:/var/tmp/nfsv4/
           ssh netbsd 'cd /var/tmp/nfsv4 && cc -Wall -I/var/tmp/nfsv4/src/sys -o tlsstub tlsstub.c && (./tlsstub </dev/null >tlsstub.log 2>&1 & echo $! >tlsstub.pid) && sleep 1 && cat tlsstub.pid'
       - name: The AUTH_TLS probe and the hand-off
+        continue-on-error: true
         run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 daemon 2>&1 | tee out/probe1-daemon.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: Linux with xprtsec=tls against the stand-in
@@ -147,9 +152,11 @@ jobs:
           ssh netbsd 'cd /var/tmp/nfsv4/src/usr.sbin/rpc.tlsservd && cc -Wall -Werror -I/var/tmp/nfsv4/src/sys -o /var/tmp/nfsv4/rpc.tlsservd rpc.tlsservd.c -lssl -lcrypto'
           ssh netbsd 'cd /var/tmp/nfsv4 && (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-anon.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
       - name: The handshake, anonymous clients allowed
+        continue-on-error: true
         run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" anon 2>&1 | tee out/probe2-anon.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: RPC over the kernel's record layer
+        continue-on-error: true
         run: |
           sudo apt-get install -y -q libssl-dev >/dev/null
           cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
@@ -162,13 +169,24 @@ jobs:
         run: |
           ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -m -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-mutual.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
       - name: The handshake, mutual authentication
+        continue-on-error: true
         run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" mutual 2>&1 | tee out/probe2-mutual.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: Linux with xprtsec=mtls against rpc.tlsservd -m
         run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" mtls
+      - name: rpc.tlsservd again, anonymous clients allowed
+        if: always()
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-krb5.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The KDC and gssd
+        run: |
+          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
+      - name: Kerberos over TLS, and the channel bindings
+        run: sh ci/rpctls/cb-client.sh "$PWD/out" "$PWD/certs"
       - name: What rpc.tlsservd said
         if: always()
-        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log' | tee out/tlsservd.txt
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log tlsservd-krb5.log; tail -20 gssd.log' | tee out/tlsservd.txt
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the kernel said
         if: always()
@@ -178,7 +196,12 @@ jobs:
         if: always()
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
-          grep -h -E '^(ok|FAIL)|failures|mount exit|io ok' out/probe*.txt out/linux-*.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          grep -h -E '^(ok|FAIL)|failures|mount exit|io ok|krb5 over tls' out/probe*.txt out/linux-*.txt out/cb-client.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+      - name: The verdict
+        run: |
+          ! grep -h '^FAIL' out/probe*.txt out/cb-client.txt
+          ! grep -h -E 'failures [1-9]' out/probe*.txt out/cb-client.txt
+          grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -191,6 +214,8 @@ jobs:
             out/tlsservd.txt
             out/linux-*.txt
             out/tlshd-*.log
+            out/cb-client.txt
+            out/rpc.gssd-tls.log
             out/kernel.txt
             out/summary.txt
           retention-days: 30

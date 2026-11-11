@@ -332,6 +332,19 @@ gss_ssv_confirm(struct gss_ssv *gs)
 	mutex_exit(&gs->gs_lock);
 }
 
+/* The client ID is gone, and with it what its SSV protected. */
+void
+gss_ssv_kill(struct gss_ssv *gs)
+{
+
+	mutex_enter(&gs->gs_lock);
+	gs->gs_confirmed = false;
+	gs->gs_ver = 0;
+	explicit_memset(gs->gs_ssv, 0, sizeof(gs->gs_ssv));
+	explicit_memset(gs->gs_keys, 0, sizeof(gs->gs_keys));
+	mutex_exit(&gs->gs_lock);
+}
+
 /* spi_ssv_len: the hash's length, which s18.35.3 asks for at least. */
 size_t
 gss_ssv_len(const struct gss_ssv *gs)

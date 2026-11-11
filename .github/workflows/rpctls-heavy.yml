@@ -236,6 +236,7 @@ jobs:
         run: |
           if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt; then exit 1; fi
           grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
+          grep -q '^probe-dtls failures 0$' out/probe-dtls.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

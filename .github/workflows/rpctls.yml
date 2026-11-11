@@ -245,6 +245,8 @@ jobs:
       - name: The verdict
         run: |
           if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt 2>/dev/null; then exit 1; fi
+          # The DTLS step must have got as far as counting, not died building.
+          grep -q '^probe-dtls failures 0$' out/probe-dtls.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

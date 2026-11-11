@@ -14,7 +14,7 @@ A=192.0.2.1	# RFC 5737, on dummy0
 CONFLICT=$(cd "$(dirname "$0")/../nfsv4" && pwd)/conflict41.py
 exec >"$LOG" 2>&1
 sudo apt-get update -q >/dev/null
-sudo apt-get install -y -q rdma-core nfs-common tcpdump >/dev/null 2>&1
+sudo apt-get install -y -q rdma-core nfs-common rpcbind tcpdump >/dev/null 2>&1
 sudo modprobe siw && sudo modprobe rdma_ucm && sudo modprobe rpcrdma
 sudo modprobe nfsv3; sudo modprobe nfsv4
 # On an interface of its own: rdma_cm does not take siw on lo for
@@ -38,13 +38,18 @@ dreturns() {
 }
 # pynfs's client takes the delegation away; pynfs.sh fetches and builds
 # it, and with a short limit runs nothing much of its suite.
-[ -d "$HOME/pynfs/nfs4.1" ] || LIMIT=5 sh "$(dirname "$0")/../nfsv4/pynfs.sh" "$OUT" /export/x pynfs-fetch >/dev/null 2>&1 || :
+[ -d "$HOME/pynfs/nfs4.1" ] || LIMIT=5 sh "$(dirname "$0")/../nfsv4/pynfs.sh" "$OUT" /export/x pynfs-fetch >"$OUT/pynfs-fetch.log" 2>&1 || :
+ls -d "$HOME/pynfs/nfs4.1" || tail -20 "$OUT/pynfs-fetch.log"
 sudo mkdir -p "$M"
 for V in $VERSIONS; do
 	fails=0
 	echo "=== version $V"
 	case $V in
-	3)	# RFC 8267 s5.1: MOUNT, NLM and NSM stay on TCP.  MOUNT is on
+	3)	# The client's lockd registers with the local rpcbind, which
+		# run 43041348387 found refusing (errno 111) by this point.
+		sudo systemctl start rpcbind rpc-statd
+		rpcinfo -p 127.0.0.1 | head -4
+		# RFC 8267 s5.1: MOUNT, NLM and NSM stay on TCP.  MOUNT is on
 		# the port mountd was given, NLM and NSM over the link of
 		# nlm-up.sh.
 		o="vers=3,proto=rdma,port=20049,mountport=1234,mountproto=tcp" ;;

@@ -374,8 +374,9 @@ nfsv4_dacl_flags(struct vnode *vp)
 /*
  * s6.4.3.2, for vp made in dvp with no ACL given: ACL4_PROTECTED clear,
  * ACL4_AUTO_INHERIT as the parent's, and ACL4_DEFAULTED where the ACL
- * was the server's choice (nothing to inherit, or EXCLUSIVE4's).  Only
- * case 4 of s6.4.3 comes here; a file made with a mode keeps no flags.
+ * was the server's choice (nothing to inherit, or EXCLUSIVE4's).  Case 4
+ * of s6.4.3, and by nfsv4_acl_create() a file made with a mode but no
+ * ACL, whose ACL is what was inherited under that mode, not a default.
  */
 static void
 dacl_created(struct vnode *dvp, struct vnode *vp, bool defaulted)
@@ -552,4 +553,27 @@ nfsv4_acl_set(struct nfsv4_compound *c, struct vnode *vp, kauth_cred_t cred)
 	if (error == EINVAL || error == EOPNOTSUPP)
 		return NFS4ERR_ATTRNOTSUPP;
 	return nfsv4_errno(error);
+}
+
+/*
+ * The ACL of vp just made in dvp: as given, or by s6.4.3, case 4, with
+ * noattr.  s6.4.3.2 has every new object take ACL4_AUTO_INHERIT from its
+ * parent, so one made with only a mode gets that too; one with an ACL
+ * has the flags of dacl_after_set().
+ */
+uint32_t
+nfsv4_acl_create(struct nfsv4_compound *c, struct vnode *dvp,
+    struct vnode *vp, bool noattr, bool excl, kauth_cred_t cred)
+{
+	bool given = c->c_setacl != NULL;
+	uint32_t st;
+
+	st = nfsv4_acl_set(c, vp, cred);
+	if (st != NFS4_OK)
+		return st;
+	if (noattr)
+		return nfsv4_acl_noattr(dvp, vp, excl, cred);
+	if (!given)
+		dacl_created(dvp, vp, false);
+	return NFS4_OK;
 }

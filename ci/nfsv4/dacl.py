@@ -86,6 +86,27 @@ t("s6.4.3.2 child: inherited ACE marked",
   [e.flag & ACE4_INHERITED_ACE for e in getattr(g, "na41_aces", []) if e.who == b"1234"],
   [[ACE4_INHERITED_ACE]])
 
+# s6.4.3.2: the same for one made with a mode, by CREATE and by OPEN;
+# its ACL was inherited under the mode, not DEFAULTED.
+res = s.compound([op.putfh(d), op.create(createtype4(NF4DIR), stamp + b"m",
+                                         {FATTR4_MODE: 0o750}), op.getfh()])
+check(res)
+g = dacl(res.resarray[-1].object)
+t("s6.4.3.2 CREATE with a mode: AUTO_INHERIT from the parent",
+  getattr(g, "na41_flag", g), ACL4_AUTO_INHERIT)
+res = create_file(s, stamp + b"mf", path=export + [stamp + b"d", stamp + b"mf"],
+                  attrs={FATTR4_MODE: 0o640})
+check(res)
+g = dacl(res.resarray[-1].object)
+t("s6.4.3.2 OPEN with a mode: AUTO_INHERIT from the parent",
+  getattr(g, "na41_flag", g), ACL4_AUTO_INHERIT)
+res = s.compound([op.putfh(root), op.create(createtype4(NF4DIR), stamp + b"n",
+                                            {FATTR4_MODE: 0o750}), op.getfh()])
+check(res)
+g = dacl(res.resarray[-1].object)
+t("s6.4.3.2 with a mode, parent without AUTO_INHERIT: no flags",
+  getattr(g, "na41_flag", g), 0)
+
 # s6.4.3.2 SHOULD: SETATTR of the acl sets ACL4_PROTECTED.
 t("SETATTR acl", setattr(ch, {FATTR4_ACL: [aces[1]]}), NFS4_OK)
 g = dacl(ch)

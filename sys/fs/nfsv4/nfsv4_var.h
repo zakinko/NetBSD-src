@@ -299,6 +299,8 @@ bool	nfsv4_dacl_supported(struct vnode *);
 uint32_t nfsv4_dacl_flags(struct vnode *);
 uint32_t nfsv4_acl_set(struct nfsv4_compound *, struct vnode *, kauth_cred_t);
 uint32_t nfsv4_acl_noattr(struct vnode *, struct vnode *, bool, kauth_cred_t);
+uint32_t nfsv4_acl_create(struct nfsv4_compound *, struct vnode *,
+	    struct vnode *, bool, bool, kauth_cred_t);
 extern int nfsv4_excl_inherit;
 extern int nfsv4_create_mode_mask;
 uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t, uint32_t *);

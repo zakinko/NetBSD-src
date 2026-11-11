@@ -279,10 +279,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		}
 	}
 	if (*createdp) {
-		st = nfsv4_acl_set(c, vp, cf->cf_cred);
-		if (st == NFS4_OK && noattr)
-			st = nfsv4_acl_noattr(dvp, vp,
-			    oa->createmode == EXCLUSIVE4, cf->cf_cred);
+		st = nfsv4_acl_create(c, dvp, vp, noattr,
+		    oa->createmode == EXCLUSIVE4, cf->cf_cred);
 		if (st != NFS4_OK) {
 			vrele(vp);
 			return st;

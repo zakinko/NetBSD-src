@@ -206,9 +206,7 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 			return nfsv4_errno(error);
 		}
 	}
-	st = nfsv4_acl_set(c, vp, cf->cf_cred);
-	if (st == NFS4_OK && noattr)
-		st = nfsv4_acl_noattr(cf->cf_vp, vp, false, cf->cf_cred);
+	st = nfsv4_acl_create(c, cf->cf_vp, vp, noattr, false, cf->cf_cred);
 	if (st != NFS4_OK) {
 		vrele(vp);
 		return st;

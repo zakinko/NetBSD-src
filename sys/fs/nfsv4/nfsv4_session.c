@@ -58,6 +58,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/time.h>
 #include <sys/vnode.h>
 
+#include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_xdr.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
@@ -588,19 +589,79 @@ put_impl(XDR *x)
 	    xdr_u_int64_t(x, &zero64) && xdr_u_int32_t(x, &zero);
 }
 
+/*
+ * The machine credential of SP4_MACH_CRED, s18.35.3: the principal and
+ * the GSS mechanism of the EXCHANGE_ID, which was sent with integrity or
+ * privacy.  The mechanism is always Kerberos V5 here, the one RPCSEC_GSS
+ * has, so the principal and the service are what is compared.
+ */
+static bool
+mach_cred_is(const struct nfsv4_compound *c, const struct nfsv4_client *cl)
+{
+	const struct oncrpc_req *rq = c->c_rq;
+
+	return rq->rq_flavor == RPCSEC_GSS &&
+	    (rq->rq_secflavor == RPCSEC_GSS_KRB5I ||
+	    rq->rq_secflavor == RPCSEC_GSS_KRB5P) &&
+	    rq->rq_principal != NULL &&
+	    strcmp(rq->rq_principal, cl->cl_principal) == 0;
+}
+
+/* The principal of a client record, s18.35.4: its machine credential if any. */
+static bool
+client_same_principal(const struct nfsv4_compound *c,
+    const struct nfsv4_client *cl)
+{
+
+	if (cl->cl_sp4 == SP4_MACH_CRED)
+		return mach_cred_is(c, cl);
+	return cl->cl_uid == nfsv4_client_principal(c);
+}
+
+static bool
+op_in(const struct nfsv4_bitmap *bm, uint32_t op)
+{
+
+	return op / 32 < bm->bm_n && op / 32 < NFSV4_BITMAP_WORDS &&
+	    (bm->bm_w[op / 32] & (1U << (op % 32))) != 0;
+}
+
+/*
+ * s18.35.3: an operation of spo_must_enforce under another credential.
+ * The error is NFS4ERR_WRONG_CRED, s15.1.6.4, which s15.2 lists for most
+ * of the operations of the set; for BIND_CONN_TO_SESSION, BACKCHANNEL_CTL
+ * and SET_SSV the RFC lists no error of the kind, and the same one is
+ * used.
+ */
+uint32_t
+nfsv4_mach_check(const struct nfsv4_compound *c, const struct nfsv4_client *cl,
+    uint32_t op)
+{
+
+	if (cl == NULL || cl->cl_sp4 != SP4_MACH_CRED ||
+	    !op_in(&cl->cl_enforce, op))
+		return NFS4_OK;
+	return mach_cred_is(c, cl) ? NFS4_OK : NFS4ERR_WRONG_CRED;
+}
+
 /* EXCHANGE_ID4resok, s18.35.2. */
 static uint32_t
 exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
-    uint32_t flags, bool ds)
+    uint32_t flags, bool ds, uint32_t how, const struct nfsv4_bitmap *enforce,
+    const struct nfsv4_bitmap *allow)
 {
 	uint64_t minor = 0;
-	uint32_t none = SP4_NONE;
 	XDR *x = c->c_rx;
 
-	return xdr_u_int64_t(x, &id) && xdr_u_int32_t(x, &seq) &&
-	    xdr_u_int32_t(x, &flags) && xdr_u_int32_t(x, &none) &&
-	    xdr_u_int64_t(x, &minor) &&
-	    put_owner(x, ds) &&
+	if (!xdr_u_int64_t(x, &id) || !xdr_u_int32_t(x, &seq) ||
+	    !xdr_u_int32_t(x, &flags) || !xdr_u_int32_t(x, &how))
+		return NFS4ERR_RESOURCE;
+	/* state_protect4_r: spr_mach_ops for SP4_MACH_CRED */
+	if (how == SP4_MACH_CRED &&
+	    (!nfsv4_xdr_bitmap(x, __UNCONST(enforce)) ||
+	    !nfsv4_xdr_bitmap(x, __UNCONST(allow))))
+		return NFS4ERR_RESOURCE;
+	return xdr_u_int64_t(x, &minor) && put_owner(x, ds) &&
 	    put_hostname(x) && put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
@@ -642,9 +703,10 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s18.35.3: referrals and migration can both be seen here. */
 	uint32_t flags = EXCHGID4_FLAG_SUPP_MOVED_REFER |
 	    EXCHGID4_FLAG_SUPP_MOVED_MIGR;
-	uint32_t seq, st, role, argflags;
+	uint32_t seq, st, role, argflags, how;
 	uint64_t id;
 	bool same_verf, same_uid, pnfs;
+	struct nfsv4_bitmap enforce, allow;
 	/* s2.10.5: the data server's own server owner, its own records */
 	bool ds = nfsv4_layout_ds_conn(c->c_rq->rq_so);
 
@@ -657,8 +719,18 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	if ((ea->flags & ~argflags) != 0)
 		return NFS4ERR_INVAL;
-	/* s18.35.3: the others MUST be sent with RPCSEC_GSS. */
-	if (ea->how != SP4_NONE)
+	/*
+	 * s18.35.3: SP4_MACH_CRED MUST come with RPCSEC_GSS and integrity
+	 * or privacy; the RFC names no error for a client that does not,
+	 * and the argument is taken for invalid.  SP4_SSV needs the SSV
+	 * mechanism of s2.10.9, which is not here.
+	 */
+	if (ea->how == SP4_SSV)
+		return NFS4ERR_INVAL;
+	if (ea->how == SP4_MACH_CRED &&
+	    (c->c_rq->rq_flavor != RPCSEC_GSS ||
+	    (c->c_rq->rq_secflavor != RPCSEC_GSS_KRB5I &&
+	    c->c_rq->rq_secflavor != RPCSEC_GSS_KRB5P)))
 		return NFS4ERR_INVAL;
 
 	n = kmem_zalloc(sizeof(*n), KM_SLEEP);
@@ -679,10 +751,12 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	 * s18.35.4: the principal is the flavour as well as the id.  By the
 	 * id alone AUTH_NONE, AUTH_SYS and a GSS name mapped to the same uid
 	 * were one, and an EXCHANGE_ID in another flavour took over a client
-	 * with state instead of meeting NFS4ERR_CLID_INUSE.
+	 * with state instead of meeting NFS4ERR_CLID_INUSE.  s18.35.3: under
+	 * SP4_MACH_CRED, the same machine credential.
 	 */
-	same_uid = conf != NULL && conf->cl_uid == uid &&
-	    conf->cl_pflavor == c->c_rq->rq_flavor;
+	same_uid = conf != NULL && client_same_principal(c, conf) &&
+	    (conf->cl_sp4 == SP4_MACH_CRED ||
+	    conf->cl_pflavor == c->c_rq->rq_flavor);
 
 	if ((ea->flags & EXCHGID4_FLAG_UPD_CONFIRMED_REC_A) != 0) {
 		if (conf == NULL)
@@ -706,16 +780,22 @@ existing:
 		    EXCHGID4_FLAG_USE_PNFS_DS : conf->cl_pnfs ?
 		    EXCHGID4_FLAG_USE_PNFS_MDS | EXCHGID4_FLAG_USE_PNFS_DS :
 		    EXCHGID4_FLAG_USE_NON_PNFS);
+		how = conf->cl_sp4;
+		enforce = conf->cl_enforce;
+		allow = conf->cl_allow;
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
-		return exchange_reply(c, id, seq, flags, ds);
+		return exchange_reply(c, id, seq, flags, ds, how, &enforce,
+		    &allow);
 	}
 	/* RFC 7862 s14.1.4: a new verifier waits for what is in progress. */
 	if (conf != NULL && !same_verf && c->c_minor >= 2) {
 		client_fence(c, conf);
 		conf = nfsv4_client_find(ea->id, ea->idlen, true, 1, ds);
 		unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1, ds);
-		same_uid = conf != NULL && conf->cl_uid == uid;
+		same_uid = conf != NULL && client_same_principal(c, conf) &&
+		    (conf->cl_sp4 == SP4_MACH_CRED ||
+		    conf->cl_pflavor == c->c_rq->rq_flavor);
 	}
 	if (conf != NULL && !same_uid) {		/* 3 */
 		if (!conf->cl_expired && time_uptime <= conf->cl_expire &&
@@ -742,13 +822,29 @@ existing:
 	flags |= role;
 	n->cl_idlen = ea->idlen;
 	memcpy(n->cl_idstr, ea->id, ea->idlen);
+	n->cl_flavor = c->c_rq->rq_flavor;
+	if (n->cl_flavor == RPCSEC_GSS && c->c_rq->rq_principal != NULL)
+		strlcpy(n->cl_principal, c->c_rq->rq_principal,
+		    sizeof(n->cl_principal));
+	/*
+	 * s18.35.3: the server's lists.  Every operation asked to be
+	 * enforced is, which includes those of the set the RFC says MUST
+	 * be; spo_must_allow is granted as asked, there being no binding
+	 * of stateids to principals here for it to relax.
+	 */
+	n->cl_sp4 = ea->how;
+	n->cl_enforce = ea->must_enforce;
+	n->cl_allow = ea->must_allow;
+	how = n->cl_sp4;
+	enforce = n->cl_enforce;
+	allow = n->cl_allow;
 	seq = 1;
 	/* s18.36.4: the slot, and a contrived reply in it. */
 	n->cl_csseq = seq - 1;
 	n->cl_csstatus = NFS4ERR_SEQ_MISORDERED;
 	(void)nfsv4_client_insert(n);
 	mutex_exit(&nfsv4_state_lock);
-	return exchange_reply(c, id, seq, flags, ds);
+	return exchange_reply(c, id, seq, flags, ds, how, &enforce, &allow);
 }
 
 static uint32_t
@@ -831,8 +927,13 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	cl->cl_csseq = ca->sequence;
 	cl->cl_cslen = 0;
-	/* 3: once confirmed, the principal is not compared. */
-	if (!cl->cl_confirmed && cl->cl_uid != nfsv4_client_principal(c)) {
+	/*
+	 * 3: once confirmed, the principal is not compared, but for
+	 * SP4_MACH_CRED, whose machine credential is, s18.35.3, by
+	 * spo_must_enforce as for any operation.
+	 */
+	if ((!cl->cl_confirmed && !client_same_principal(c, cl)) ||
+	    nfsv4_mach_check(c, cl, NFSV4_OP_CREATE_SESSION) != NFS4_OK) {
 		st = cl->cl_csstatus = NFS4ERR_CLID_INUSE;
 		goto out;
 	}
@@ -908,6 +1009,9 @@ nfsv4_op_destroy_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	se = session_find(&a->sessionid.sessionid);
 	if (se == NULL)
 		st = NFS4ERR_BADSESSION;
+	else if ((st = nfsv4_mach_check(c, se->se_client,
+	    NFSV4_OP_DESTROY_SESSION)) != NFS4_OK)
+		/* s18.35.3 */;
 	else if (session_conn(se, c->c_rq->rq_connid) == NULL)
 		st = NFS4ERR_CONN_NOT_BOUND_TO_SESSION;	/* s18.37.3 */
 	else if (se == c->c_sess && c->c_opi + 1 != c->c_numops)
@@ -933,6 +1037,9 @@ nfsv4_op_destroy_clientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	cl = nfsv4_client_byid41(a->clientid.clientid);
 	if (cl == NULL)
 		st = NFS4ERR_STALE_CLIENTID;
+	else if ((st = nfsv4_mach_check(c, cl, NFSV4_OP_DESTROY_CLIENTID)) !=
+	    NFS4_OK)
+		/* s18.35.3 */;
 	else if (cl == c->c_client || cl->cl_refs != 0 ||
 	    !LIST_EMPTY(&cl->cl_sessions) || nfsv4_client_busy(cl))
 		st = NFS4ERR_CLIENTID_BUSY;		/* s18.50.3 */
@@ -970,6 +1077,9 @@ nfsv4_op_bind_conn(struct nfsv4_compound *c, union nfsv4_args *a)
 	se = session_find(&ba->sessionid);
 	if (se == NULL)
 		st = NFS4ERR_BADSESSION;
+	else if ((st = nfsv4_mach_check(c, se->se_client,
+	    NFSV4_OP_BIND_CONN_TO_SESSION)) != NFS4_OK)
+		/* s18.35.3 */;
 	else if ((sc = session_conn(se, c->c_rq->rq_connid)) == NULL)
 		session_conn_add(se, c->c_rq->rq_connid, dir);
 	else if (ba->dir == CDFC4_FORE_OR_BOTH &&

@@ -690,18 +690,34 @@ nfsv4_op_delegreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 	return status;
 }
 
-/*
- * GDD4_UNAVAIL with no promise.  s18.39.3 has it for a delegation already
- * held and NFS4ERR_DIRDELEG_UNAVAIL for the other refusals, but the client
- * of Linux turns that error into EIO for the GETATTR it came with, as a
- * run of 2026-11-07 showed, and this says the same.
- */
+/* GDD4_UNAVAIL with no promise: s18.39.3 for a delegation already held. */
 static uint32_t
 gdd_unavail(struct nfsv4_compound *c)
 {
 
 	return nfsv4_xdr_u32(c->c_rx, GDD4_UNAVAIL) &&
 	    nfsv4_xdr_u32(c->c_rx, 0) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/*
+ * vfs.nfsv4.gdd_unavail_ok, from the option NFSV4_GDD_UNAVAIL_OK (see the
+ * module's Makefile).  Deliberately on: s18.39.3 refuses with
+ * NFS4ERR_DIRDELEG_UNAVAIL, but the client of Linux sends GET_DIR_DELEGATION
+ * with a GETATTR and turns that error into EIO for both, which made ls and
+ * rm fail in a run of 2026-11-07.  On, a refusal is GDD4_UNAVAIL instead.
+ * Without the option, or with 0 here, the RFC's error is what goes out.
+ */
+#ifdef NFSV4_GDD_UNAVAIL_OK
+int nfsv4_gdd_unavail_ok = 1;
+#else
+int nfsv4_gdd_unavail_ok = 0;
+#endif
+
+static uint32_t
+gdd_refuse(struct nfsv4_compound *c)
+{
+
+	return nfsv4_gdd_unavail_ok ? gdd_unavail(c) : NFS4ERR_DIRDELEG_UNAVAIL;
 }
 
 /*
@@ -721,7 +737,7 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_verifier verf;
 	struct nfsv4_file *f;
 	struct nfsv4_state *st;
-	bool held = false, ok;
+	bool held = false, refuse = false, ok;
 
 	/* OPTIONAL, s17: off, there is no such operation. */
 	if (!nfsv4_dirdeleg)
@@ -729,11 +745,11 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (vp != NULL && vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
 	if (vp == NULL || cf->cf_attr != 0)
-		held = true;
+		refuse = true;
 	else if (nfsv4_grace_active() || !cl->cl_reclaimed)
 		return NFS4ERR_GRACE;		/* s18.51.3 */
-	if (held)
-		return gdd_unavail(c);
+	if (refuse)
+		return gdd_refuse(c);
 
 	memset(&ds, 0, sizeof(ds));
 	memset(&od, 0, sizeof(od));
@@ -756,7 +772,7 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 		/* below */;
 	else if (cl->cl_cbstate != NFSV4_CB_UP ||
 	    deleg_count >= NFSV4_DELEG_MAX || nfsv4_deleg_mode == 0)
-		held = true;
+		refuse = true;
 	else
 		nfsv4_deleg_add(cl, vp, &cf->cf_fh, OPEN_DELEGATE_READ, &ds,
 		    &od);
@@ -768,7 +784,9 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 		kmem_free(ds.ds_sw, sizeof(*ds.ds_sw));
 	if (ds.ds_f != NULL)
 		kmem_free(ds.ds_f, sizeof(*ds.ds_f));
-	if (held)
+	if (refuse)
+		return gdd_refuse(c);
+	if (held)			/* s18.39.3 */
 		return gdd_unavail(c);
 
 	c->c_curst = od.od_stateid;

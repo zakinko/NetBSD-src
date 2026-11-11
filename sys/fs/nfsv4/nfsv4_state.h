@@ -276,6 +276,7 @@ extern kcondvar_t nfsv4_state_cv;
 extern uint32_t nfsv4_boot;
 extern int nfsv4_deleg_mode;
 extern int nfsv4_dirdeleg;
+extern int nfsv4_gdd_unavail_ok;
 
 /* What to do with a request after looking at its seqid, s9.1.7. */
 enum nfsv4_seq {

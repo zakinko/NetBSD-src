@@ -223,6 +223,15 @@ if res.status == NFS4_OK:
     t("s10.9 recall", recalled, [[0]])
     t("s18.6 returned", s.compound(nofh(ddfh, op.delegreturn(dsid))).status, NFS4_OK)
     t("s10.9 then it goes", s2.compound(nofh(ddfh, n)).status, NFS4_OK)
+sc = lambda v: subprocess.call(["ssh", "netbsd", "sudo sysctl -w %s || sysctl -w %s" % (v, v)])
+sc("vfs.nfsv4.gdd_unavail_ok=0")
+sc("vfs.nfsv4.deleg" + "ations=0")
+t("s18.39.3 NFS4ERR_DIRDELEG_UNAVAIL", gdd(ddfh).status, NFS4ERR_DIRDELEG_UNAVAIL)
+sc("vfs.nfsv4.gdd_unavail_ok=1")
+r = gdd(ddfh)
+t("option: GDD4_UNAVAIL", (r.status, r.status == 0 and r.resarray[-1].gddr_res_non_fatal4.gddrnf_status),
+  [(NFS4_OK, GDD4_UNAVAIL)])
+sc("vfs.nfsv4.deleg" + "ations=2")
 rc = subprocess.call(["ssh", "netbsd", "sudo sysctl -w vfs.nfsv4.dirdeleg=0 || sysctl -w vfs.nfsv4.dirdeleg=0"])
 t("s18.39 off", gdd(ddfh).status, NFS4ERR_NOTSUPP)
 res = s.compound(nofh(dirfh, op.getattr(nfs4lib.list2bitmap([FATTR4_FS_STATUS,

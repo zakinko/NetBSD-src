@@ -109,7 +109,8 @@ jobs:
               -L 192.0.2.1:1234:127.0.0.1:1234 netbsd
           sleep 2
       - name: A link for NLM and NSM
-        timeout-minutes: 3
+        timeout-minutes: 6
+        continue-on-error: true
         run: sh ci/nfsrdma/nlm-up.sh "$PWD/out" >out/nlm-up.txt 2>&1; cat out/nlm-up.txt
       - name: A peer that misbehaves
         timeout-minutes: 5

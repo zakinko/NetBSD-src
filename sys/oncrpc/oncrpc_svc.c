@@ -736,7 +736,7 @@ xprt_tls_handoff(struct oncrpc_xprt *xp)
 		 * the client sends only after reading STARTTLS: RFC 9289
 		 * s5.1.1, discard and SHOULD drop the connection.
 		 */
-		spurious = xp->xp_rm.rm_raw != NULL || xp->xp_rm.rm_frag != NULL;
+		spurious = xp->xp_rm.rm_cc != 0 || xp->xp_rm.rm_frag != NULL;
 		xprt_rm_discard(xp);
 		if (spurious) {
 			xprt_zap(xp);
@@ -1222,6 +1222,7 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 	struct oncrpc_xprt *xp;
 	struct oncrpc_ireq *ir;
 	struct mbuf *m, *nam;
+	bool spurious;
 	int error = 0;
 
 	mutex_enter(&svc->svc_lock);
@@ -1271,13 +1272,20 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 			 * XP_RECEIVING, so xp_rm is ours to empty.
 			 */
 			mutex_exit(&svc->svc_lock);
+			spurious = m != NULL || xp->xp_rm.rm_cc != 0 ||
+			    xp->xp_rm.rm_frag != NULL;
 			m_freem(m);
 			if (ir != NULL)
 				kmem_free(ir, sizeof(*ir));
 			ir = NULL;
 			xprt_rm_discard(xp);
-			/* ... and then SHOULD drop the connection, s5.1.1. */
-			xprt_zap(xp);
+			/*
+			 * ... and then SHOULD drop the connection, s5.1.1;
+			 * only if something came, as a receiver finding
+			 * nothing races the probe it was queued behind.
+			 */
+			if (spurious)
+				xprt_zap(xp);
 			mutex_enter(&svc->svc_lock);
 		}
 		xp->xp_flags &= ~XP_RECEIVING;

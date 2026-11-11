@@ -118,10 +118,22 @@ callback() {	# sec
 	sleep 4
 	sudo -u alice sh -c "echo one >$m/cb-$sec"
 	sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'
+	sudo tcpdump -i lo -s0 -w "$OUT/cb-$sec.pcap" tcp port 40100 >/dev/null 2>&1 &
 	sudo -u alice sh -c "exec 3<$m/cb-$sec; cat <&3 >/dev/null; sleep 12" &
 	sleep 4
 	ssh netbsd "echo two >>/export/krb5all/cb-$sec"
 	wait $!
+	sleep 2
+	sudo pkill -x tcpdump
+	sleep 1
+	# RFC 2203 s5.4: the credential of a DESTROY, gss_proc 3.
+	d=$(sudo python3 -c "
+import re,sys
+b=open(sys.argv[1],'rb').read()
+print(len(re.findall(rb'\x00\x00\x00\x06.{4}\x00\x00\x00\x01\x00\x00\x00\x03',b,re.S)))" "$OUT/cb-$sec.pcap")
+	echo "callback $sec: DESTROY sent $d"
+	case ${d:-0} in 0) echo 'FAILED: no DESTROY'; fails=$((fails + 1));; esac
+	sudo rm -f "$OUT/cb-$sec.pcap"
 	r=$(awk '/DELEGRETURN:/ {print $2}' /proc/self/mountstats | sort -n | tail -1)
 	echo "callback $sec: DELEGRETURN $r"
 	case ${r:-0} in 0) echo 'FAILED: no recall'; fails=$((fails + 1));; esac

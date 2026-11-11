@@ -562,8 +562,18 @@ st, r = nfs3(1, opq(bytes(h)))
 s3 = r.u() if st == SUCCESS else None
 check('a mark of type 3: STALE', s3 == STALE, str(s3))
 g = getacl(afh, NA_ACL)
-check('GETACL3 of an attribute is not the file\'s', g['status'] != OK,
-      str(g['status']))
+check('GETACL3 of an attribute: the ACL of its mode, 0640, as illumos\' '
+      'fs_fab_acl()', g['status'] == OK and g['end'] and
+      g['attr'] is not None and ftype_mode(g['attr'])[0] == 1 and
+      g['acl'] == [(USER_OBJ, mode_uid_gid(g['attr'])[1], 6),
+                   (GROUP_OBJ, mode_uid_gid(g['attr'])[2], 4),
+                   (CLASS_OBJ, 0, 4), (OTHER_OBJ, 0, 0)], str(g))
+st, status, end = setacl(afh, NA_ACL, [(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 4),
+                                       (OTHER_OBJ, 0, 0)], [])
+check('SETACL3 of an attribute: NOTSUPP', status == NOTSUPP and end, str(status))
+st, r = call(2049, PROG, 3, 3, opq(afh) + u32(1))
+s3 = r.u()
+check('GETXATTRDIR3 of an attribute: INVAL', s3 == INVAL and r.done(), str(s3))
 ssh('rmextattr user a1 /export/pacl/xf')
 st, r = nfs3(1, opq(afh))
 s3 = r.u() if st == SUCCESS else None

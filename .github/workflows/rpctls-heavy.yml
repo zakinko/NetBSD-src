@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 120
+          fetch-depth: 300
       # The kernel holds nothing of sys/fs/nfsv4, only the module does,
       # so it stays good across pushes until the base moves or what the
       # server needs of the kernel changes.  The tools outlast that.

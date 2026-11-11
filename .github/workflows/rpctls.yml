@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 120
+          fetch-depth: 300
       # What this push changed decides what runs after the build; see
       # ci/rpctls/select.sh.
       - id: sel

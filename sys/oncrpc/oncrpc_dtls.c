@@ -165,6 +165,7 @@ struct dtls_dgram {
 	SIMPLEQ_ENTRY(dtls_dgram) dg_next;
 	struct mbuf		*dg_m;
 	struct oncrpc_dtlspeer	*dg_peer;	/* a reference */
+	bool			 dg_plain;	/* RPC, not DTLS; see below */
 };
 SIMPLEQ_HEAD(dtls_dgramq, dtls_dgram);
 
@@ -191,6 +192,7 @@ struct oncrpc_dtlspeer {
 	time_t			 dp_until;	/* time_uptime; not ESTABLISHED */
 	struct dtls_dgramq	 dp_hsq;	/* for the handshake daemon */
 	u_int			 dp_hsqlen;
+	u_int			 dp_qn;		/* its records not yet opened */
 	/* Set before ESTABLISHED and constant after: */
 	uint8_t			 dp_rcid[DTLS13_MAXCID];	/* ours */
 	uint8_t			 dp_tcid[DTLS13_MAXCID];	/* the peer's */
@@ -237,6 +239,7 @@ struct oncrpc_dtls {
 	struct dtls_dgramq	 d_q;		/* ESTABLISHED, to be opened */
 	u_int			 d_qlen;
 	struct dtls_dgramq	 d_msgs;	/* opened, to be served */
+	bool			 d_opening;	/* a worker is at d_q */
 	void			(*d_wake)(void *);
 	void			*d_arg;
 	struct socket		*d_so;		/* the UDP socket */
@@ -636,9 +639,31 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 	case DP_ESTABLISHED:
 		switch (dtls13_demux(b0)) {
 		case DTLS13_REJECT:
-			/* No DTLS, so RPC, s5.1.2; see the top. */
+			/*
+			 * No DTLS, so RPC, s5.1.2; see the top.  Behind a
+			 * record not yet opened it waits its turn: that
+			 * may be a closure, after which s5.1.2 has it
+			 * discarded.
+			 */
+			if (p->dp_qn == 0) {
+				mutex_exit(&d->d_lock);
+				return 0;
+			}
+			if (d->d_qlen >= ONCRPC_DTLS_MAXQ ||
+			    (dg = kmem_intr_alloc(sizeof(*dg),
+			    KM_NOSLEEP)) == NULL)
+				goto drop;
+			m_adj(m, off);
+			dg->dg_m = m;
+			dg->dg_peer = p;
+			dg->dg_plain = true;
+			p->dp_refs++;
+			SIMPLEQ_INSERT_TAIL(&d->d_q, dg, dg_next);
+			d->d_qlen++;
 			mutex_exit(&d->d_lock);
-			return 0;
+			*mp = NULL;
+			(*d->d_wake)(d->d_arg);
+			return 1;
 		case DTLS13_PLAINTEXT:
 			/*
 			 * Epoch 0 after the handshake: a retransmission
@@ -655,7 +680,9 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 		m_adj(m, off);
 		dg->dg_m = m;
 		dg->dg_peer = p;
+		dg->dg_plain = false;
 		p->dp_refs++;
+		p->dp_qn++;
 		SIMPLEQ_INSERT_TAIL(&d->d_q, dg, dg_next);
 		d->d_qlen++;
 		mutex_exit(&d->d_lock);
@@ -823,11 +850,12 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 		if (p->dp_pendlen != 0)
 			dtls_unpend(p);
 		mutex_exit(&p->dp_txlock);
-		dtls_flush(p, &o);
+		/* Closed before the peer can hear of it, s5.1.2. */
 		mutex_enter(&d->d_lock);
 		if (p->dp_state == DP_ESTABLISHED)
 			dtls_close(p);
 		mutex_exit(&d->d_lock);
+		dtls_flush(p, &o);
 		return;
 	}
 	if (c->c_acked && p->dp_pendlen != 0) {
@@ -1051,6 +1079,7 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 			}
 			out->dg_m = m;
 			out->dg_peer = p;
+			out->dg_plain = false;
 			mutex_enter(&d->d_lock);
 			p->dp_refs++;
 			SIMPLEQ_INSERT_TAIL(&d->d_msgs, out, dg_next);
@@ -1119,7 +1148,13 @@ oncrpc_dtls_getmsg(struct oncrpc_dtls *d, struct mbuf **namp,
 	struct oncrpc_dtlspeer *p;
 	struct mbuf *m, *nam;
 	const struct sockaddr *sa;
+	bool plain;
 
+	/*
+	 * One worker at d_q at a time, so that its datagrams are taken in
+	 * the order they came: a closure takes effect before what followed
+	 * it, RFC 9289 s5.1.2.  The others serve what is opened.
+	 */
 	for (;;) {
 		mutex_enter(&d->d_lock);
 		if ((dg = SIMPLEQ_FIRST(&d->d_msgs)) != NULL) {
@@ -1127,18 +1162,43 @@ oncrpc_dtls_getmsg(struct oncrpc_dtls *d, struct mbuf **namp,
 			mutex_exit(&d->d_lock);
 			break;
 		}
-		if ((dg = SIMPLEQ_FIRST(&d->d_q)) == NULL) {
+		if (d->d_opening || (dg = SIMPLEQ_FIRST(&d->d_q)) == NULL) {
 			mutex_exit(&d->d_lock);
 			return NULL;
 		}
 		SIMPLEQ_REMOVE_HEAD(&d->d_q, dg_next);
 		d->d_qlen--;
+		d->d_opening = true;
+		p = dg->dg_peer;
+		if (dg->dg_plain) {
+			/* Plain RPC unless a closure came before it. */
+			if (p->dp_state == DP_ESTABLISHED) {
+				SIMPLEQ_INSERT_TAIL(&d->d_msgs, dg, dg_next);
+				dg = NULL;
+			}
+			d->d_opening = false;
+			mutex_exit(&d->d_lock);
+			if (dg != NULL) {
+				m_freem(dg->dg_m);
+				oncrpc_dtls_rele(p);
+				kmem_intr_free(dg, sizeof(*dg));
+			}
+			continue;
+		}
+		p->dp_refs++;		/* past dtls_open_dgram() */
 		mutex_exit(&d->d_lock);
-		dtls_open_dgram(d, dg);
+		dtls_open_dgram(d, dg);	/* releases dg and its reference */
+		mutex_enter(&d->d_lock);
+		KASSERT(p->dp_qn > 0);
+		p->dp_qn--;
+		d->d_opening = false;
+		mutex_exit(&d->d_lock);
+		oncrpc_dtls_rele(p);
 	}
 
 	m = dg->dg_m;
 	p = dg->dg_peer;
+	plain = dg->dg_plain;
 	kmem_intr_free(dg, sizeof(*dg));
 	sa = (const struct sockaddr *)&p->dp_addr;
 	nam = m_get(M_WAIT, MT_SONAME);
@@ -1146,6 +1206,10 @@ oncrpc_dtls_getmsg(struct oncrpc_dtls *d, struct mbuf **namp,
 	memcpy(mtod(nam, void *), sa, sa->sa_len);
 	nam->m_len = sa->sa_len;
 	*namp = nam;
+	if (plain) {
+		oncrpc_dtls_rele(p);
+		p = NULL;	/* not over DTLS, for oncrpc_req_tls() */
+	}
 	*pp = p;
 	return m;
 }

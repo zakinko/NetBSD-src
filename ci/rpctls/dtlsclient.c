@@ -52,6 +52,7 @@ static bool have_csecret;
 static int cw3;			/* records written under epoch 3 */
 static int hsw;			/* next handshake message_seq of ours */
 static int rx_keyupdate, rx_ack, rx_alert = -1;
+static bool verbose;
 
 static void
 check(bool ok, const char *what)
@@ -198,6 +199,9 @@ msgcb(int w, int version, int type, const void *buf, size_t len, SSL *ssl,
 		rx_keyupdate++;
 	else if (type == TLS13_CT_ACK && !w)
 		rx_ack++;
+	if (verbose && type != SSL3_RT_HEADER && type != 257)
+		printf("  # %s type %d len %zu first %02x\n", w ? "sent" : "recv",
+		    type, len, len > 0 ? p[0] : 0);
 	else if (type == SSL3_RT_ALERT && !w && len == 2)
 		rx_alert = p[1];
 }
@@ -256,7 +260,20 @@ associate(SSL_CTX *ctx, int *fdp, bool spurious)
 	}
 	check(SSL_version(ssl) == DTLS1_3_VERSION && have_csecret,
 	    "DTLS 1.3 handshake");
+	rx_ack = rx_keyupdate = 0;	/* those of the handshake are not ours */
 	return ssl;
+}
+
+/* What OpenSSL said, for the log. */
+static void
+why(const char *what, SSL *ssl, int n)
+{
+
+	printf("  # %s: %d, SSL_get_error %d, alert received %d, "
+	    "KeyUpdates %d, ACKs %d\n", what, n, SSL_get_error(ssl, n),
+	    rx_alert, rx_keyupdate, rx_ack);
+	ERR_print_errors_fp(stdout);
+	fflush(stdout);
 }
 
 /*
@@ -273,15 +290,20 @@ dtlscall(SSL *ssl)
 
 	len = (int)mkcall(call, xid, AUTH_NONE);
 	for (i = 0; i < 8; i++) {
-		if (i % 2 == 0 && SSL_write(ssl, call, len) != len)
+		if (i % 2 == 0 && (n = SSL_write(ssl, call, len)) != len) {
+			why("SSL_write", ssl, n);
 			return false;
+		}
 		n = SSL_read(ssl, buf, sizeof(buf));
 		if (n > 0 && isreply(buf, n, xid, NULL, 0))
 			return true;
 		if (n <= 0 && SSL_get_error(ssl, n) != SSL_ERROR_WANT_READ &&
-		    SSL_get_error(ssl, n) != SSL_ERROR_SYSCALL)
+		    SSL_get_error(ssl, n) != SSL_ERROR_SYSCALL) {
+			why("SSL_read", ssl, n);
 			return false;
+		}
 	}
+	printf("  # no reply to xid %#x after 4 sends\n", xid);
 	return false;
 }
 
@@ -364,6 +386,7 @@ main(int argc, char **argv)
 	check(dtlscall(ssl), "garbage dropped silently, s4.5.2");
 
 	/* s8 and RFC 8446 s4.6.3, which the kernel MUST ACK */
+	verbose = true;
 	if (SSL_key_update(ssl, SSL_KEY_UPDATE_REQUESTED) != 1)
 		check(false, "SSL_key_update");
 	check(dtlscall(ssl), "a call after our KeyUpdate");
@@ -373,6 +396,7 @@ main(int argc, char **argv)
 	check(rx_keyupdate > 0, "the server's KeyUpdate, as requested");
 	check(dtlscall(ssl), "a call under the new keys both ways");
 
+	verbose = false;
 	(void)SSL_shutdown(ssl);
 	SSL_free(ssl);
 	check(!plaincall(fd, AUTH_NONE, NULL, 0),

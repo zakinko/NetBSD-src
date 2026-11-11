@@ -54,8 +54,13 @@
 #include <openssl/sha.h>
 
 #define	KASSERT(x)	assert(x)
+/* <sys/cdefs.h> has these on NetBSD; glibc does not. */
+#ifndef __UNCONST
 #define	__UNCONST(p)	((void *)(uintptr_t)(const void *)(p))
+#endif
+#ifndef __unused
 #define	__unused	__attribute__((__unused__))
+#endif
 
 #define	KM_SLEEP	0
 static inline void *

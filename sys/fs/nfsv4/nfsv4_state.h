@@ -143,6 +143,10 @@ struct nfsv4_client {
 	uint32_t	cl_sp4;		/* SP4_*, RFC 8881 s18.35 */
 	struct nfsv4_bitmap cl_enforce;	/* SP4_MACH_CRED: spo_must_enforce */
 	struct nfsv4_bitmap cl_allow;	/* and spo_must_allow */
+	struct gss_ssv	*cl_ssv;	/* SP4_SSV, s2.10.9 */
+	uint32_t	cl_ssvhash;	/* spi_hash_alg, an index of the args */
+	uint32_t	cl_ssvencr;	/* spi_encr_alg */
+	uint32_t	cl_ssvwindow;
 	uint64_t	cl_connid;	/* last connection known to be its */
 	u_int		cl_cbstate;
 	uint32_t	cl_cbgen;	/* of cl_cb, for a call that returns */

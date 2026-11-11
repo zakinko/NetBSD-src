@@ -319,6 +319,14 @@ struct nfsv4_args_release_lockowner {
 };
 
 /* RFC 8881 s18.35.1; what is not kept is decoded only to be passed. */
+/* How many OIDs of each kind are looked at; a choice. */
+#define	NFSV4_SSV_ALGS		16
+
+struct nfsv4_oid {			/* sec_oid4 */
+	uint8_t		o_len;
+	uint8_t		o_data[15];
+};
+
 struct nfsv4_args_exchange_id {
 	struct nfsv4_verifier verifier;
 	uint32_t	idlen;
@@ -327,6 +335,21 @@ struct nfsv4_args_exchange_id {
 	uint32_t	how;
 	struct nfsv4_bitmap must_enforce;	/* SP4_MACH_CRED, s18.35.1 */
 	struct nfsv4_bitmap must_allow;
+	/* ssv_sp_parms4; an OID too long to be one known has length 0 */
+	uint32_t	nhash;
+	struct nfsv4_oid hash[NFSV4_SSV_ALGS];
+	uint32_t	nencr;
+	struct nfsv4_oid encr[NFSV4_SSV_ALGS];
+	uint32_t	ssv_window;
+	uint32_t	ssv_nhandles;
+};
+
+/* SET_SSV4args, s18.47.1 */
+struct nfsv4_args_set_ssv {
+	uint32_t	ssvlen;
+	uint8_t		ssv[64];
+	uint32_t	diglen;
+	uint8_t		digest[64];
 };
 
 /* channel_attrs4, RFC 8881 s18.36.1 */
@@ -420,6 +443,7 @@ union nfsv4_args {
 	struct nfsv4_args_sessionid	sessionid;
 	struct nfsv4_args_bind_conn	bind_conn;
 	struct nfsv4_args_sequence	sequence;
+	struct nfsv4_args_set_ssv	set_ssv;
 	struct nfsv4_args_test_stateid	test_stateid;
 	struct nfsv4_args_u32		u32;
 	struct nfsv4_args_access	access;

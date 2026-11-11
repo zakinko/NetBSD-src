@@ -61,6 +61,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/gss_krb5.h>
 #include <oncrpc/gss_mech.h>
+#include <oncrpc/gss_ssv.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_gssd.h>
 #include <oncrpc/oncrpc_var.h>
@@ -72,7 +73,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
  */
 #define	GSS_MAXCTX		16384
 #define	GSS_HASHSIZE		1024
-#define	GSS_HANDLELEN		16
+#define	GSS_HANDLELEN		ONCRPC_GSS_HANDLELEN
 #define	GSS_INITLIFE		60
 #define	GSS_MAXTOKEN		ONCRPC_GSSD_MAXTOKEN
 
@@ -217,6 +218,43 @@ gss_ctx_insert(struct oncrpc_gss_ctx *gx)
 	mutex_exit(&gss_lock);
 	if (dead != NULL)
 		gss_ctx_free(dead);
+}
+
+/*
+ * The RPCSEC_GSS handles of SP4_SSV, RFC 8881 s18.35.3: contexts of the
+ * SSV mechanism made at once, with no creation messages, for whom cred
+ * and name are.  Each holds gs.  They do not expire with time: s2.10.9
+ * has an SSV context last as long as the SSV.  0, or ENOSPC for none.
+ */
+int
+oncrpc_gss_ssv_handles(struct gss_ssv *gs, kauth_cred_t cred,
+    const char *name, u_int n, uint8_t (*handles)[ONCRPC_GSS_HANDLELEN],
+    u_int *made)
+{
+	struct oncrpc_gss_ctx *gx;
+	u_int i;
+
+	for (i = 0; i < n; i++) {
+		gx = kmem_zalloc(sizeof(*gx), KM_SLEEP);
+		mutex_init(&gx->gx_lock, MUTEX_DEFAULT, IPL_NONE);
+		gx->gx_refs = 1;
+		gx->gx_vers = RPCSEC_GSS_VERS_1;
+		cprng_strong(kern_cprng, gx->gx_handle, GSS_HANDLELEN, 0);
+		gx->gx_expire = (time_t)1 << 62;
+		gss_ssv_hold(gs);
+		gx->gx_key.k_mech = &oncrpc_gss_ssv_mech;
+		gx->gx_key.k_ctx = gs;
+		gx->gx_cred = kauth_cred_dup(cred);
+		strlcpy(gx->gx_name, name, sizeof(gx->gx_name));
+		oncrpc_gss_seq_init(&gx->gx_seq);
+		gx->gx_used = true;
+		gx->gx_complete = true;
+		memcpy(handles[i], gx->gx_handle, GSS_HANDLELEN);
+		gss_ctx_insert(gx);
+		gss_ctx_rele(gx);
+	}
+	*made = n;
+	return 0;
 }
 
 /*
@@ -742,6 +780,19 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 	/* s5.3.3.3 */
 	if (gc->gc_seq >= RPCSEC_GSS_MAXSEQ ||
 	    gx->gx_expire <= time_uptime) {
+		/*
+		 * RFC 8881 s2.10.10: a requester ends an SSV handle with
+		 * MAXSEQ + 1, for the replier to destroy it.
+		 */
+		if (gc->gc_seq >= RPCSEC_GSS_MAXSEQ &&
+		    gx->gx_key.k_mech == &oncrpc_gss_ssv_mech) {
+			mutex_enter(&gss_lock);
+			if (gx->gx_intable) {
+				gss_ctx_unhash(gx);
+				gx->gx_refs--;
+			}
+			mutex_exit(&gss_lock);
+		}
 		*whyp = RPCSEC_GSS_CTXPROBLEM;
 		return ONCRPC_GSS_DENY;
 	}
@@ -796,6 +847,7 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 	/* Each request its own, as a program may change it. */
 	rq->rq_cred = kauth_cred_dup(gx->gx_cred);
 	rq->rq_principal = gx->gx_name;
+	rq->rq_gssctx = gx->gx_key.k_ctx;
 	rq->rq_secflavor = gc->gc_service == RPCSEC_GSS_SVC_NONE ?
 	    RPCSEC_GSS_KRB5 : gc->gc_service == RPCSEC_GSS_SVC_INTEGRITY ?
 	    RPCSEC_GSS_KRB5I : RPCSEC_GSS_KRB5P;

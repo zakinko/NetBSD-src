@@ -763,6 +763,8 @@ client_free(struct nfsv4_client *cl)
 	}
 	nfsv4_cb_forget_client(cl);
 	LIST_REMOVE(cl, cl_list);
+	if (cl->cl_ssv != NULL)
+		nfsv4_ssv_forget(cl);
 	kmem_free(cl, sizeof(*cl));
 
 	mutex_exit(&nfsv4_state_lock);

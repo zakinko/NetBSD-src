@@ -52,6 +52,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 struct oncrpc_gssc {
 	struct gss_krb5_ctx *gc_krb;
 	uint32_t	gc_service;
+	uint32_t	gc_proc;	/* RPCSEC_GSS_DATA, or DESTROY at the end */
 	uint32_t	gc_seq;		/* the last sent */
 	uint32_t	gc_hlen;
 	uint8_t		gc_handle[64];	/* its own limit, the peer's choice */
@@ -202,6 +203,7 @@ oncrpc_gssc_create(const struct sockaddr *to, uint32_t prog, uint32_t vers,
 		goto out;
 	}
 	gc->gc_service = service;
+	gc->gc_proc = RPCSEC_GSS_DATA;
 	gc->gc_hlen = gr.gr_hlen;
 	memcpy(gc->gc_handle, gr.gr_handle, gr.gr_hlen);
 
@@ -221,6 +223,28 @@ out:
 	kmem_free(verf, sizeof(*verf));
 	kmem_free(gr.gr_token, gr.gr_tmax);
 	return error;
+}
+
+/*
+ * RFC 2203 s5.4: tell the peer the context is done with, a data request
+ * to NULLPROC but for gss_proc, then forget it.  Its failure changes
+ * nothing for the caller, as s5.4 says the client need do nothing then.
+ */
+void
+oncrpc_gssc_close(const struct sockaddr *to, uint32_t prog, uint32_t vers,
+    struct oncrpc_gssc *gc, int timeo)
+{
+	struct oncrpc_clnt_call cc;
+
+	gc->gc_proc = RPCSEC_GSS_DESTROY;
+	gc->gc_service = RPCSEC_GSS_SVC_NONE;	/* there are no arguments */
+	memset(&cc, 0, sizeof(cc));
+	cc.cc_prog = prog;
+	cc.cc_vers = vers;
+	cc.cc_proc = 0;
+	cc.cc_gss = gc;
+	(void)oncrpc_clnt_call(to, &cc, timeo);
+	oncrpc_gssc_destroy(gc);
 }
 
 void
@@ -245,7 +269,7 @@ oncrpc_gssc_header(struct oncrpc_gssc *gc, uint32_t xid, uint32_t prog,
 	size_t len;
 
 	*seqp = ++gc->gc_seq;
-	*credlen = gssc_cred(cred, RPCSEC_GSS_DATA, gc->gc_seq, gc->gc_service,
+	*credlen = gssc_cred(cred, gc->gc_proc, gc->gc_seq, gc->gc_service,
 	    gc->gc_handle, gc->gc_hlen);
 	*p++ = htonl(xid);
 	*p++ = htonl(ONCRPC_CALL);

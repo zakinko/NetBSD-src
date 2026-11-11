@@ -14,7 +14,7 @@
 set -eu
 T=$1/tools; O=$1/obj; J=$(nproc)
 tip=$(git rev-parse HEAD)
-base=$(git log --format=%H --grep='^Add the protocol constants' -1 "$tip")
+base=${EACH_BASE:-$(git log --format=%H --grep='^Add the protocol constants' -1 "$tip")}
 # No base, as in a clone too shallow to reach it, would build nothing and
 # pass; say so and fail instead.
 if [ -z "$base" ]; then

@@ -130,6 +130,11 @@ struct oncrpc_program;
  * and is called by one worker at a time.  xo_shutdown wakes anything
  * sleeping in the others; the last two are for a transport with such a
  * thing to do.
+ *
+ * xo_bcall is for a transport that carries calls of ours to the peer,
+ * as oncrpc_svc_call() makes them: may one of len bytes go now.  0 has
+ * counted it, and the call then reaches xo_send with no ctx; EAGAIN is
+ * not yet; anything else is never.  NULL is no such direction at all.
  */
 struct oncrpc_xprt_ops {
 	int	(*xo_recv)(struct oncrpc_xprt *, struct mbuf **, struct mbuf **,
@@ -141,6 +146,7 @@ struct oncrpc_xprt_ops {
 	void	(*xo_ctxfree)(struct oncrpc_xprt *, void *);
 	void	(*xo_ddp_result)(void *, u_int, u_int);
 	void	(*xo_ddp_fix)(void *, u_int, bool);
+	int	(*xo_bcall)(struct oncrpc_xprt *, u_int);
 };
 
 struct oncrpc_xprt {

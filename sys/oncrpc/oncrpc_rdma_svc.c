@@ -81,6 +81,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
  * Reads this end has out at once, which is one.
  */
 #define	ONCRPC_RDMA_CREDITS	32
+#define	ONCRPC_RDMA_BC_CREDITS	4	/* asked of the peer, RFC 8167 s5.1 */
 #define	IW_RECVSIZE		4096
 #define	IW_SENDSIZE		4096
 #define	IW_MULPDU		16384
@@ -812,6 +813,19 @@ rdma_xo_ctxfree(struct oncrpc_xprt *xp, void *ctx)
 	rdma_ctx_free(ctx);
 }
 
+/* A Short message's Payload stream, as a chain of its own. */
+static struct mbuf *
+rdma_inline(const uint8_t *p, u_int len)
+{
+	struct mbuf *m;
+
+	m = m_gethdr(M_WAIT, MT_DATA);
+	m->m_len = 0;
+	m->m_pkthdr.len = 0;
+	m_copyback(m, 0, len, p);
+	return m;
+}
+
 /*
  * One message off iw_msgs.  Returns an errno that loses the connection,
  * or 0 with a call in *mp, or with nothing there if it was dealt with.
@@ -845,15 +859,23 @@ rdma_message(struct oncrpc_xprt *xp, const struct iw_msg *im, struct mbuf **mp,
 	}
 
 	/*
-	 * RFC 8167 s4.1: a Reply is the other direction's, and its credit
-	 * value is a grant of those.  Nothing here makes reverse Calls yet
-	 * but the count is kept right, and a Reply goes no further.
+	 * RFC 8167 s4.1: a Reply is to a reverse Call of ours, and its
+	 * credit value is a grant of those.  It goes up as it is, for the
+	 * RPC layer to give to whoever waits for it.  We give the peer no
+	 * chunks to answer in, s5.3, so a Reply must be a Short message;
+	 * any other has nobody to go to, and goes no further.
 	 */
 	if (rc->rc_hdr.rh_proc == ONCRPC_RDMA_MSG &&
 	    oncrpc_rdma_call_peek(im->im_buf + rc->rc_hdr.rh_hdrlen,
 	    im->im_len - rc->rc_hdr.rh_hdrlen, &ri) &&
 	    ri.ri_mtype == ONCRPC_REPLY) {
+		mutex_enter(&iw->iw_txlock);
 		oncrpc_rdma_bc_done(&iw->iw_bc, rc->rc_hdr.rh_credit);
+		mutex_exit(&iw->iw_txlock);
+		if (rc->rc_hdr.rh_nread == 0 && rc->rc_hdr.rh_nwrite == 0 &&
+		    !rc->rc_hdr.rh_hasreply && ri.ri_xid == rc->rc_hdr.rh_xid)
+			*mp = rdma_inline(im->im_buf + rc->rc_hdr.rh_hdrlen,
+			    im->im_len - rc->rc_hdr.rh_hdrlen);
 		rdma_ctx_free(rc);
 		return 0;
 	}
@@ -956,23 +978,90 @@ rdma_reply_marks(struct rdma_ctx *rc, struct mbuf *m)
 	kmem_free(buf, len);
 }
 
+/*
+ * The Transport header of a reverse Call, RFC 8167 s5.1: the XID of the
+ * RPC header, our version, the credits we ask for, and no chunks, s5.3.
+ */
+#define	RDMA_BC_HDRLEN	(7 * 4)
+
+/*
+ * May a reverse Call of len bytes go.  It is a Short message, s5.3, so
+ * no larger than the peer's receive, which is the inline threshold of
+ * our replies, s4.2; and no more of them out than the peer has granted
+ * credits for, s4.1.
+ */
+static int
+rdma_bcall(struct oncrpc_xprt *xp, u_int len)
+{
+	struct iw_conn *iw = XPIW(xp);
+	bool ok;
+
+	if (iw->iw_state != IW_RUNNING)
+		return ENOTCONN;
+	if (len > iw->iw_sendthresh - RDMA_BC_HDRLEN)
+		return EMSGSIZE;
+	mutex_enter(&iw->iw_txlock);
+	ok = oncrpc_rdma_bc_start(&iw->iw_bc);
+	mutex_exit(&iw->iw_txlock);
+	return ok ? 0 : EAGAIN;
+}
+
+/* A reverse Call that rdma_bcall() has let go. */
+static int
+rdma_send_call(struct oncrpc_xprt *xp, struct mbuf *m)
+{
+	struct oncrpc_rdma_hdr rh;
+	struct oncrpc_xdrmbuf hx;
+	struct mbuf *n;
+	uint32_t xid;
+	u_int hlen;
+	int error;
+
+	m_copydata(m, 0, sizeof(xid), &xid);
+	memset(&rh, 0, sizeof(rh));
+	rh.rh_xid = ntohl(xid);
+	rh.rh_vers = ONCRPC_RDMA_VERS;
+	rh.rh_credit = ONCRPC_RDMA_BC_CREDITS;
+	rh.rh_proc = ONCRPC_RDMA_MSG;
+	oncrpc_xdrmbuf_create(&hx, NULL, UINT_MAX, XDR_ENCODE);
+	if (!oncrpc_rdma_hdr_encode(&hx.xm_xdr, &rh)) {
+		XDR_DESTROY(&hx.xm_xdr);
+		m_freem(m);
+		return ENOBUFS;
+	}
+	hlen = XDR_GETPOS(&hx.xm_xdr);
+	KASSERT(hlen == RDMA_BC_HDRLEN);
+	n = oncrpc_xdrmbuf_detach(&hx);
+	hlen += m->m_pkthdr.len;
+	m_remove_pkthdr(m);
+	m_cat(n, m);
+	n->m_pkthdr.len = hlen;
+	error = iw_send(xp, n, hlen);
+	m_freem(n);
+	return error;
+}
+
 static int
 rdma_send(struct oncrpc_xprt *xp, struct mbuf *m, struct mbuf *nam, void *ctx)
 {
 	struct iw_conn *iw = XPIW(xp);
 	struct rdma_ctx *rc = ctx;
-	struct oncrpc_rdma_hdr *call = &rc->rc_hdr;
+	struct oncrpc_rdma_hdr *call;
 	struct oncrpc_rdma_hdr rh;
 	struct oncrpc_rdma_plan rp;
 	struct oncrpc_xdrmbuf hx;
 	struct mbuf *red, *n;
 	u_int paylen, off, i, keep, hlen;
 	int *chunkof = NULL, error;
-	size_t ofsz = rc->rc_nmark * sizeof(int);
+	size_t ofsz;
 
+	if (rc == NULL)
+		return rdma_send_call(xp, m);
+	call = &rc->rc_hdr;
 	paylen = m->m_pkthdr.len;
 	if (!rc->rc_fixed)
 		rdma_reply_marks(rc, m);
+	ofsz = rc->rc_nmark * sizeof(int);
 	if (rc->rc_nmark != 0)
 		chunkof = kmem_alloc(ofsz, KM_SLEEP);
 	oncrpc_rdma_reply_plan(call, rc->rc_marks, rc->rc_nmark, paylen,
@@ -1131,6 +1220,7 @@ static const struct oncrpc_xprt_ops rdma_ops = {
 	.xo_ctxfree = rdma_xo_ctxfree,
 	.xo_ddp_result = rdma_ddp_result,
 	.xo_ddp_fix = rdma_ddp_fix,
+	.xo_bcall = rdma_bcall,
 };
 
 /*

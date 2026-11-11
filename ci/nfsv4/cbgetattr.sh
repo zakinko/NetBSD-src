@@ -4,6 +4,16 @@
 # is the client's minor version, 4.0 by default.  CB_GETATTR answering
 # means no DELEGRETURN while the other asks; a recall is the fallback.
 v=${VERS:-4.0}
+# As linux-client.sh does: a push runs this alone, and a 4.0 client
+# then listened for callbacks on a port of its own choosing, which the
+# tunnel does not carry, so the path was down and the server offered
+# no delegation (run 43070434418, cb_trace "cbstate 2 ... refused 3").
+sudo modprobe nfs 2>/dev/null || {
+	sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" >/dev/null 2>&1
+	sudo modprobe nfs
+}
+sudo modprobe nfsv4
+echo 40100 | sudo tee /sys/module/nfs/parameters/callback_tcpport >/dev/null
 m=/mnt/nfsv4cg
 sudo mkdir -p "$m"
 sudo mount -t nfs -o vers=$v,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/pynfs "$m" || exit 1

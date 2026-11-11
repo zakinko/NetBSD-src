@@ -472,8 +472,10 @@ nfs_xattr_rename(struct vnode *vp, kauth_cred_t cred, const char *from,
 }
 
 /*
- * The attributes of a node, made from the file's.  The directory is as
- * illumos makes one for a file system with no directory of its own,
+ * The attributes of a node, made from the file's.  RFC 7530 s5.3 and
+ * RFC 8881 s5.3 say only that the node "may have their own (non-named)
+ * attributes", with the REQUIRED ones, not what they are; so they are
+ * illumos'.  The directory is as illumos makes one for a file system with no directory of its own,
  * xattr_dir_getattr() in usr/src/uts/common/fs/xattr.c:1079-1131 at
  * 586678ac1bc: the owner, the group and the times but the access time
  * from the file (PARENT_ATTRMASK, 1075), a directory of mode 01777

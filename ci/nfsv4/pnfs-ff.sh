@@ -15,7 +15,7 @@ sudo modprobe nfs 2>/dev/null || {
 sudo modprobe nfsv4
 sudo modprobe nfsv3
 sudo modprobe nfs_layout_flexfiles 2>/dev/null || echo "no nfs_layout_flexfiles module"
-command -v tcpdump >/dev/null || sudo apt-get install -y -q tcpdump >/dev/null 2>&1
+command -v tcpdump || sudo apt-get install -y -q tcpdump 2>&1 | tail -2
 vm "pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 4
 cd /var/tmp/nfsv4 && { pgrep -x nfs3tcp >/dev/null ||
     nohup ./nfs3tcp 2050 </dev/null >nfs3tcp.log 2>&1 & }
@@ -25,7 +25,7 @@ netstat -an -f inet | grep '\.2050 '"
 num() { vm "sysctl -n vfs.nfsv4.$1"; }
 g0=$(num layouts_given) f0=$(num ff_fences)
 cap=$(mktemp)
-sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2050' 2>/dev/null &
+sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2050' 2>"$cap.err" &
 tp=$!
 sleep 1
 m=/mnt/nfsv4ff
@@ -79,6 +79,7 @@ vm "rm -f /export/pynfs/$n; dmesg | grep nfsv4 | tail -5"
 
 sudo kill "$tp"
 wait "$tp" 2>/dev/null
+cat "$cap.err"; ls -l "$cap"
 b=$(tcpdump -r "$cap" -nn -q 2>/dev/null | awk '{ n += $NF } END { print n + 0 }')
 echo "bytes over port 2050 (the storage device): $b"
 [ "$b" -gt 4194304 ] && ok "I/O went to the storage device" ||

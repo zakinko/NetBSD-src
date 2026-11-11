@@ -17,9 +17,9 @@ ssh -o LogLevel=ERROR netbsd "cd /var/tmp/nfsv4 && { pgrep -f 'nfsv4d - 2051' >/
 sleep 1
 sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.3'
 netstat -an -f inet | grep '\.2051 '"
-command -v tcpdump >/dev/null || sudo apt-get install -y -q tcpdump >/dev/null 2>&1
+command -v tcpdump || sudo apt-get install -y -q tcpdump 2>&1 | tail -2
 cap=$(mktemp)
-sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>/dev/null &
+sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>"$cap.err" &
 tp=$!
 sleep 1
 given() { ssh -o LogLevel=ERROR netbsd "sysctl -n vfs.nfsv4.layouts_given"; }
@@ -48,6 +48,7 @@ rm -f "$src"
 sudo umount "$m"
 sudo kill "$tp"
 wait "$tp" 2>/dev/null
+cat "$cap.err"; ls -l "$cap"
 port() {
 	tcpdump -r "$cap" -nn -q "tcp port $1" 2>/dev/null |
 	    awk '{ n += $NF } END { print n + 0 }'

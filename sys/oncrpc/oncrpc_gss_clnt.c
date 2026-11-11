@@ -46,13 +46,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/systm.h>
 
 #include <oncrpc/gss_krb5.h>
+#include <oncrpc/gss_mech.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_gssd.h>
 #include <oncrpc/oncrpc_var.h>
 
 struct oncrpc_gssc {
-	struct gss_krb5_ctx *gc_krb;
-	struct oncrpc_gss_ctx *gc_srv;	/* the server's, if gc_krb is its */
+	struct oncrpc_gss_key gc_own;	/* the context of a 4.0 callback */
+	const struct oncrpc_gss_key *gc_key; /* gc_own, or the server's */
+	struct oncrpc_gss_ctx *gc_srv;	/* the server's, held */
 	volatile u_int	gc_refs;	/* for a back handle in use */
 	uint32_t	gc_service;
 	uint32_t	gc_proc;	/* RPCSEC_GSS_DATA, or DESTROY at the end */
@@ -131,6 +133,7 @@ oncrpc_gssc_create(const struct sockaddr *to, uint32_t prog, uint32_t vers,
     const char *principal, uint32_t service, int timeo,
     struct oncrpc_gssc **gcp)
 {
+	struct gss_krb5_ctx *kc;
 	struct oncrpc_gssd_accept_res *ar;
 	struct oncrpc_clnt_call cc;
 	struct oncrpc_opaque_auth *verf;
@@ -200,7 +203,12 @@ oncrpc_gssc_create(const struct sockaddr *to, uint32_t prog, uint32_t vers,
 
 	gc = kmem_zalloc(sizeof(*gc), KM_SLEEP);
 	ar->ar_import.gi_initiator = true;
-	error = gss_krb5_ctx_create(&ar->ar_import, &gc->gc_krb);
+	error = gss_krb5_ctx_create(&ar->ar_import, &kc);
+	if (error == 0) {
+		gc->gc_own.k_mech = &oncrpc_gss_krb5_mech;
+		gc->gc_own.k_ctx = kc;
+		gc->gc_key = &gc->gc_own;
+	}
 	if (error != 0) {
 		kmem_free(gc, sizeof(*gc));
 		goto out;
@@ -213,7 +221,7 @@ oncrpc_gssc_create(const struct sockaddr *to, uint32_t prog, uint32_t vers,
 	/* s5.2.3.1: the checksum of the window, which proves the peer. */
 	w = htonl(gr.gr_window);
 	if (verf->oa_flavor != RPCSEC_GSS ||
-	    gss_krb5_verify_mic(gc->gc_krb, &w, sizeof(w), verf->oa_body,
+	    oncrpc_gssk_verify_mic(gc->gc_key, &w, sizeof(w), verf->oa_body,
 	    verf->oa_len) != GSS_S_COMPLETE) {
 		oncrpc_gssc_destroy(gc);
 		error = EAUTH;
@@ -263,17 +271,17 @@ oncrpc_gssc_back(const uint8_t *shandle, uint32_t slen, const uint8_t *chandle,
     uint32_t clen, uint32_t service, struct oncrpc_gssc **gcp)
 {
 	struct oncrpc_gssc *gc;
-	struct gss_krb5_ctx *krb;
+	struct oncrpc_gss_key *key;
 	struct oncrpc_gss_ctx *gx;
 
 	if (clen > sizeof(gc->gc_handle) || service < RPCSEC_GSS_SVC_NONE ||
 	    service > RPCSEC_GSS_SVC_PRIVACY)
 		return EINVAL;
-	gx = oncrpc_gss_ctx_hold(shandle, slen, &krb);
+	gx = oncrpc_gss_ctx_hold(shandle, slen, &key);
 	if (gx == NULL)
 		return ENOENT;
 	gc = kmem_zalloc(sizeof(*gc), KM_SLEEP);
-	gc->gc_krb = krb;
+	gc->gc_key = key;
 	gc->gc_srv = gx;
 	gc->gc_refs = 1;
 	gc->gc_service = service;
@@ -304,7 +312,7 @@ oncrpc_gssc_destroy(struct oncrpc_gssc *gc)
 		kmem_free(gc, sizeof(*gc));
 		return;
 	}
-	gss_krb5_ctx_destroy(gc->gc_krb);
+	oncrpc_gssk_destroy(&gc->gc_own);
 	kmem_free(gc, sizeof(*gc));
 }
 
@@ -333,7 +341,7 @@ oncrpc_gssc_header(struct oncrpc_gssc *gc, uint32_t xid, uint32_t prog,
 	*p++ = htonl(RPCSEC_GSS);
 	*p++ = htonl(*credlen);
 	memcpy(p, cred, *credlen);
-	if (gss_krb5_get_mic(gc->gc_krb, hdr, 32 + *credlen, verf,
+	if (oncrpc_gssk_get_mic(gc->gc_key, hdr, 32 + *credlen, verf,
 	    GSS_KRB5_MAXMIC, &len) != GSS_S_COMPLETE)
 		return false;
 	*verflen = len;
@@ -362,7 +370,7 @@ oncrpc_gssc_seal(struct oncrpc_gssc *gc, uint32_t seq, struct mbuf *m)
 	oncrpc_xdrmbuf_create(&x, NULL, UINT_MAX, XDR_ENCODE);
 	len = plen;
 	if (gc->gc_service == RPCSEC_GSS_SVC_INTEGRITY) {
-		if (gss_krb5_get_mic(gc->gc_krb, plain, plen, mic, sizeof(mic),
+		if (oncrpc_gssk_get_mic(gc->gc_key, plain, plen, mic, sizeof(mic),
 		    &ml) == GSS_S_COMPLETE) {
 			mlen = ml;
 			ok = xdr_u_int32_t(&x.xm_xdr, &len) &&
@@ -371,9 +379,9 @@ oncrpc_gssc_seal(struct oncrpc_gssc *gc, uint32_t seq, struct mbuf *m)
 			    xdr_opaque(&x.xm_xdr, (char *)mic, mlen);
 		}
 	} else {
-		toksz = gss_krb5_wrap_size(gc->gc_krb, plen);
+		toksz = oncrpc_gssk_wrap_size(gc->gc_key, plen);
 		tok = kmem_alloc(toksz, KM_SLEEP);
-		if (gss_krb5_wrap(gc->gc_krb, plain, plen, tok, toksz, &tlen) ==
+		if (oncrpc_gssk_wrap(gc->gc_key, plain, plen, tok, toksz, &tlen) ==
 		    GSS_S_COMPLETE) {
 			len = tlen;
 			ok = xdr_u_int32_t(&x.xm_xdr, &len) &&
@@ -412,7 +420,7 @@ oncrpc_gssc_open(struct oncrpc_gssc *gc, uint32_t seq,
 
 	*resp = NULL;
 	if (verf->oa_flavor != RPCSEC_GSS ||
-	    gss_krb5_verify_mic(gc->gc_krb, &s, sizeof(s), verf->oa_body,
+	    oncrpc_gssk_verify_mic(gc->gc_key, &s, sizeof(s), verf->oa_body,
 	    verf->oa_len) != GSS_S_COMPLETE)
 		return EAUTH;
 	if (gc->gc_service == RPCSEC_GSS_SVC_NONE)
@@ -438,7 +446,7 @@ oncrpc_gssc_open(struct oncrpc_gssc *gc, uint32_t seq,
 		if (mlen > sizeof(mic) || o + 4 + mlen > total)
 			goto out;
 		m_copydata(m, o + 4, mlen, mic);
-		if (gss_krb5_verify_mic(gc->gc_krb, body, blen, mic, mlen) !=
+		if (oncrpc_gssk_verify_mic(gc->gc_key, body, blen, mic, mlen) !=
 		    GSS_S_COMPLETE)
 			goto out;
 		plain = body;
@@ -446,7 +454,7 @@ oncrpc_gssc_open(struct oncrpc_gssc *gc, uint32_t seq,
 	} else {
 		void *pp;
 
-		if (gss_krb5_unwrap(gc->gc_krb, body, blen, NULL, &pp, &plen,
+		if (oncrpc_gssk_unwrap(gc->gc_key, body, blen, NULL, &pp, &plen,
 		    &conf) != GSS_S_COMPLETE || !conf || plen < 4)
 			goto out;
 		plain = pp;

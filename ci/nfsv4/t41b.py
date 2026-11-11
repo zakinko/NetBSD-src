@@ -414,6 +414,35 @@ for name, uid in (("the flavour alone", 0xffffffff), ("uid too", 0)):
                      other)
     t("s18.35.4 another flavour, CLID_INUSE, " + name, res.status, NFS4ERR_CLID_INUSE)
 
+# s20.11 CB_NOTIFY_LOCK: OPEN says it may come (s20.11.3), and a LOCKU
+# over a denied WRITEW_LT sends it to the waiter, with its lock_owner4.
+res = create_file(s, stamp + b"nl", path=P(b"nl"), access=OPEN4_SHARE_ACCESS_BOTH)
+check(res)
+t("s20.11.3 OPEN4_RESULT_MAY_NOTIFY_LOCK",
+  bool(res.resarray[-2].rflags & OPEN4_RESULT_MAY_NOTIFY_LOCK), True)
+fn, sn = res.resarray[-1].object, res.resarray[-2].stateid
+res = s.compound(nofh(fn, lockop(sn, b"nl1", 0, 10)))
+t("s20.11 the first LOCK", res.status, NFS4_OK)
+ls = res.resarray[-1].lock_stateid if res.status == 0 else None
+res = open_file(s2, b"nl2", path=P(b"nl"), access=OPEN4_SHARE_ACCESS_BOTH)
+check(res)
+sn2 = res.resarray[-2].stateid
+notified = []
+def nhook(arg, env):
+    notified.append((arg.cnla_fh, arg.cnla_lock_owner.owner))
+s2.client.cb_pre_hook(OP_CB_NOTIFY_LOCK, nhook)
+w = op.lock(WRITEW_LT, False, 0, 10, locker4(
+    open_owner=open_to_lock_owner4(0, sn2, 0, lock_owner4(0, b"nl2")),
+    new_lock_owner=True))
+t("s20.11 WRITEW_LT denied", s2.compound(nofh(fn, w)).status, NFS4ERR_DENIED)
+if ls is not None:
+    t("s20.11 LOCKU", s.compound(nofh(fn, op.locku(WRITE_LT, 0, ls, 0, 10))).status, NFS4_OK)
+    for i in range(20):
+        if notified:
+            break
+        time.sleep(0.5)
+    t("s20.11 CB_NOTIFY_LOCK to the waiter", notified, [[(fn, b"nl2")]])
+
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
 res = create_file(s3, stamp + b"exp", path=P(b"exp"))

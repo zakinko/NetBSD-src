@@ -186,6 +186,10 @@ struct nfsv4_lockwait {
 	off_t		lw_end;		/* -1 for EOF */
 	bool		lw_write;
 	time_t		lw_expire;
+	/* lock_owner4, for CB_NOTIFY_LOCK, RFC 8881 s20.11 */
+	uint64_t	lw_clientid;
+	uint32_t	lw_olen;
+	uint8_t		lw_owner[NFS4_OPAQUE_LIMIT];
 };
 
 /* All the state on one vnode. */
@@ -363,6 +367,8 @@ void	nfsv4_cb_reset(struct nfsv4_client *);
 void	nfsv4_cb_recall(struct nfsv4_state *);
 void	nfsv4_cb_forget_client(struct nfsv4_client *);
 void	nfsv4_cb_forget_state(struct nfsv4_state *);
+void	nfsv4_cb_notify_lock(const struct nfsv4_lockwait *,
+	    const struct nfsv4_fh *);
 uint32_t nfsv4_deleg_conflict(struct vnode *, const struct nfsv4_client *,
 	    uint64_t, u_int);
 void	nfsv4_deleg_offer(struct nfsv4_owner_s *, struct vnode *,

@@ -148,6 +148,29 @@ lw_overlaps(const struct nfsv4_lockwait *lw, const struct flock *fl)
 	    (lw->lw_end == -1 || fl->l_start <= lw->lw_end);
 }
 
+/*
+ * RFC 8881 s20.11: after LOCKU, tell the clients of 4.1 waiting on what
+ * was let go that it may now be had: each waiter that overlaps it, in
+ * the order of s9.4, which nfsv4_lock_fair() still keeps when they come
+ * to LOCK.  None is granted anything here (s20.11.4).
+ * Other releases (a lease ending, a lock-owner released) do not notify;
+ * the callback is never owed (s20.11.4), and the client polls anyway.
+ */
+static void
+lock_notify(struct nfsv4_file *f, const struct flock *fl)
+{
+	struct nfsv4_lockwait *lw;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (f == NULL)
+		return;
+	TAILQ_FOREACH(lw, &f->f_waits, lw_list) {
+		if (time_uptime < lw->lw_expire && lw_overlaps(lw, fl))
+			nfsv4_cb_notify_lock(lw, &f->f_fh);
+	}
+}
+
 bool
 nfsv4_lock_fair(struct nfsv4_owner_s *lo, struct vnode *vp,
     const struct flock *fl)
@@ -201,6 +224,9 @@ nfsv4_lock_waited(struct nfsv4_owner_s *lo, struct vnode *vp,
 			if (lw == NULL && f->f_nwaits < LOCKWAIT_MAX &&
 			    (lw = kmem_zalloc(sizeof(*lw), KM_NOSLEEP)) != NULL) {
 				lw->lw_gen = lo->sw_gen;
+				lw->lw_clientid = lo->sw_client->cl_id;
+				lw->lw_olen = lo->sw_len;
+				memcpy(lw->lw_owner, lo->sw_data, lo->sw_len);
 				TAILQ_INSERT_TAIL(&f->f_waits, lw, lw_list);
 				f->f_nwaits++;
 			}
@@ -690,6 +716,7 @@ nfsv4_op_locku(struct nfsv4_compound *c, union nfsv4_args *a)
 		mutex_enter(&nfsv4_state_lock);
 		st->st_seqid++;
 		nfsv4_lock_assign(lo, st->st_file, NULL, &fl);
+		lock_notify(st->st_file, &fl);
 		nfsv4_stateid_out(st, &si);
 		c->c_curst = si;
 		mutex_exit(&nfsv4_state_lock);

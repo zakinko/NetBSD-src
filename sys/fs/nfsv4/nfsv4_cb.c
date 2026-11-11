@@ -112,8 +112,21 @@ struct cb_recall_args {
 	struct nfsv4_fh	ra_fh;
 };
 
+/* CB_NOTIFY_LOCK4args, RFC 8881 s20.11.1, and whom to. */
+struct cb_notify {
+	TAILQ_ENTRY(cb_notify) cn_list;
+	const struct cb_target *cn_ct;
+	uint64_t	cn_clientid;
+	struct nfsv4_fh	cn_fh;
+	uint32_t	cn_olen;
+	uint8_t		cn_owner[NFS4_OPAQUE_LIMIT];
+};
+#define	CB_NOTIFY_MAX	64	/* queued at once; chosen, they are hints */
+
 static TAILQ_HEAD(, nfsv4_client) cb_probes;
 static TAILQ_HEAD(, nfsv4_state) cb_recalls;
+static TAILQ_HEAD(, cb_notify) cb_notifies;
+static u_int cb_nnotifies;
 static kcondvar_t cb_cv;
 static struct lwp *cb_lwps[NFSV4_CB_THREADS];
 static bool cb_dying;
@@ -318,6 +331,20 @@ cb_recall_encode(XDR *x, void *arg)
 	    nfsv4_xdr_stateid(x, &ra->ra_stateid) &&
 	    xdr_u_int32_t(x, &zero) &&		/* truncate, s18.2.4 */
 	    nfsv4_xdr_fh(x, &ra->ra_fh);
+}
+
+/* CB_COMPOUND4args of CB_NOTIFY_LOCK, RFC 8881 s20.11.1. */
+static bool
+cb_notify_encode(XDR *x, void *arg)
+{
+	struct cb_notify *cn = arg;
+	uint32_t op = NFSV4_OP_CB_NOTIFY_LOCK;
+
+	return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
+	    nfsv4_xdr_fh(x, &cn->cn_fh) &&
+	    xdr_u_int64_t(x, &cn->cn_clientid) &&
+	    xdr_bytes(x, &(char *){ (char *)cn->cn_owner }, &cn->cn_olen,
+	    NFS4_OPAQUE_LIMIT);
 }
 
 /* All that matters of CB_COMPOUND4res is the status, s17.2.4. */
@@ -573,17 +600,43 @@ cb_do_recall(struct nfsv4_state *st)
 	}
 }
 
+/*
+ * One CB_NOTIFY_LOCK.  A hint: whatever comes of it, nothing is tried
+ * again (s20.11.4), but a reply still says whether the path works.
+ */
+static void
+cb_do_notify(struct cb_notify *cn)
+{
+	struct nfsv4_client *cl;
+	struct cb_target ct;
+	uint32_t status;
+	int error;
+
+	cl = nfsv4_client_byid(cn->cn_clientid);
+	if (cl == NULL || cl->cl_minor == 0 || !cb_target_get(cl, &ct))
+		return;
+	cn->cn_ct = &ct;
+	mutex_exit(&nfsv4_state_lock);
+	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_notify_encode, cn,
+	    cb_status_decode, &status);
+	mutex_enter(&nfsv4_state_lock);
+	cb_target_put(&ct, error);
+	cb_path(&ct, error == 0);
+}
+
 static void
 cb_thread(void *arg)
 {
 	struct nfsv4_client *cl;
 	struct nfsv4_state *st;
+	struct cb_notify *cn;
 
 	mutex_enter(&nfsv4_state_lock);
 	for (;;) {
 		cl = TAILQ_FIRST(&cb_probes);
 		st = TAILQ_FIRST(&cb_recalls);
-		if (cl == NULL && st == NULL) {
+		cn = TAILQ_FIRST(&cb_notifies);
+		if (cl == NULL && st == NULL && cn == NULL) {
 			if (cb_dying)
 				break;
 			cv_wait(&cb_cv, &nfsv4_state_lock);
@@ -595,6 +648,13 @@ cb_thread(void *arg)
 			TAILQ_REMOVE(&cb_recalls, st, st_cbq);
 			st->st_cbqueued = false;
 			cb_do_recall(st);
+		} else if (cn != NULL) {
+			TAILQ_REMOVE(&cb_notifies, cn, cn_list);
+			cb_nnotifies--;
+			cb_do_notify(cn);
+			mutex_exit(&nfsv4_state_lock);
+			kmem_free(cn, sizeof(*cn));
+			mutex_enter(&nfsv4_state_lock);
 		} else {
 			TAILQ_REMOVE(&cb_probes, cl, cl_cbq);
 			cl->cl_cbqueued = false;
@@ -684,6 +744,29 @@ nfsv4_cb_recall(struct nfsv4_state *st)
 		cv_signal(&cb_cv);
 }
 
+/* RFC 8881 s20.11: lw may be able to have its lock on the file of fh. */
+void
+nfsv4_cb_notify_lock(const struct nfsv4_lockwait *lw,
+    const struct nfsv4_fh *fh)
+{
+	struct cb_notify *cn;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (cb_dying || cb_nnotifies >= CB_NOTIFY_MAX)
+		return;
+	cn = kmem_zalloc(sizeof(*cn), KM_NOSLEEP);
+	if (cn == NULL)
+		return;
+	cn->cn_clientid = lw->lw_clientid;
+	cn->cn_fh = *fh;
+	cn->cn_olen = lw->lw_olen;
+	memcpy(cn->cn_owner, lw->lw_owner, lw->lw_olen);
+	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
+	cb_nnotifies++;
+	cv_signal(&cb_cv);
+}
+
 void
 nfsv4_cb_forget_client(struct nfsv4_client *cl)
 {
@@ -715,6 +798,8 @@ nfsv4_cb_init(void)
 
 	TAILQ_INIT(&cb_probes);
 	TAILQ_INIT(&cb_recalls);
+	TAILQ_INIT(&cb_notifies);
+	cb_nnotifies = 0;
 	cv_init(&cb_cv, "nfsv4cb");
 	cb_dying = false;
 	for (i = 0; i < NFSV4_CB_THREADS; i++) {
@@ -727,6 +812,7 @@ nfsv4_cb_init(void)
 void
 nfsv4_cb_fini(void)
 {
+	struct cb_notify *cn;
 	u_int i;
 
 	mutex_enter(&nfsv4_state_lock);
@@ -735,5 +821,9 @@ nfsv4_cb_fini(void)
 	mutex_exit(&nfsv4_state_lock);
 	for (i = 0; i < NFSV4_CB_THREADS; i++)
 		kthread_join(cb_lwps[i]);
+	while ((cn = TAILQ_FIRST(&cb_notifies)) != NULL) {
+		TAILQ_REMOVE(&cb_notifies, cn, cn_list);
+		kmem_free(cn, sizeof(*cn));
+	}
 	cv_destroy(&cb_cv);
 }

@@ -428,6 +428,9 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 	rflags = OPEN4_RESULT_LOCKTYPE_POSIX;
 	if (!sw->sw_confirmed)
 		rflags |= OPEN4_RESULT_CONFIRM;
+	/* RFC 8881 s20.11.3: MUST, of any file, as LOCKU may notify. */
+	if (c->c_minor != 0)
+		rflags |= OPEN4_RESULT_MAY_NOTIFY_LOCK;
 	sw->sw_rfh = c->c_cur.cf_fh;
 
 	nfsv4_client_stable(cl);

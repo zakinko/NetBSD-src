@@ -38,6 +38,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/edge.py)		add edge;;
 	ci/nfsv4/t41b.py)		add t41b;;
 	ci/nfsv4/t40rm.py)		add t40rm;;
+	ci/nfsv4/each-commit.sh)	add each;;
 	ci/nfsv4/in-vm.sh|ci/nfsv4/nfsv4d.c|ci/nfsv4/pynfs.sh)
 					add t41b;;
 	esac

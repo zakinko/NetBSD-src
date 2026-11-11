@@ -75,7 +75,8 @@ jobs:
       - continue-on-error: true
         if: github.event_name == 'workflow_dispatch'
         run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
-      - if: github.event_name == 'workflow_dispatch'
+      # The heavy stage, and a push that changes the script itself.
+      - if: github.event_name == 'workflow_dispatch' || contains(steps.select.outputs.tests, ' each ')
         run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
@@ -93,7 +94,7 @@ jobs:
           retention-days: 7
   test:
     needs: build
-    if: github.event_name == 'workflow_dispatch' || needs.build.outputs.tests != ' '
+    if: github.event_name == 'workflow_dispatch' || needs.build.outputs.tests != ' ' && needs.build.outputs.tests != ' each '
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     steps:

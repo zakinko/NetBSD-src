@@ -100,6 +100,7 @@ struct nfsv4_session {
 	uint32_t	se_nslots;
 	uint32_t	se_cbprog;
 	struct nfsv4_cbsec se_cbsec;
+	struct oncrpc_gssc *se_cbgss;	/* s2.10.8.2: the back handle */
 	uint32_t	se_cbvers;	/* RPC version of calls on it */
 	uint32_t	se_minor;	/* of CREATE_SESSION, for CB_COMPOUND */
 	uint32_t	se_cbseq;	/* of the one slot of the backchannel */

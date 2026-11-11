@@ -6,19 +6,26 @@ on:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
       - 'sys/oncrpc/**'
-      - 'sys/nfs/**'
       - 'sys/kern/vfs_lockf.c'
+      - 'sys/kern/vfs_vnops.c'
+      - 'sys/kern/vfs_syscalls.c'
+      - 'sys/kern/sys_descrip.c'
       - 'sys/sys/lockf.h'
       - 'sys/ufs/ffs/ffs_inode.c'
       - 'sys/fs/tmpfs/tmpfs_subr.c'
       - 'tests/fs/nfsv4/**'
       - 'tests/oncrpc/**'
       - 'ci/nfsv4/**'
+      - 'sys/nfs/**'
       - 'ci/nfsgss/**'
       - 'usr.sbin/gssd/**'
       - 'usr.sbin/mountd/**'
       - '.github/workflows/nfsgss.yml'
   workflow_dispatch:
+    inputs:
+      quick:
+        description: leave out the runs of all of pynfs
+        default: 'false'
 concurrency:
   group: nfsgss-${{ github.ref }}
   cancel-in-progress: true
@@ -42,7 +49,7 @@ jobs:
         id: kernel
         with:
           path: nb/netbsd
-          key: nfsgss-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsgss-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
       - uses: actions/cache/save@v4
         if: steps.tools.outputs.cache-hit != 'true'
@@ -53,9 +60,11 @@ jobs:
         if: steps.kernel.outputs.cache-hit != 'true'
         with:
           path: nb/netbsd
-          key: nfsgss-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+          key: nfsgss-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
-      - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
+      # ZFS failing must not keep FFS and tmpfs from being measured.
+      - continue-on-error: true
+        run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
@@ -68,6 +77,11 @@ jobs:
           sudo apt-get install -y -q libssl-dev >/dev/null
           cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
           ./t3
+          cc -g -fsanitize=address,undefined -w -Isys/oncrpc -Itests/oncrpc/gss-shim -o t4 tests/oncrpc/t_gss_ssv.c sys/oncrpc/gss_ssv.c -lcrypto
+          ./t4 | tail -3
+          sudo apt-get install -y -q libssl-dev >/dev/null
+          cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
+          ./t3
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -77,7 +91,7 @@ jobs:
   test:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,6 +128,7 @@ jobs:
           scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
       - name: The ZFS userland, on the stock kernel
+        continue-on-error: true
         run: |
           scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
           ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
@@ -122,7 +137,7 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/fib.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: The KDC and the daemons
         run: |
@@ -148,10 +163,88 @@ jobs:
               -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
               -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 netbsd
           sleep 2
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
-      - run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
+      - name: Edges of COMMIT and READDIR
+        run: |
+          PYNFS_ARGS=INIT LIMIT=120 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-init || true
+          cp ci/nfsv4/edge.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          for e in /export/pynfs /export/tmpfs /tank/x; do
+            echo "=== $e"
+            python3 ./edge.py "$e" || echo "edge $e: $?"
+          done 2>&1 | tee "$OLDPWD/out/edge.txt"
+      - name: REMOVE under DENY_WRITE in version 4.0, both ways
+        run: |
+          cp ci/nfsv4/t40rm.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          timeout 120 python3 ./t40rm.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t40rm.txt" || true
+      - name: The Linux client
+        run: sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - name: The Linux client, version 4.1
+        run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
+      - name: The 4.1 suite, with the write delegations the client test turned off
+        run: |
+          ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'
+          SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs41
+      - name: The 4.1 suite on ZFS
+        continue-on-error: true
+        run: SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs41-zfs
+      - name: What the 4.1 suite does not run
+        run: |
+          cp ci/nfsv4/t41.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 600 python3 ./t41.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t41.txt" || true
+      - name: What the reading of RFC 8881 found
+        run: |
+          cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 400 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - name: What the run of all would have cleaned up
+        if: inputs.quick == 'true'
+        run: ssh netbsd 'rm -rf /export/pynfs/tree'
+      - name: Delegations, which are not in all
+        run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
+      - name: Referrals and owners
+        run: |
+          PYNFS_ARGS='--usespecial=/export/ref/there fslocations' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-fsloc
+          cp ci/nfsv4/owner.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          ssh netbsd "sysctl -w vfs.nfsv4.domain=example.org; sysctl -w 'vfs.nfsv4.idmap=u 1234 alice'; sysctl -w 'vfs.nfsv4.idmap=g 5678 staff'"
+          python3 ./owner.py /export/pynfs 2>&1 | tee "$OLDPWD/out/owner.txt" || true
+          ssh netbsd "sysctl -w vfs.nfsv4.domain=; sysctl -w vfs.nfsv4.idmap=clear"
+      - name: The rest of the options
+        run: |
+          cp ci/nfsv4/more.py "$HOME/pynfs/nfs4.0/"
+          o="$PWD/out"; c="$PWD/ci/nfsv4"
+          cd "$HOME/pynfs/nfs4.0"
+          { python3 ./more.py attrs /export/acl
+            python3 ./more.py attrs /tank/x
+            python3 ./more.py quota /export/quota
+            python3 ./more.py fair /export/pynfs
+            python3 ./more.py prev /export/pynfs
+            python3 ./more.py moved /export/mig
+            sh "$c/cbgetattr.sh"
+          } 2>&1 | tee "$o/more.txt" || true
+      - name: Named attributes and fs_locations
+        run: |
+          cp ci/nfsv4/named-attr.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          for e in /export/acl /tank/x /export/pynfs; do
+            echo "=== $e"
+            python3 ./named-attr.py "$e" ssh netbsd getextattr user one || echo "named-attr $e: $?"
+          done 2>&1 | tee "$OLDPWD/out/named-attr.txt"
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
+      - if: inputs.quick != 'true'
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
+      - if: inputs.quick != 'true'
+        continue-on-error: true
+        run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
+      - name: SP4_SSV, pynfs EID50 under krb5i
+        id: ssv
+        continue-on-error: true
+        run: sh ci/nfsgss/pynfs-ssv.sh "$PWD/out"
       - name: The FreeBSD client
         id: fbvm
         continue-on-error: true
@@ -165,23 +258,38 @@ jobs:
       - name: UDP from FreeBSD
         id: udp
         continue-on-error: true
+        timeout-minutes: 25
         run: |
           scp netbsd:/var/tmp/nfsv4/freebsd.keytab out/fb.keytab
           ssh freebsd 'mkdir -p /var/tmp/nfsgss'
-          scp out/fb.keytab ci/nfsgss/freebsd.sh freebsd:/var/tmp/nfsgss/
-          rm -f out/fb.keytab
-          ssh freebsd 'mv /var/tmp/nfsgss/fb.keytab /var/tmp/nfsgss/freebsd.keytab; sh /var/tmp/nfsgss/freebsd.sh' 2>&1 | tee out/freebsd-udp.txt
+          scp netbsd:/var/tmp/nfsv4/alice.keytab out/al.keytab
+          scp out/fb.keytab out/al.keytab ci/nfsgss/freebsd.sh freebsd:/var/tmp/nfsgss/
+          rm -f out/fb.keytab out/al.keytab
+          ss -lun | grep -E ':(111|2049|4002) ' || echo 'no UDP forward on the runner'
+
+          ssh freebsd 'mv /var/tmp/nfsgss/fb.keytab /var/tmp/nfsgss/freebsd.keytab; mv /var/tmp/nfsgss/al.keytab /var/tmp/nfsgss/alice.keytab; sh /var/tmp/nfsgss/freebsd.sh' 2>&1 | tee out/freebsd-udp.txt
           test "${PIPESTATUS[0]}" = 0
       - name: What the kernel said
         if: always()
         run: |
-          ssh -o ConnectTimeout=20 netbsd "tail -60 /var/tmp/nfsv4/gssd.log; uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; ps -ax | grep -c nfsv4; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+          ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; ps -ax | grep -c nfsv4; dmesg | tail -40" | tee out/kernel.txt || echo no answer
       - name: Summarise
         if: always()
         run: |
-          for n in pynfs pynfs-tmpfs pynfs-acl pynfs-zfs; do
-            python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
-          done
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs41-zfs.json out/pynfs41-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs41.json out/pynfs41.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-deleg.json out/pynfs-deleg.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-reboot.json out/pynfs-reboot.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-fsloc.json out/pynfs-fsloc.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-tmpfs.json out/pynfs-tmpfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-acl.json out/pynfs-acl.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+      # Last, for the runs after it to be measured all the same.
+      - name: The Linux client must have had no failures
+        run: |
+          grep -H '^failures:' out/linux-client-*.txt
+          ! grep -q '^failures: [1-9]' out/linux-client-*.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -189,19 +297,26 @@ jobs:
           path: |
             out/pynfs*
             out/gss-client.txt
+            out/rpc.gssd.log
             out/mit-des.txt
             out/freebsd-udp.txt
-            out/rpc.gssd.log
+            out/pynfs-ssv.txt
             out/summary.txt
             out/ctime-*.txt
-            out/linux-client.txt
+            out/linux-client-*.txt
+            out/t41.txt
+            out/t41b.txt
+            out/t40rm.txt
             out/named-attr.txt
             out/edge.txt
+            out/owner.txt
+            out/more.txt
             out/kernel.txt
           retention-days: 30
       - name: The verdict of the Kerberos tests
         run: |
-          echo "linux ${{ steps.gss.outcome }} mit ${{ steps.mit.outcome }} freebsd-vm ${{ steps.fbvm.outcome }} udp ${{ steps.udp.outcome }}"
+          echo "linux ${{ steps.gss.outcome }} mit ${{ steps.mit.outcome }} ssv ${{ steps.ssv.outcome }} freebsd-vm ${{ steps.fbvm.outcome }} udp ${{ steps.udp.outcome }}"
           test "${{ steps.gss.outcome }}" = success
           test "${{ steps.mit.outcome }}" = success
+          test "${{ steps.ssv.outcome }}" = success
           test "${{ steps.udp.outcome }}" = success

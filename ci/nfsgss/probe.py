@@ -142,6 +142,131 @@ if MODE == 'refused':
     check('a principal with no account: GSS_S_UNAUTHORIZED, no handle',
           accepted(r, 0) and hl == 0 and ma == 0xf0000, hex(ma))
     sys.exit(1 if fails else 0)
+if MODE == 'mach':
+    # RFC 8881 s18.35.3: SP4_MACH_CRED under krb5i, then an operation of
+    # spo_must_enforce under another principal: NFS4ERR_WRONG_CRED.
+    VERS = 4
+    OP_EXCHANGE_ID, OP_CREATE_SESSION, OP_DESTROY_SESSION = 42, 43, 44
+    OP_DESTROY_CLIENTID = 57
+    def comp41(*ops):
+        return opaque(b'') + p32(1, len(ops)) + b''.join(ops)
+    def bm(*bits):
+        w = [0, 0]
+        for b in bits:
+            w[b // 32] |= 1 << (b % 32)
+        return p32(2, *w)
+    def ops_status(res):
+        st, tl = struct.unpack('>II', res[:8])
+        o = 8 + tl + (-tl % 4)
+        n = struct.unpack('>I', res[o:o + 4])[0]
+        return st, res[o + 4:]
+    enforce = (OP_CREATE_SESSION, OP_DESTROY_SESSION, OP_DESTROY_CLIENTID)
+    x = Ctx()
+    owner = b'probe-mach-%d' % random.getrandbits(32)
+    eid = p32(OP_EXCHANGE_ID) + b'\0' * 8 + opaque(owner) + p32(0, 1) + bm(*enforce) + bm() + p32(0)
+    r = x.call(INTEG, 1, comp41(eid))
+    st, rest = ops_status(x.results(r))
+    check('EXCHANGE_ID with SP4_MACH_CRED under krb5i', accepted(r, 0) and st == 0, str(st))
+    clid = rest[8:16]
+    eseq = struct.unpack('>I', rest[16:20])[0]
+    how = struct.unpack('>I', rest[24:28])[0]
+    check('the reply has SP4_MACH_CRED', how == 1, str(how))
+    r = x.call(NONE, 1, comp41(p32(OP_EXCHANGE_ID) + b'\0' * 8 + opaque(b'x' + owner) + p32(0, 1) + bm() + bm() + p32(0)))
+    check('SP4_MACH_CRED under krb5 alone: NFS4ERR_INVAL', compstat(x.results(r)) == 22, str(compstat(x.results(r))))
+    attrs = p32(0, 65536, 65536, 4096, 16, 4, 0)
+    cs = p32(OP_CREATE_SESSION) + clid + p32(eseq, 0) + attrs + attrs + p32(0x40000000) + p32(1, 0)
+    import os
+    os.environ['KRB5CCNAME'], keep = os.environ['BOBCC'], os.environ['KRB5CCNAME']
+    b = Ctx()
+    os.environ['KRB5CCNAME'] = keep
+    r = b.call(INTEG, 1, comp41(cs))
+    check('CREATE_SESSION by another principal: not taken', compstat(b.results(r)) != 0, str(compstat(b.results(r))))
+    # s18.36.4: that one used the slot of the sequence, so the next.
+    cs = p32(OP_CREATE_SESSION) + clid + p32(eseq + 1, 0) + attrs + attrs + p32(0x40000000) + p32(1, 0)
+    r = x.call(INTEG, 1, comp41(cs))
+    st, rest = ops_status(x.results(r))
+    check('CREATE_SESSION by the machine credential', st == 0, str(st))
+    sid = rest[8:24]
+    r = b.call(INTEG, 1, comp41(p32(OP_DESTROY_SESSION) + sid))
+    check('DESTROY_SESSION by another principal: NFS4ERR_WRONG_CRED', compstat(b.results(r)) == 10082, str(compstat(b.results(r))))
+    r = x.call(NONE, 1, comp41(p32(OP_DESTROY_SESSION) + sid))
+    check('DESTROY_SESSION by the principal without integrity: NFS4ERR_WRONG_CRED', compstat(x.results(r)) == 10082, str(compstat(x.results(r))))
+    r = x.call(INTEG, 1, comp41(p32(OP_DESTROY_SESSION) + sid))
+    check('DESTROY_SESSION by the machine credential', compstat(x.results(r)) == 0, str(compstat(x.results(r))))
+    r = b.call(INTEG, 1, comp41(p32(OP_DESTROY_CLIENTID) + clid))
+    check('DESTROY_CLIENTID by another principal: NFS4ERR_WRONG_CRED', compstat(b.results(r)) == 10082, str(compstat(b.results(r))))
+    r = x.call(INTEG, 1, comp41(p32(OP_DESTROY_CLIENTID) + clid))
+    check('DESTROY_CLIENTID by the machine credential', compstat(x.results(r)) == 0, str(compstat(x.results(r))))
+    print('probe failures:', fails)
+    sys.exit(1 if fails else 0)
+if MODE == 'back':
+    # RFC 8881 s2.10.8.2: the client offers its own context for the
+    # backchannel, and the server calls it under it: here CB_NULL.
+    VERS = 4
+    def comp41(*ops):
+        return opaque(b'') + p32(1, len(ops)) + b''.join(ops)
+    x = Ctx()
+    owner = b'probe-back-%d' % random.getrandbits(32)
+    r = x.call(INTEG, 1, comp41(p32(42) + b'\0' * 8 + opaque(owner) + p32(0, 0) + p32(0)))
+    res = x.results(r)
+    tl = struct.unpack('>I', res[4:8])[0]
+    rest = res[8 + tl + (-tl % 4) + 4:]
+    check('EXCHANGE_ID', struct.unpack('>I', rest[4:8])[0] == 0)
+    clid, eseq = rest[8:16], struct.unpack('>I', rest[16:20])[0]
+    back = b'back-handle-of-the-probe'
+    attrs = p32(0, 65536, 65536, 4096, 16, 4, 0)
+    sec = p32(1, GSS, INTEG) + opaque(x.handle) + opaque(back)
+    # CREATE_SESSION4_FLAG_CONN_BACK_CHAN, s18.36.1
+    cs = p32(43) + clid + p32(eseq, 0x2) + attrs + attrs + p32(0x40000000) + sec
+    r = x.call(INTEG, 1, comp41(cs))
+    res = x.results(r)
+    check('CREATE_SESSION with a back handle', compstat(res) == 0, str(compstat(res)))
+    # a fore handle the server has not: NFS4ERR_NOENT, s18.36.3
+    sec2 = p32(1, GSS, INTEG) + opaque(b'\7' * 16) + opaque(back)
+    cs = p32(43) + clid + p32(eseq + 1, 0) + attrs + attrs + p32(0x40000000) + sec2
+    # (the client is confirmed now; a second CREATE_SESSION is fine)
+    r = x.call(INTEG, 1, comp41(cs))
+    check('an unknown fore handle: NFS4ERR_NOENT', compstat(x.results(r)) == 2, str(compstat(x.results(r))))
+    got = None
+    x.c.s.settimeout(60)
+    try:
+        for _ in range(10):
+            m = x.c.recv()
+            if struct.unpack('>I', m[4:8])[0] == 0:
+                got = m
+                break
+    except (socket.timeout, EOFError):
+        pass
+    check('a call came on the backchannel', got is not None)
+    if got is not None:
+        cxid, _, rv, prog, vers, proc, fl, cl = struct.unpack('>8I', got[:32])
+        cred = got[32:32 + cl]
+        o = 32 + cl + (-cl % 4)
+        vfl, vl = struct.unpack('>II', got[o:o + 8])
+        verf = got[o + 8:o + 8 + vl]
+        body = got[o + 8 + vl + (-vl % 4):]
+        gv, gproc, gseq, gsvc, hl = struct.unpack('>5I', cred[:20])
+        check('under RPCSEC_GSS, the back handle, gcbp_service', fl == GSS and cred[20:20 + hl] == back and gsvc == INTEG and gproc == DATA, f'{fl} {gsvc} {cred[20:20+hl]}')
+        try:
+            x.g.verify_signature(got[:32 + cl + (-cl % 4)], verf)
+            okm = True
+        except gssapi.exceptions.GSSError:
+            okm = False
+        check('the header MIC, by the same GSS context', vfl == GSS and okm)
+        n = struct.unpack('>I', body[:4])[0]
+        d = body[4:4 + n]
+        mo = 4 + n + (-n % 4)
+        ml = struct.unpack('>I', body[mo:mo + 4])[0]
+        try:
+            x.g.verify_signature(d, body[mo + 4:mo + 4 + ml])
+            okb = struct.unpack('>I', d[:4])[0] == gseq
+        except gssapi.exceptions.GSSError:
+            okb = False
+        check('the arguments sealed for integrity', okb)
+        rbody = opaque(p32(gseq)) + opaque(x.g.get_signature(p32(gseq)))
+        x.c.send(p32(cxid, 1, 0, GSS) + opaque(x.g.get_signature(p32(gseq))) + p32(0) + rbody)
+    print('probe failures:', fails)
+    sys.exit(1 if fails else 0)
 if MODE == 'expiry':
     x = Ctx()
     r = x.call()

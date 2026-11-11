@@ -207,6 +207,18 @@ oneenctype() {	# name number
 	done
 	sudo sed -i -E "/^\t(permitted|default_tgs|default_tkt)_enctypes/d" /etc/krb5.conf
 	sudo rm -f /tmp/krb5cc* /var/tmp/krb5ccmachine* ${CC}_*; gssd_start; ticket alice; ticket bob
+	echo '=== version 4.1'
+	for s in krb5 krb5i krb5p; do
+		oneflavor /export/krb5all "$s" 4.1 ""
+	done
+	echo '=== SP4_MACH_CRED, by hand'
+	sudo -u alice env KRB5CCNAME=FILE:${CC}_$(id -u alice) BOBCC=FILE:${CC}_$(id -u bob) PROBE=mach \
+	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	echo '=== the backchannel of 4.1 under the context of the client, by hand'
+	sudo -u alice env KRB5CCNAME=FILE:${CC}_$(id -u alice) PROBE=back \
+	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
 	echo '=== version 3'
 	for s in krb5 krb5i krb5p; do
 		oneflavor /export/krb5all "$s" 3 ",mountport=4002,mountproto=tcp,nolock"

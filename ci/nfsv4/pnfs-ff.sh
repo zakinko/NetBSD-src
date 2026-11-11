@@ -25,7 +25,7 @@ netstat -an -f inet | grep '\.2050 '"
 num() { vm "sysctl -n vfs.nfsv4.$1"; }
 g0=$(num layouts_given) f0=$(num ff_fences)
 cap=$(mktemp)
-sudo tcpdump -i lo -nn -q -U -w "$cap" 'tcp port 2050' 2>/dev/null &
+sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2050' 2>/dev/null &
 tp=$!
 sleep 1
 m=/mnt/nfsv4ff

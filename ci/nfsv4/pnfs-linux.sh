@@ -19,7 +19,7 @@ sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.3'
 netstat -an -f inet | grep '\.2051 '"
 command -v tcpdump >/dev/null || sudo apt-get install -y -q tcpdump >/dev/null 2>&1
 cap=$(mktemp)
-sudo tcpdump -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>/dev/null &
+sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>/dev/null &
 tp=$!
 sleep 1
 given() { ssh -o LogLevel=ERROR netbsd "sysctl -n vfs.nfsv4.layouts_given"; }

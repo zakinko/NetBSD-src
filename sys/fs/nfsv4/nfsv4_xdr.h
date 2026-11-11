@@ -348,6 +348,11 @@ struct nfsv4_cbsec {
 	uint32_t	cs_flavor;	/* the first of the others */
 	uint32_t	cs_uid;		/* of AUTH_SYS */
 	uint32_t	cs_gid;
+	uint32_t	cs_gsssvc;	/* of the first RPCSEC_GSS, s18.36.1 */
+	uint32_t	cs_hsrvlen;
+	uint8_t		cs_hsrv[64];	/* gcbp_handle_from_server */
+	uint32_t	cs_hclilen;
+	uint8_t		cs_hcli[64];	/* gcbp_handle_from_client */
 };
 
 struct nfsv4_args_create_session {

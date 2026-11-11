@@ -6,6 +6,7 @@ import socket, ssl, struct, sys
 
 HOST, PORT, CA, MODE = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 fails = 0
+ticket = None
 
 def ok(cond, what):
     global fails
@@ -42,6 +43,9 @@ def shake(c, name):
             t.sendall(struct.pack(">I", 0x80000000 | len(m)) + m)
             tail = t.recv(64)
             tail = "reply" if len(tail) >= 28 and tail[4:8] == m[:4] and tail[12:16] == b"\0\0\0\0" else repr(tail)
+            # A NewSessionTicket would have come before the reply.
+            global ticket
+            ticket = t.session is not None and t.session.has_ticket
         except (ssl.SSLError, OSError) as e:
             tail = type(e).__name__
         t.close()
@@ -55,6 +59,9 @@ if MODE == "anon":
        f"anonymous client: TLS 1.3, TLS_AES_128_GCM_SHA256, ALPN sunrpc (s5) {info}")
     ok(good and tail == "reply",
        f"then a NULL call over the kernel's record layer: {tail}")
+    # RFC 9289 s6 MUST NOT 0-RTT: there is no ticket to resume with,
+    # so no early data can ever be offered.
+    ok(ticket is False, f"no NewSessionTicket, so no 0-RTT (s6): has_ticket {ticket}")
     good, info, _ = shake(ctx(), "anon")
     good2, info2, _ = shake(ctx(cert="client"), "anon+cert")
     ok(good2, f"client with a certificate, -m not given: {info2}")

@@ -50,8 +50,19 @@ sudo modprobe rpcsec_gss_krb5
 sudo mkdir -p /run/rpc_pipefs
 mountpoint -q /run/rpc_pipefs || sudo mount -t rpc_pipefs sunrpc /run/rpc_pipefs
 sudo sh -c "/usr/sbin/tlshd -s >$OUT/tlshd-krb5.log 2>&1 & echo \$! >$OUT/tlshd.pid"
-sudo sh -c "rpc.gssd -v -f >$OUT/rpc.gssd-tls.log 2>&1 & echo \$! >$OUT/gssd.pid"
+# Which gssd answers the upcalls: the package's, started before the
+# keytab was there, or this one.
+ps -axo pid,ppid,command | grep -E '[g]ssd|[t]lshd'
+systemctl status rpc-gssd --no-pager 2>&1 | head -12
+sudo systemctl stop rpc-gssd 2>/dev/null
+sudo pkill -x rpc.gssd
+sudo sh -c "rpc.gssd -vvv -rrr -f >$OUT/rpc.gssd-tls.log 2>&1 & echo \$! >$OUT/gssd.pid"
 sleep 2
+ps -axo pid,ppid,command | grep -E '[g]ssd'
+# What the client does, op by op, for the failures to be read rather
+# than guessed.
+T=/sys/kernel/tracing
+sudo sh -c "echo > $T/trace; echo 1 > $T/events/nfs4/enable; echo 1 > $T/events/rpcgss/enable; echo 1 > $T/events/sunrpc/rpc_task_end/enable" || :
 sudo mkdir -p /mnt/k
 for sec in krb5 krb5i krb5p; do
 	sudo -u alice sh -c 'echo alice-pw | kinit alice'
@@ -67,6 +78,9 @@ for sec in krb5 krb5i krb5p; do
 		echo "krb5 over tls: $sec mount FAILED"; fails=$((fails + 1))
 	fi
 done
+sudo cat $T/trace >"$OUT/trace-krb5.txt" 2>&1 || :
+sudo sh -c "echo 0 > $T/events/nfs4/enable; echo 0 > $T/events/rpcgss/enable" || :
+sudo journalctl -u rpc-gssd --no-pager 2>&1 | tail -30
 sudo kill "$(cat "$OUT/tlshd.pid")" "$(cat "$OUT/gssd.pid")"
 echo "cb-client failures $fails"
 exit 0

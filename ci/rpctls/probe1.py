@@ -118,10 +118,16 @@ if PHASE == "daemon":
     _, m1 = call(100003, 4, 0, cred=(AUTH_TLS, b""))
     x2, m2 = call(100003, 4, 0)
     s.sendall(m1 + m2)
+    # s5.1.1: the call behind the probe is discarded without response,
+    # and the connection SHOULD then be dropped, which may come before
+    # the STARTTLS reply is out.
     r1 = recv_reply(s)
-    ok(isinstance(r1, dict) and r1.get("verf") == STARTTLS, "pipelined: the probe answered with STARTTLS")
-    r2 = recv_reply(s, timeout=3)
+    ok(r1 is None or (isinstance(r1, dict) and r1.get("verf") == STARTTLS),
+       f"pipelined: STARTTLS or the connection dropped {r1 if not isinstance(r1, dict) else 'STARTTLS'}")
+    r2 = recv_reply(s, timeout=3) if r1 is not None else None
     ok(not isinstance(r2, dict), f"pipelined: the call behind it got no RPC reply (s5.1.1) {r2}")
+    r3 = recv_reply(s, timeout=3) if r1 is not None else None
+    ok(r3 is None, f"pipelined: the connection dropped (s5.1.1 SHOULD) {r3}")
     s.close()
 
 # Plain RPC is unaffected.

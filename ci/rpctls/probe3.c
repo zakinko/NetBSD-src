@@ -9,6 +9,8 @@
 #include <arpa/inet.h>
 
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
 #include <openssl/ssl.h>
 
 #include <err.h>
@@ -22,6 +24,94 @@ static int fails;
 static uint32_t xid = 0x9100;
 static const char *host, *cadir;
 static int port;
+static int keyupdates;			/* received from the server */
+static uint8_t csecret[32];		/* client_application_traffic_secret_0 */
+static int have_csecret;
+
+/* RFC 8446 s4: a KeyUpdate, msg_type 24, seen by OpenSSL as it arrives. */
+static void
+msgcb(int write_p, int version, int ctype, const void *buf, size_t len,
+    SSL *ssl, void *arg)
+{
+	if (!write_p && ctype == 22 && len >= 1 &&
+	    ((const uint8_t *)buf)[0] == 24)
+		keyupdates++;
+}
+
+static void
+keylog(const SSL *ssl, const char *line)
+{
+	const char *p;
+	unsigned v;
+	int i;
+
+	if (strncmp(line, "CLIENT_TRAFFIC_SECRET_0 ", 24) != 0 ||
+	    (p = strchr(line + 24, ' ')) == NULL)
+		return;
+	for (i = 0, p++; i < 32 && sscanf(p, "%2x", &v) == 1; i++, p += 2)
+		csecret[i] = v;
+	have_csecret = i == 32;
+}
+
+/* RFC 8446 s7.1, HKDF-Expand-Label with SHA-256, by OpenSSL. */
+static void
+expand_label(const uint8_t *secret, const char *label, uint8_t *out,
+    size_t outlen)
+{
+	uint8_t info[64];
+	size_t n = 0, l = strlen(label);
+	EVP_PKEY_CTX *pc;
+
+	info[n++] = 0;
+	info[n++] = (uint8_t)outlen;
+	info[n++] = (uint8_t)(6 + l);
+	memcpy(info + n, "tls13 ", 6);
+	n += 6;
+	memcpy(info + n, label, l);
+	n += l;
+	info[n++] = 0;
+	pc = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+	EVP_PKEY_derive_init(pc);
+	EVP_PKEY_CTX_hkdf_mode(pc, EVP_PKEY_HKDEF_MODE_EXPAND_ONLY);
+	EVP_PKEY_CTX_set_hkdf_md(pc, EVP_sha256());
+	EVP_PKEY_CTX_set1_hkdf_key(pc, secret, 32);
+	EVP_PKEY_CTX_add1_hkdf_info(pc, info, (int)n);
+	EVP_PKEY_derive(pc, out, &outlen);
+	EVP_PKEY_CTX_free(pc);
+}
+
+/*
+ * A record of the client's own making under its first application key,
+ * sequence number seq: RFC 8446 s5.2, AES-128-GCM.  OpenSSL will not
+ * send a malformed KeyUpdate, so this does.
+ */
+static size_t
+forge(uint64_t seq, uint8_t type, const uint8_t *in, size_t len, uint8_t *rec)
+{
+	uint8_t key[16], iv[12];
+	EVP_CIPHER_CTX *c;
+	int n, i;
+
+	expand_label(csecret, "key", key, 16);
+	expand_label(csecret, "iv", iv, 12);
+	for (i = 0; i < 8; i++)
+		iv[11 - i] ^= (uint8_t)(seq >> (8 * i));
+	rec[0] = 23;
+	rec[1] = 3;
+	rec[2] = 3;
+	rec[3] = (uint8_t)((len + 1 + 16) >> 8);
+	rec[4] = (uint8_t)(len + 1 + 16);
+	memcpy(rec + 5, in, len);
+	rec[5 + len] = type;
+	c = EVP_CIPHER_CTX_new();
+	EVP_EncryptInit_ex(c, EVP_aes_128_gcm(), NULL, key, iv);
+	EVP_EncryptUpdate(c, NULL, &n, rec, 5);
+	EVP_EncryptUpdate(c, rec + 5, &n, rec + 5, (int)len + 1);
+	EVP_EncryptFinal_ex(c, rec + 5 + len + 1, &n);
+	EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_GCM_GET_TAG, 16, rec + 5 + len + 1);
+	EVP_CIPHER_CTX_free(c);
+	return 5 + len + 1 + 16;
+}
 
 static void
 ok(int cond, const char *what)
@@ -190,6 +280,8 @@ main(int argc, char **argv)
 	snprintf(path, sizeof(path), "%s/ca.pem", cadir);
 	SSL_CTX_load_verify_locations(ctx, path, NULL);
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+	SSL_CTX_set_msg_callback(ctx, msgcb);
+	SSL_CTX_set_keylog_callback(ctx, keylog);
 
 	/* 1. RPC in records, then the probe within TLS, s4.1. */
 	ssl = shake(ctx, &s);
@@ -247,6 +339,48 @@ main(int argc, char **argv)
 	ok(r <= 0 && n != 0 && strstr(ERR_reason_error_string(n),
 	    "bad record mac") != NULL,
 	    "forged record: bad_record_mac alert from the server (RFC 8446 s5.2)");
+	ERR_clear_error();
+	SSL_free(ssl);
+	close(s);
+
+	/*
+	 * 6. The server's own KeyUpdate, RFC 8446 s5.5: the CI kernel has
+	 * options ONCRPC_TLS_REKEY=1000.
+	 */
+	ssl = shake(ctx, &s);
+	keyupdates = 0;
+	for (i = 0; i < 2500; i++)
+		if (nullcall(ssl, 1, &rstat, &x) != 0 || rstat != 0)
+			break;
+	printf("     2500 calls: %zu answered, %d KeyUpdates from the server\n",
+	    i, keyupdates);
+	ok(i == 2500 && keyupdates >= 2,
+	    "the server rekeys itself every ONCRPC_TLS_REKEY records (s5.5)");
+	SSL_free(ssl);
+	close(s);
+
+	/*
+	 * 7. A KeyUpdate whose request_update is 2: illegal_parameter, a
+	 * MUST of RFC 8446 s4.6.3.  Sent as the client's first record under
+	 * its application key, before OpenSSL has sent any.
+	 */
+	have_csecret = 0;
+	ssl = shake(ctx, &s);
+	{
+		static const uint8_t ku[5] = { 24, 0, 0, 1, 2 };
+		uint8_t rec[64];
+
+		n = forge(0, 22, ku, sizeof(ku), rec);
+		ok(have_csecret, "client secret from the key log");
+		write(s, rec, n);
+	}
+	r = SSL_read(ssl, big, 16);
+	n = ERR_peek_last_error();
+	printf("     after request_update 2: SSL_read %ld, %s\n", r,
+	    ERR_reason_error_string(n) ? ERR_reason_error_string(n) : "-");
+	ok(r <= 0 && n != 0 && strstr(ERR_reason_error_string(n),
+	    "illegal parameter") != NULL,
+	    "KeyUpdate request_update 2: illegal_parameter (RFC 8446 s4.6.3)");
 	ERR_clear_error();
 	SSL_free(ssl);
 	close(s);

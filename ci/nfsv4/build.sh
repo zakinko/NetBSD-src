@@ -8,7 +8,8 @@ mkdir -p "$W" "$OUT/modules"
 log() { "$@" >"$OUT/step.log" 2>&1 || { tail -60 "$OUT/step.log"; exit 1; }; }
 if [ "$WHAT" = kernel ]; then
 	[ -f "$W/netbsd" ] && exit 0
-	printf 'include "arch/amd64/conf/GENERIC"\noptions NFSSERVER_ONCRPC\n' \
+	# A KeyUpdate every 1000 records, for ci/rpctls/probe3.c to see.
+	printf 'include "arch/amd64/conf/GENERIC"\noptions NFSSERVER_ONCRPC\noptions ONCRPC_TLS_REKEY=1000\n' \
 	    >sys/arch/amd64/conf/NFSV4T
 	[ -x "$T/bin/nbmake-amd64" ] ||
 	    log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" tools

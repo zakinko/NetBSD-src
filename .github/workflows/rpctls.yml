@@ -162,6 +162,11 @@ jobs:
           cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
           ./probe3 127.0.0.1 2049 "$PWD/certs" 2>&1 | tee out/probe3.txt; exit ${PIPESTATUS[0]}
         shell: bash
+      - name: pynfs 4.0 over TLS, through a proxy that does the probe and handshake
+        run: |
+          nohup python3 ci/rpctls/tlsproxy.py 12049 127.0.0.1 "$PWD/certs/ca.pem" >out/tlsproxy.log 2>&1 &
+          sleep 1
+          PYNFS_SERVER=127.0.0.1:12049 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-tls
       - name: Linux with xprtsec=tls against rpc.tlsservd
         run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls
       - name: rpc.tlsservd -m
@@ -195,7 +200,9 @@ jobs:
       - name: Summarise
         if: always()
         run: |
-          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          for n in pynfs pynfs-tls; do
+            python3 ci/nfsv4/pynfs-summary.py out/$n.json out/$n.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          done
           grep -h -E '^(ok|FAIL)|failures|mount exit|io ok|krb5 over tls' out/probe*.txt out/linux-*.txt out/cb-client.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - name: The verdict
         run: |
@@ -210,11 +217,13 @@ jobs:
             out/probe1-*.txt
             out/probe2-*.txt
             out/probe3.txt
+            out/tlsproxy.log
             out/tlsstub.txt
             out/tlsservd.txt
             out/linux-*.txt
             out/tlshd-*.log
             out/cb-client.txt
+            out/trace-krb5.txt
             out/rpc.gssd-tls.log
             out/kernel.txt
             out/summary.txt

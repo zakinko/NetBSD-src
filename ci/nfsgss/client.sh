@@ -207,6 +207,29 @@ oneenctype() {	# name number
 	done
 	sudo sed -i -E "/^\t(permitted|default_tgs|default_tkt)_enctypes/d" /etc/krb5.conf
 	sudo rm -f /tmp/krb5cc* /var/tmp/krb5ccmachine* ${CC}_*; gssd_start; ticket alice; ticket bob
+	echo '=== version 4.1'
+	for s in krb5 krb5i krb5p; do
+		oneflavor /export/krb5all "$s" 4.1 ""
+	done
+	echo '=== SP4_MACH_CRED, by hand'
+	# bob's cache is bob's alone; the probe runs as alice and needs it.
+	sudo install -o alice -m 600 ${CC}_$(id -u bob) /var/tmp/bobcc-for-alice
+	sudo -u alice env KRB5CCNAME=FILE:${CC}_$(id -u alice) BOBCC=FILE:/var/tmp/bobcc-for-alice PROBE=mach \
+	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	echo '=== the backchannel of 4.1 under the context of the client, by hand'
+	# The wire as well, to tell a call the server never made from one the
+	# probe missed: run 42971381404 and 43005988938 saw none.
+	sudo tcpdump -i any -s0 -w "$OUT/back.pcap" tcp port 2049 >/dev/null 2>&1 &
+	sleep 2
+	sudo -u alice env KRB5CCNAME=FILE:${CC}_$(id -u alice) PROBE=back \
+	    python3 "$(dirname "$0")/probe.py" "$S" /export/krb5all /export/krb5ponly /export/sysonly ||
+	    fails=$((fails + 1))
+	sudo pkill -x tcpdump
+	sleep 1
+	# The capture is kept for reading: a count of CALLs by byte pattern
+	# said 0 in run 43027481538 and was never checked against a capture.
+	ssh netbsd 'dmesg | tail -15'
 	echo '=== version 3'
 	for s in krb5 krb5i krb5p; do
 		oneflavor /export/krb5all "$s" 3 ",mountport=4002,mountproto=tcp,nolock"

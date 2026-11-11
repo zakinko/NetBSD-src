@@ -186,8 +186,8 @@ try:
         t("s12.5.3 recall seqid one past", rsid.seqid, lsid.seqid + 1)
         time.sleep(1)
         res = s.compound([op.test_stateid([rsid, lsid])])
-        print("TEST_STATEID of the recall's and the last stateid:",
-              res.status, getattr(res.resarray[-1], "tsr_status_codes", None))
+        t("s18.48.3 TEST_STATEID of the recall's and an older seqid",
+          getattr(res.resarray[-1], "tsr_status_codes", res.status), [[0, 0]])
         t("s12.5.5.2.1.3 LAYOUTGET after the answer", lget(rsid).status,
           NFS4ERR_RETURNCONFLICT)
         rsid_ = rsid

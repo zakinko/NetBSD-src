@@ -911,6 +911,13 @@ stateid_age(const struct nfsv4_stateid *si, const struct nfsv4_state *st)
 	d = (int32_t)(si->si_seqid - st->st_seqid);
 	if (si->si_seqid != 0 && d > 0)
 		return NFS4ERR_BAD_STATEID;
+	/*
+	 * RFC 8881 s12.5.5.2.1.4: a layout's past seqids are all within
+	 * the range nfsv4_layout.c takes, and good where it is used; 0 is
+	 * never one, s12.5.3.
+	 */
+	if (st->st_type == NFSV4_ST_LAYOUT)
+		return si->si_seqid == 0 ? NFS4ERR_BAD_STATEID : NFS4_OK;
 	if (si->si_seqid != 0 && d < 0)
 		return NFS4ERR_OLD_STATEID;
 	return NFS4_OK;

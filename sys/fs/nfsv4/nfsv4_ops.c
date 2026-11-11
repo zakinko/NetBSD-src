@@ -575,8 +575,9 @@ secinfo_put(struct nfsv4_compound *c, int sec)
  * RFC 7530 s16.31.  What the object's export allows; an export that says
  * nothing allows what it always has, and the pseudo file system whatever
  * might lie under it, s7.3.  Lookup is done for the errors it gives, and
- * must find an object the client's present flavor may not touch: being
- * told which it may is what the operation is for.
+ * finds an object the client's present flavor may not touch, which
+ * only notes that in to.cf_wrongsec: being told which flavor it may
+ * use is what the operation is for.
  */
 uint32_t
 nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -592,9 +593,7 @@ nfsv4_op_secinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (st != NFS4_OK)
 		return st;
 	memset(&to, 0, sizeof(to));
-	c->c_anysec = true;
 	st = nfsv4_cfh_lookup(c, cf, nm->nm_str, nm->nm_len, &to);
-	c->c_anysec = false;
 	sec = to.cf_exflags & NFS_EXSEC_MASK;
 	if (st == NFS4_OK && sec == 0)
 		sec = NFS_EXSEC_SYS | NFS_EXSEC_NONE;

@@ -279,9 +279,13 @@ cfh_export(struct nfsv4_compound *c, struct mount *mp, struct nfsv4_cfh *cf)
 			cf->cf_wrongsec = true;
 	}
 
-	/* RFC 7530 s3.3.2, s16.20.4 for PUTFH. */
-	if (!c->c_anysec && !nfsv4_sec_allowed(exflags, rq->rq_secflavor))
-		return NFS4ERR_WRONGSEC;
+	/*
+	 * RFC 7530 s3.3.2 and RFC 8881 s2.6.3.1: a flavor the export does
+	 * not have.  As the port above, it is noted for the COMPOUND to
+	 * answer, as the minor version says, s16.20.4 for PUTFH in 4.0.
+	 */
+	if (!nfsv4_sec_allowed(exflags, rq->rq_secflavor))
+		cf->cf_wrongsec = true;
 
 	if (rq->rq_cred == NULL) {
 		kauth_cred_hold(anon);

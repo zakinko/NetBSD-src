@@ -100,6 +100,7 @@ struct cb_target {
 	uid_t		ct_uid;
 	gid_t		ct_gid;
 	struct nfsv4_session *ct_sess;	/* RFC 8881: held, and its slot */
+	struct oncrpc_gssc *ct_gss;	/* the session's back handle */
 	uint64_t	ct_conn;
 	struct nfsv4_sessionid ct_sid;
 	uint32_t	ct_seq;
@@ -412,7 +413,7 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	cc.cc_vers = ct->ct_vers;
 	cc.cc_proc = proc;
 	cc.cc_flavor = ct->ct_flavor;
-	cc.cc_gss = gc;
+	cc.cc_gss = ct->ct_sess != NULL ? ct->ct_gss : gc;
 	if (ct->ct_flavor == ONCRPC_AUTH_SYS) {
 		cc.cc_cred = cred;
 		cc.cc_credlen = cb_authsys(cred, sizeof(cred), ct->ct_uid,
@@ -463,6 +464,12 @@ cb_target_get(struct nfsv4_client *cl, struct cb_target *ct)
 	ct->ct_flavor = se->se_cbsec.cs_flavor;
 	ct->ct_uid = se->se_cbsec.cs_uid;
 	ct->ct_gid = se->se_cbsec.cs_gid;
+	/* s2.10.8.2: RPCSEC_GSS, when the client offered a context for it. */
+	ct->ct_gss = se->se_cbgss;
+	if (ct->ct_gss != NULL) {
+		oncrpc_gssc_hold(ct->ct_gss);
+		ct->ct_flavor = RPCSEC_GSS;
+	}
 	return true;
 }
 
@@ -470,6 +477,8 @@ static void
 cb_target_put(struct cb_target *ct, int error)
 {
 
+	if (ct->ct_sess != NULL && ct->ct_gss != NULL)
+		oncrpc_gssc_destroy(ct->ct_gss);	/* the hold of get */
 	if (ct->ct_sess != NULL)
 		nfsv4_session_cbdone(ct->ct_sess, error == 0);
 }

@@ -501,24 +501,61 @@ int
 oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
     const struct oncrpc_clnt_call *cc, int timeo)
 {
-	struct oncrpc_xdrmbuf ax, rx;
+	struct oncrpc_xdrmbuf ax, rx, bx;
+	struct oncrpc_clnt_call gcc;
 	struct oncrpc_bcall bc;
 	struct oncrpc_xprt *xp;
 	struct oncrpc_ireq *ir;
-	struct mbuf *m;
+	struct mbuf *m, *b, *open = NULL;
+	uint8_t cred[128], verf[GSS_KRB5_MAXMIC];
+	uint32_t seq = 0, vlen = 0;
 	time_t end;
 	int error;
 
 	memset(&bc, 0, sizeof(bc));
 	bc.bc_xid = cprng_fast32();
+	/* Under RPCSEC_GSS as oncrpc_clnt_call() has it. */
+	if (cc->cc_gss != NULL) {
+		gcc = *cc;
+		gcc.cc_flavor = RPCSEC_GSS;
+		gcc.cc_cred = cred;
+		gcc.cc_verf = verf;
+		if (!oncrpc_gssc_header(cc->cc_gss, bc.bc_xid, cc->cc_prog,
+		    cc->cc_vers, cc->cc_proc, cred, &gcc.cc_credlen, verf,
+		    &vlen, &seq))
+			return EAUTH;
+		gcc.cc_verflen = vlen;
+		cc = &gcc;
+	}
 	oncrpc_xdrmbuf_create(&ax, NULL, ONCRPC_BCALL_MAX, XDR_ENCODE);
-	if (!oncrpc_msg_encode_call(&ax.xm_xdr, bc.bc_xid, cc) ||
-	    (cc->cc_encode != NULL &&
-	    !(*cc->cc_encode)(&ax.xm_xdr, cc->cc_arg))) {
+	if (!oncrpc_msg_encode_call(&ax.xm_xdr, bc.bc_xid, cc)) {
 		XDR_DESTROY(&ax.xm_xdr);
 		return EMSGSIZE;
 	}
-	m = oncrpc_xdrmbuf_detach(&ax);
+	if (cc->cc_gss == NULL) {
+		if (cc->cc_encode != NULL &&
+		    !(*cc->cc_encode)(&ax.xm_xdr, cc->cc_arg)) {
+			XDR_DESTROY(&ax.xm_xdr);
+			return EMSGSIZE;
+		}
+		m = oncrpc_xdrmbuf_detach(&ax);
+	} else {
+		oncrpc_xdrmbuf_create(&bx, NULL, ONCRPC_BCALL_MAX, XDR_ENCODE);
+		if (cc->cc_encode != NULL &&
+		    !(*cc->cc_encode)(&bx.xm_xdr, cc->cc_arg)) {
+			XDR_DESTROY(&bx.xm_xdr);
+			XDR_DESTROY(&ax.xm_xdr);
+			return EMSGSIZE;
+		}
+		b = oncrpc_gssc_seal(cc->cc_gss, seq,
+		    oncrpc_xdrmbuf_detach(&bx));
+		m = oncrpc_xdrmbuf_detach(&ax);
+		if (b != NULL) {
+			m->m_pkthdr.len += b->m_pkthdr.len;
+			m_remove_pkthdr(b);
+			m_cat(m, b);
+		}
+	}
 	ir = kmem_zalloc(sizeof(*ir), KM_SLEEP);
 
 	mutex_enter(&svc->svc_lock);
@@ -561,10 +598,17 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 		oa = kmem_alloc(sizeof(*oa), KM_SLEEP);
 		oncrpc_xdrmbuf_create(&rx, bc.bc_reply, 0, XDR_DECODE);
 		error = oncrpc_msg_decode_reply(&rx.xm_xdr, bc.bc_xid, oa);
+		if (error == 0 && cc->cc_gss != NULL) {
+			error = oncrpc_gssc_open(cc->cc_gss, seq, oa,
+			    bc.bc_reply, XDR_GETPOS(&rx.xm_xdr), &open);
+			if (error == 0 && open != NULL)
+				oncrpc_xdrmbuf_create(&rx, open, 0, XDR_DECODE);
+		}
 		kmem_free(oa, sizeof(*oa));
 		if (error == 0 && cc->cc_decode != NULL &&
 		    !(*cc->cc_decode)(&rx.xm_xdr, cc->cc_res))
 			error = EBADRPC;
+		m_freem(open);
 		m_freem(bc.bc_reply);
 	}
 	xprt_rele(xp);

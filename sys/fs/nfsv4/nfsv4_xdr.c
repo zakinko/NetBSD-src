@@ -349,6 +349,24 @@ xdr_args_exchange_id(XDR *x, struct nfsv4_args_exchange_id *a)
 	    U64(x, &t64) && U32(x, &t));
 }
 
+/*
+ * gsshandle4_t, which has no bound, s18.36.1.  One longer than buf is
+ * skipped and has the length UINT32_MAX: it names nothing here.
+ */
+static bool
+xdr_handle(XDR *x, uint8_t *buf, uint32_t *lenp, uint32_t max)
+{
+
+	if (!U32(x, lenp))
+		return false;
+	if (*lenp <= max)
+		return xdr_opaque(x, (char *)buf, *lenp) != 0;
+	if (!nfsv4_xdr_skip(x, *lenp))
+		return false;
+	*lenp = UINT32_MAX;
+	return true;
+}
+
 /* callback_sec_parms4<>, RFC 8881 s18.33.1, noting any RPCSEC_GSS. */
 static bool
 xdr_sec_parms(XDR *x, struct nfsv4_cbsec *cs)
@@ -383,9 +401,24 @@ xdr_sec_parms(XDR *x, struct nfsv4_cbsec *cs)
 			}
 			break;
 		case NFSV4_RPCSEC_GSS:
+			/*
+			 * gss_cb_handles4.  The first is kept; a handle
+			 * longer than any this server makes, or a client's
+			 * longer than kept, is no handle to use.
+			 */
+			if (!U32(x, &t))
+				return false;
+			if (cs->cs_gss) {
+				if (!xdr_skip_opaque(x) || !xdr_skip_opaque(x))
+					return false;
+				break;
+			}
 			cs->cs_gss = true;
-			if (!U32(x, &t) || !xdr_skip_opaque(x) ||
-			    !xdr_skip_opaque(x))
+			cs->cs_gsssvc = t;
+			if (!xdr_handle(x, cs->cs_hsrv, &cs->cs_hsrvlen,
+			    sizeof(cs->cs_hsrv)) ||
+			    !xdr_handle(x, cs->cs_hcli, &cs->cs_hclilen,
+			    sizeof(cs->cs_hcli)))
 				return false;
 			break;
 		default:

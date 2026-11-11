@@ -1166,6 +1166,7 @@
 ./usr/include/nfs				base-c-usr
 ./usr/include/ntfs				base-c-usr
 ./usr/include/objc				base-objc-usr
+./usr/include/oncrpc				base-c-usr
 ./usr/include/openpgpsdk			base-obsolete		obsolete
 ./usr/include/openssl				base-c-usr
 ./usr/include/pcap				base-c-usr

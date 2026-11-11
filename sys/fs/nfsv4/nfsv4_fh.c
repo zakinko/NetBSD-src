@@ -72,6 +72,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/nfs_var.h>
 
 #include <oncrpc/oncrpc_gss.h>
+#include <oncrpc/oncrpc_sec.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>

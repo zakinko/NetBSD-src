@@ -87,6 +87,9 @@ printf '[General]\nDomain = nfsgss.test\n[Mapping]\nNobody-User = nobody\nNobody
     sudo tee /etc/idmapd.conf
 sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
 sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
+# The control left alice@nfsgss.test mapped to nobody in the id-mapping
+# keyring (trace-krb5.txt of run 43003724956); clear it.
+sudo nfsidmap -c || :
 for sec in krb5 krb5i krb5p; do
 	sudo -u alice sh -c 'echo alice-pw | kinit alice'
 	if sudo timeout 90 mount -t nfs -o vers=4.0,sec=$sec,xprtsec=tls,soft,timeo=50,retrans=1 \

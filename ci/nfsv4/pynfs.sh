@@ -27,7 +27,7 @@ fi
 cd "$HOME/pynfs/nfs4.0"
 rc=0
 # As root, as the base line was: MKNOD and chown need it.
-timeout "$LIMIT" sudo -E python3 ./testserver.py "${PYNFS_SERVER:-127.0.0.1}":"$EXPORT" --maketree \
+timeout "$LIMIT" sudo -E python3 ./testserver.py "${PYNFS_URL:-127.0.0.1:$EXPORT}" --maketree \
     --rundeps --json="$OUT/$NAME.json" ${PYNFS_ARGS:-all} </dev/null \
     >"$OUT/$NAME.log" 2>&1 || rc=$?
 echo "testserver.py exit status $rc"

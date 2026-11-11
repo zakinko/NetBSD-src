@@ -166,7 +166,7 @@ jobs:
         run: |
           nohup python3 ci/rpctls/tlsproxy.py 12049 127.0.0.1 "$PWD/certs/ca.pem" >out/tlsproxy.log 2>&1 &
           sleep 1
-          PYNFS_SERVER=127.0.0.1:12049 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-tls
+          PYNFS_URL=127.0.0.1:12049/export/pynfs sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-tls
       - name: Linux with xprtsec=tls against rpc.tlsservd
         run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls
       - name: rpc.tlsservd -m

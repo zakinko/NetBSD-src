@@ -3113,6 +3113,7 @@
 ./usr/include/objc/sarray.h			comp-obsolete		obsolete
 ./usr/include/objc/thr.h			comp-c-include		gcc
 ./usr/include/objc/typedstream.h		comp-obsolete		obsolete
+./usr/include/oncrpc/oncrpc_sec.h		comp-c-include
 ./usr/include/openldap.h			comp-ldap-include	ldap
 ./usr/include/openpgpsdk/accumulate.h		comp-obsolete		obsolete
 ./usr/include/openpgpsdk/armour.h		comp-obsolete		obsolete

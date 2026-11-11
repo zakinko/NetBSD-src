@@ -1071,7 +1071,7 @@ nfs_getreq(struct nfsrv_descript *nd, struct nfsd *nfsd, int has_header)
 		return (EBADRPC);
 	}
 
-	nd->nd_flag &= ~(ND_KERBNICK | ND_KERBFULL);
+	nd->nd_flag &= ~ND_KERBAUTH;
 	/*
 	 * Handle auth_unix or auth_kerb.
 	 */

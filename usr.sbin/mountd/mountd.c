@@ -63,6 +63,7 @@ __RCSID("$NetBSD: mountd.c,v 1.137 2021/06/05 08:26:34 hannken Exp $");
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
 #include <nfs/nfsmount.h>
+#include <oncrpc/oncrpc_sec.h>
 
 #ifdef MOUNTD_RUMP
 #include <rump/rump.h>

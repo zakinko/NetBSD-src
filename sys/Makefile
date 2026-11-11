@@ -5,7 +5,7 @@
 SUBDIR=	altq arch compat dev fs miscfs \
 	net net80211 netatalk netbt netcan netipsec netinet netinet6 \
         netmpls \
-	nfs opencrypto sys ufs uvm
+	nfs oncrpc opencrypto sys ufs uvm
 
 .if make(obj) || make(cleandir) || ${MKDTB} != "no"
 SUBDIR+=dtb

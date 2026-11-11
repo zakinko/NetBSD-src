@@ -86,7 +86,8 @@ scan_write(XDR *x, struct oncrpc_rdma_ddpscan *rd)
 
 /* CREATE4args with an NF4LNK, at the name that follows the linkdata. */
 static bool
-scan_create(XDR *x, union nfsv4_args *a, struct oncrpc_rdma_ddpscan *rd)
+scan_create(XDR *x, uint32_t minor, union nfsv4_args *a,
+    struct oncrpc_rdma_ddpscan *rd)
 {
 	struct nfsv4_args_create *ac = &a->create;
 	uint32_t type;
@@ -96,7 +97,7 @@ scan_create(XDR *x, union nfsv4_args *a, struct oncrpc_rdma_ddpscan *rd)
 		return false;
 	if (type != NF4LNK)
 		return XDR_SETPOS(x, pos) &&
-		    nfsv4_xdr_args(x, NFSV4_OP_CREATE, a);
+		    nfsv4_xdr_args(x, NFSV4_OP_CREATE, minor, a);
 	return scan_item(x, rd) && nfsv4_xdr_name(x, &ac->name) &&
 	    nfsv4_xdr_fattr(x, &ac->attrs);
 }
@@ -106,7 +107,7 @@ nfsv4_ulb_scan(const void *buf, u_int len, u_int off, uint32_t vers,
     uint32_t proc, struct oncrpc_rdma_ddpscan *rd)
 {
 	union nfsv4_args *a;
-	uint32_t taglen, minor, numops, op, i;
+	uint32_t taglen, minor, numops, op, maxop, i;
 	XDR x;
 	bool ok;
 
@@ -118,9 +119,15 @@ nfsv4_ulb_scan(const void *buf, u_int len, u_int off, uint32_t vers,
 	    !nfsv4_xdr_skip(&x, taglen) || !U32(&x, &minor) ||
 	    !U32(&x, &numops))
 		return false;
-	/* No decoder here for other minor versions; they get no further. */
-	if (minor != NFSV4_MINORVERSION)
+	/*
+	 * s6.1 is the same for every minor version.  One the server does
+	 * not have gets no further than NFS4ERR_MINOR_VERS_MISMATCH, so
+	 * any chunk of it is one that nothing claims.
+	 */
+	if (minor > NFSV4_MINORMAX)
 		return true;
+	maxop = minor == 0 ? NFSV4_OP_RELEASE_LOCKOWNER :
+	    NFSV4_OP_RECLAIM_COMPLETE;
 
 #ifdef _KERNEL
 	a = kmem_alloc(sizeof(*a), KM_SLEEP);
@@ -130,7 +137,7 @@ nfsv4_ulb_scan(const void *buf, u_int len, u_int off, uint32_t vers,
 	ok = true;
 	for (i = 0; ok && i < numops && !oncrpc_rdma_ddp_done(rd); i++) {
 		if (!U32(&x, &op) || op < NFSV4_OP_ACCESS ||
-		    op > NFSV4_OP_RELEASE_LOCKOWNER) {
+		    op > maxop) {
 			ok = false;
 			break;
 		}
@@ -139,10 +146,10 @@ nfsv4_ulb_scan(const void *buf, u_int len, u_int off, uint32_t vers,
 			ok = scan_write(&x, rd);
 			break;
 		case NFSV4_OP_CREATE:
-			ok = scan_create(&x, a, rd);
+			ok = scan_create(&x, minor, a, rd);
 			break;
 		default:
-			ok = nfsv4_xdr_args(&x, op, a);
+			ok = nfsv4_xdr_args(&x, op, minor, a);
 			break;
 		}
 	}

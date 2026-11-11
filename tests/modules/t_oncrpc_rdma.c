@@ -567,6 +567,35 @@ test_ulb_v4(void)
 	rc[0].rc_pos = d + 8;
 	CHECK(!scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 1));
 
+	/* Minor version 1: SEQUENCE PUTFH WRITE, RFC 8881 s18.46. */
+	call(100003, 4, NFSV4_PROC_COMPOUND);
+	a = wn;
+	w(0); w(1); w(3);
+	w(NFSV4_OP_SEQUENCE);
+	for (i = 0; i < 4; i++)
+		w(0x55);	/* sessionid */
+	w(1); w(0); w(0); w(0);	/* seqid slotid highest cachethis */
+	w(NFSV4_OP_PUTFH); w(8); w(1); w(2);
+	w(NFSV4_OP_WRITE);
+	for (i = 0; i < 4; i++)
+		w(0);
+	w(0); w(0); w(0);
+	w(9);
+	d = wn;
+	rc[0].rc_pos = d;
+	rc[0].rc_len = 12;
+	CHECK(scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 1));
+	rc[0].rc_pos = d - 4;
+	CHECK(!scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 1));
+	/* An operation of 4.1 under 4.0 does not decode. */
+	wire[a + 7] = 0;
+	rc[0].rc_pos = d;
+	CHECK(!scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 1));
+	/* A minor version the server lacks claims no chunk. */
+	wire[a + 7] = 2;
+	CHECK(!scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 1));
+	CHECK(scan(ub, 4, NFSV4_PROC_COMPOUND, a, rc, 0));
+
 	/* Two WRITEs; the second Position counts the first's roundup. */
 	call(100003, 4, NFSV4_PROC_COMPOUND);
 	a = wn;

@@ -18,6 +18,8 @@ defflag	opt_oncrpc.h		ONCRPC_GSS_CB_ANYMIC
 # handles connection IDs either way: to go back to the RFC, drop this
 # option, and a handshake without them is refused at NFSSVC_TLSDONE.
 defflag	opt_oncrpc.h		ONCRPC_DTLS_NOCID
+# Log every DTLS record after the handshake on the console; for tests.
+defflag	opt_oncrpc.h		ONCRPC_DTLS_DEBUG
 # Records sent under one TLS key before our KeyUpdate; at most 2^24.
 defparam opt_oncrpc.h		ONCRPC_TLS_REKEY
 

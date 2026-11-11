@@ -144,6 +144,16 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	DP_ESTABLISHED	3
 #define	DP_CLOSED	4
 
+/*
+ * Not for a production kernel: every record after the handshake and
+ * what came of it, on the console.
+ */
+#ifdef ONCRPC_DTLS_DEBUG
+#define	DTLS_DPRINTF(...)	printf("rpcdtls: " __VA_ARGS__)
+#else
+#define	DTLS_DPRINTF(...)	do { } while (0)
+#endif
+
 /* The top bit tells a datagram association's cookie from a stream's. */
 #define	ONCRPC_DTLS_COOKIE	(1ULL << 63)
 
@@ -690,6 +700,8 @@ dtls_send(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *in,
 	error = dtls13_seal(&p->dp_tx, type, p->dp_tcid, p->dp_tcidlen,
 	    buf + hmax, len, buf, &reclen);
 	explicit_memset(buf + hmax, 0, sizeof(buf) - hmax);
+	DTLS_DPRINTF("send type %u len %zu epoch %ju: %d\n", type, len,
+	    (uintmax_t)p->dp_tx.dd_epoch, error);
 	if (error != 0)
 		return error;
 	m = m_gethdr(M_WAIT, MT_DATA);
@@ -848,6 +860,8 @@ dtls_hs_input(struct oncrpc_dtlspeer *p, const uint8_t *q, size_t len,
 			c->c_alert = ONCRPC_TLS_DECODE_ERROR;
 			return;
 		}
+		DTLS_DPRINTF("hs type %u mseq %u expected %u len %zu\n", type,
+		    mseq, p->dp_hsrx, blen);
 		if (mseq < p->dp_hsrx) {
 			/* s7: a copy already received is ACKed too. */
 			processed = true;
@@ -978,6 +992,9 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 				p->dp_rxnexton = false;
 			}
 		}
+		DTLS_DPRINTF("open b0 %02x epoch %ju: error %d type %u len %zu\n",
+		    rec[0], (uintmax_t)epoch, error, error == 0 ? type : 0,
+		    error == 0 ? clen : 0);
 		if (error != 0) {
 			/* s4.5.2 SHOULD: silently discarded. */
 			if (used == 0)

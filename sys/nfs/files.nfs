@@ -37,6 +37,7 @@ file	nfs/nfs_serv.c		nfsserver
 file	nfs/nfs_socket.c	nfsserver | nfs
 file	nfs/nfs_srvcache.c	nfsserver
 file	nfs/nfs_srvsubs.c	nfsserver
+file	nfs/nfs_srvxattr.c	nfsserver_oncrpc
 file	nfs/nfs_srvsocket.c	nfsserver
 file	nfs/nfs_subs.c		nfsserver | nfs
 file	nfs/nfs_syscalls.c	nfsserver

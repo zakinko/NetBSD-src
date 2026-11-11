@@ -94,7 +94,7 @@ __KERNEL_RCSID(0, "$NetBSD: nfs_serv.c,v 1.185 2026/06/18 19:58:17 christos Exp 
 #include <nfs/nfs_var.h>
 
 #ifdef NFSSERVER_ONCRPC
-MODULE(MODULE_CLASS_MISC, nfsserver, "nfs,oncrpc");
+MODULE(MODULE_CLASS_MISC, nfsserver, "nfs,oncrpc,nfsxattr");
 #else
 MODULE(MODULE_CLASS_MISC, nfsserver, "nfs");
 #endif

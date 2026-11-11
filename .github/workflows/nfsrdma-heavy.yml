@@ -1,0 +1,124 @@
+# The heavy tier, by hand at a resting point: the Linux client on siw
+# with every version, locks and recalls, and pynfs.  Its own group, so a
+# push does not cancel it; every step bounded, so a stall costs minutes.
+name: nfsrdma-heavy
+on:
+  workflow_dispatch:
+concurrency:
+  group: nfsrdma-heavy-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/cache/restore@v4
+        id: tools
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/restore@v4
+        id: kernel
+        with:
+          path: nb/netbsd
+          key: nfsrdma-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
+      - uses: actions/cache/save@v4
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: nb/tools
+          key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
+      - uses: actions/cache/save@v4
+        if: steps.kernel.outputs.cache-hit != 'true'
+        with:
+          path: nb/netbsd
+          key: nfsrdma-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
+      - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: out
+          path: out
+          retention-days: 7
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            ci/nfsv4
+            ci/nfsrdma
+            ci/oncrpc/swap.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: out
+          path: out
+      - uses: vmactions/netbsd-vm@v1
+        timeout-minutes: 15
+        with:
+          release: '11.0'
+          cpu: 2
+          mem: 4096
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - timeout-minutes: 10
+        run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
+      - timeout-minutes: 5
+        run: |
+          tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
+          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsrdma/tunpipe.c ci/nfsrdma/try.c ci/nfsrdma/diag.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
+      - name: Tunnel to the server
+        timeout-minutes: 2
+        run: |
+          sudo ip link add dummy0 type dummy
+          sudo ip addr add 192.0.2.1/24 dev dummy0
+          sudo ip link set dummy0 up
+          ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
+              -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 \
+              -L 192.0.2.1:1234:127.0.0.1:1234 netbsd
+          sleep 2
+      - name: A link for NLM and NSM
+        timeout-minutes: 6
+        continue-on-error: true
+        run: sh ci/nfsrdma/nlm-up.sh "$PWD/out" >out/nlm-up.txt 2>&1; cat out/nlm-up.txt
+      - name: A peer that misbehaves
+        timeout-minutes: 5
+        shell: bash
+        run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
+      - name: pynfs on TCP, the path that the transport split went through
+        timeout-minutes: 40
+        run: |
+          sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs || true
+          python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee out/summary.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: The Linux client on siw
+        timeout-minutes: 30
+        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
+      - name: Result
+        if: always()
+        timeout-minutes: 2
+        run: |
+          cat out/linux-client.txt || true
+          ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -30" | tee out/kernel.txt || echo no answer
+          ssh -o ConnectTimeout=20 netbsd 'sh /var/tmp/nfsv4/diag.sh' | tee -a out/kernel.txt || :
+          grep 'FAILURES' out/linux-client.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q 'FAILURES 4.0: 0' out/linux-client.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result
+          path: |
+            out/linux-client.txt
+            out/kernel.txt
+            out/rdma.pcap
+            out/badpeer.txt
+            out/summary.txt
+            out/nlm-up.txt
+            out/tun.err
+          retention-days: 14

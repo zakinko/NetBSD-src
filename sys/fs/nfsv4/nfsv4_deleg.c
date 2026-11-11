@@ -263,12 +263,33 @@ nfsv4_open_denies_remove(const struct nfsv4_cfh *dir, const char *name)
 }
 
 /*
+ * RFC 7530 s10.4.3: the constructed times SHOULD go into the file's
+ * metadata, so that they cannot seem to go backward if the holder never
+ * writes.  VOP_SETATTR takes no ctime, but setting the mtime makes the
+ * file system set ctime to the time of the call (IN_CHANGE in ufs, as
+ * tmpfs and zfs do likewise), which is no earlier than *ts.  The
+ * kernel's credential: who asked need not own the file.  An error, as
+ * on a file UF_IMMUTABLE while retained, leaves it as it was; stable
+ * storage is OPTIONAL there, so nothing is synced.
+ */
+static void
+deleg_meta(struct vnode *vp, const struct timespec *ts)
+{
+	struct vattr va;
+
+	vattr_null(&va);
+	va.va_mtime = *ts;
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	(void)VOP_SETATTR(vp, &va, lwp0.l_cred);
+	VOP_UNLOCK(vp);
+}
+
+/*
  * s10.4.3: a GETATTR of what the holder of a write delegation may have
  * changed.  Only for one whose holder is another client; c_ov gets what
  * the holder said, and if the holder cannot say, it is recalled and the
- * GETATTR waits like anything else.  Not done here, though a SHOULD: the
- * constructed times are not stored in the file's metadata, as there is
- * no way to set ctime through VOP_SETATTR.
+ * GETATTR waits like anything else.  The constructed times are stored
+ * by deleg_meta().
  */
 uint32_t
 nfsv4_deleg_getattr(struct nfsv4_compound *c)
@@ -320,6 +341,8 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 					getnanotime(&c->c_ov.ao_time);
 				}
 				mutex_exit(&nfsv4_state_lock);
+				if (c->c_ov.ao_valid)
+					deleg_meta(vp, &c->c_ov.ao_time);
 				return NFS4_OK;
 			}
 		}

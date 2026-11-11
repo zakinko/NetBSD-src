@@ -58,7 +58,7 @@ def vm(cmd):
         p = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "netbsd",
                             "sh -c '%s'" % cmd],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           timeout=120)
+                           timeout=60)
     except subprocess.TimeoutExpired:
         return 124, "timed out"
     return p.returncode, p.stdout.decode(errors="replace").strip()
@@ -66,11 +66,12 @@ V = lambda n: "/%s/%s" % (b"/".join(export).decode(), (stamp + n).decode())
 def uchg(n):
     out = vm("stat -f %%Sf %s" % V(n))[1].splitlines()
     return bool(out) and "uchg" in out[-1].split(",")
-# s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049.
+# s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049;
+# -u for NFS on UDP, -U for the mount protocol.
 v3 = vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
         "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "
         "mkdir -p /mnt/v3r; mount | grep -q /mnt/v3r || "
-        "mount_nfs -3 -U -s -x 2 -t 30 127.0.0.1:%s /mnt/v3r" % "/".join([""] + [e.decode() for e in export]))
+        "mount_nfs -3 -u -U -s -x 2 -t 30 127.0.0.1:%s /mnt/v3r" % "/".join([""] + [e.decode() for e in export]))
 print("  NFSv3 mount:", v3)
 W = lambda n: "/mnt/v3r/%s" % (stamp + n).decode()
 RS = lambda en, d=None: retention_set4(en, [] if d is None else [d])

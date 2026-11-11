@@ -296,12 +296,27 @@ t("option: falls back to 1", cbvers(b"c", 1, [1]), OPEN_DELEGATE_READ)
 # s10.2: a change through the server of NFSv3 recalls too.  nfsd(8) on UDP
 # only, as the module has TCP 2049; the client is the VM's own.
 # Soft, and bounded: a hard mount of a server that does not answer hung
-# the whole script until its timeout (run 43022459488).
-v3 = subprocess.call(["ssh", "netbsd", "sh -c 'pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
-                      "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "
-                      "mkdir -p /mnt/v3; mount | grep -q /mnt/v3 || "
-                      "mount_nfs -3 -U -s -x 2 -t 30 127.0.0.1:/%s /mnt/v3'" % b"/".join(export).decode()],
-                     timeout=120)
+# the whole script until its timeout (run 43022459488).  -u, NFS itself
+# on UDP: -U is the mount protocol only, and NFS was asked for on TCP,
+# which nfsd -u does not register (run 43026343439, "Program not
+# registered" with 100003 on udp alone in rpcinfo).  Each ssh is held
+# under the lease of 90 s and s, s2 renewed around it: a wait of 120 s
+# let them expire, and s8.4.3 and s2.6.3.1.1 after it with them.
+def alive():
+    s.compound([])
+    s2.compound([])
+def vmcall(cmd, timeout=60):
+    try:
+        return subprocess.call(["ssh", "netbsd", cmd], timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "timed out"
+    finally:
+        alive()
+alive()
+v3 = vmcall("sh -c 'pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
+            "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "
+            "mkdir -p /mnt/v3; mount | grep -q /mnt/v3 || "
+            "mount_nfs -3 -u -U -s -x 2 -t 30 127.0.0.1:/%s /mnt/v3'" % b"/".join(export).decode())
 print("  NFSv3 mount:", v3)
 if v3 == 0:
     for name, cmd in ((b"v3t", "touch"), (b"v3r", "rm")):
@@ -320,8 +335,13 @@ if v3 == 0:
             time.sleep(0.5)
         t("s10.2 recall by NFSv3 " + cmd, recalled, [[0]])
         s.compound(nofh(fv, op.delegreturn(dv.read.stateid)))
-        t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=120), 0)
-    subprocess.call(["ssh", "netbsd", "umount -f /mnt/v3"], timeout=60)
+        try:
+            t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=60), 0)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            t("s10.2 the NFSv3 " + cmd + " then goes", "timed out", 0)
+        alive()
+    vmcall("umount -f /mnt/v3")
 
 # s11.17 fs_locations_info, here and at the referral in.vm.sh sets up
 gli = lambda ops: s.compound(ops + [op.getattr(nfs4lib.list2bitmap([FATTR4_FS_LOCATIONS_INFO]))])
@@ -346,14 +366,23 @@ if res.status == NFS4_OK:
 
 # s18.35.4 case 3: the same owner from another flavour, with state, is
 # CLID_INUSE (ESXi counts on this when it mixes sec= on one server).
-from rpc.security import AuthNone
+# The client's default credential is AUTH_NONE (rpc.py, CredInfo() with
+# no sec), so the other flavour is AUTH_SYS: an AUTH_NONE here was the
+# same principal, case 2, and OK was right (run 43026343439).
+from rpc.security import AuthSys
 sf = sess_of(b"flv")
 res = create_file(sf, stamp + b"flv", path=P(b"flv"))
 check(res)
-res = c.compound([op.exchange_id(client_owner4(c.verifier, stamp + b"flv"), 0,
-                                 state_protect4_a(SP4_NONE), [c.impl_id])],
-                 AuthNone().init_cred())
-t("s18.35.4 another flavour, CLID_INUSE", res.status, NFS4ERR_CLID_INUSE)
+# AUTH_NONE is uid (uid_t)-1 to the server (auth_none_verify(),
+# nfsv4_client_principal()); AUTH_SYS with that uid differs in the
+# flavour alone, which is what a8c5128aac0 added, and uid 0 in both.
+print("  first flavour", c.default_cred.flavor)
+for name, uid in (("the flavour alone", 0xffffffff), ("uid too", 0)):
+    other = AuthSys().init_cred(uid=uid, gid=uid)
+    res = c.compound([op.exchange_id(client_owner4(c.verifier, stamp + b"flv"), 0,
+                                     state_protect4_a(SP4_NONE), [c.impl_id])],
+                     other)
+    t("s18.35.4 another flavour, CLID_INUSE, " + name, res.status, NFS4ERR_CLID_INUSE)
 
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")

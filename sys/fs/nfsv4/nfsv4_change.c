@@ -464,10 +464,14 @@ nfsv4_op_link(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	if (!sf->cf_set)
 		return NFS4ERR_NOFILEHANDLE;
+	/*
+	 * RFC 8881 s18.9.4, a MUST, before ISDIR: cf_vp of a named
+	 * attribute is the object it belongs to, which may be a directory.
+	 */
+	if (sf->cf_attr != 0)
+		return NFS4ERR_XDEV;
 	if (sf->cf_vp == NULL || sf->cf_vp->v_type == VDIR)
 		return NFS4ERR_ISDIR;
-	if (sf->cf_attr != 0)
-		return NFS4ERR_XDEV;		/* s5.3 */
 	if (sf->cf_wrongsec)
 		return NFS4ERR_WRONGSEC;	/* as for RENAME */
 	st = dir_check(cf);

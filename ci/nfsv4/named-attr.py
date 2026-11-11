@@ -142,6 +142,15 @@ want('REMOVE', r.status, NFS4_OK)
 r = c.compound([op.putfh(adir), op.remove(b'two')])
 want('REMOVE again', r.status, NFS4ERR_NOENT)
 
+# RFC 8881 s18.9.4: a named attribute of a directory, saved, is XDEV to LINK.
+dfh = c.do_getfh(export)
+r = c.compound([op.putfh(dfh), op.openattr(True),
+                c.open(b'naowner3', b'lx%d' % os.getpid(), OPEN4_CREATE,
+                       access=OPEN4_SHARE_ACCESS_BOTH, deny=OPEN4_SHARE_DENY_NONE),
+                op.savefh(), op.putfh(dfh), op.link(b'lxl%d' % os.getpid())])
+want('LINK of a directory\'s named attribute', (r.status, r.resarray[-1].resop),
+     (NFS4ERR_XDEV, OP_LINK))
+
 r = c.compound([op.putfh(fh), op.getattr(nfs4lib.list2bitmap([FATTR4_FS_LOCATIONS]))])
 want('GETATTR(fs_locations)', r.status, NFS4_OK)
 print('fs_locations:', r.resarray[-1].switch.switch.obj_attributes)

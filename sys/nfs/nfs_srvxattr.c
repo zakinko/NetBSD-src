@@ -205,42 +205,59 @@ struct xa_node {
 };
 
 /*
- * The node of a marked handle, with the checks of nfsrv_fhtovp() on the
- * file's.  An attribute that is no longer there is ESTALE.
+ * The file of a marked handle, referenced and unlocked, with the checks
+ * of nfsrv_fhtovp() on its own handle, which goes to filefh if not
+ * NULL; *kindp and name[NFS_XATTR_NAMEMAX + 1] say which node.  An
+ * attribute that is no longer there is ESTALE.  NFSACL comes here too.
  */
-static int
-xa_get(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
-    const nfsrvfh_t *nsfh, struct xa_node *xn)
+int
+nfsrv_xattr_fhtovp(const nfsrvfh_t *nsfh, bool v3, kauth_cred_t cred,
+    struct nfssvc_sock *slp, struct mbuf *nam, int kerbflag,
+    struct vnode **vpp, int *kindp, char *name, int *rdonlyp,
+    nfsrvfh_t *filefh)
 {
-	bool v3 = (nfsd->nd_flag & ND_NFSV3) != 0;
+	nfsrvfh_t fh;
 	uint8_t key[XA_KEY3];
 	size_t keylen = 0;
 	int error;
 
-	xn->xn_vp = NULL;
-	xn->xn_name[0] = '\0';
-	xn->xn_kind = nfsrv_xattr_marked(nsfh, v3, key, &keylen);
-	if (xn->xn_kind <= 0)
+	*vpp = NULL;
+	name[0] = '\0';
+	*kindp = nfsrv_xattr_marked(nsfh, v3, key, &keylen);
+	if (*kindp <= 0)
 		return ESTALE;
-	nfsrv_copyfh(&xn->xn_fh, nsfh);
+	nfsrv_copyfh(&fh, nsfh);
 	if (v3)
-		xn->xn_fh.nsfh_size = xa_base(nsfh);
+		fh.nsfh_size = xa_base(nsfh);
 	else
-		memset(NFSRVFH_DATA(&xn->xn_fh) + XA_V2MARK, 0, XA_KEY2);
-	error = nfsrv_fhtovp(&xn->xn_fh, 1, &xn->xn_vp, nfsd->nd_cr, slp,
-	    nfsd->nd_nam, &xn->xn_rdonly, (nfsd->nd_flag & ND_KERBAUTH), false);
+		memset(NFSRVFH_DATA(&fh) + XA_V2MARK, 0, XA_KEY2);
+	error = nfsrv_fhtovp(&fh, 1, vpp, cred, slp, nam, rdonlyp, kerbflag,
+	    false);
 	if (error != 0)
 		return error;
-	VOP_UNLOCK(xn->xn_vp);
-	if (xn->xn_kind == NFS_XATTR_FILE) {
-		error = nfs_xattr_byhash(xn->xn_vp, nfsd->nd_cr, key, keylen,
-		    xn->xn_name);
+	VOP_UNLOCK(*vpp);
+	if (*kindp == NFS_XATTR_FILE) {
+		error = nfs_xattr_byhash(*vpp, cred, key, keylen, name);
 		if (error != 0) {
-			vrele(xn->xn_vp);
-			xn->xn_vp = NULL;
+			vrele(*vpp);
+			*vpp = NULL;
+			return error;
 		}
 	}
-	return error;
+	if (filefh != NULL)
+		nfsrv_copyfh(filefh, &fh);
+	return 0;
+}
+
+static int
+xa_get(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
+    const nfsrvfh_t *nsfh, struct xa_node *xn)
+{
+
+	return nfsrv_xattr_fhtovp(nsfh, (nfsd->nd_flag & ND_NFSV3) != 0,
+	    nfsd->nd_cr, slp, nfsd->nd_nam, nfsd->nd_flag & ND_KERBAUTH,
+	    &xn->xn_vp, &xn->xn_kind, xn->xn_name, &xn->xn_rdonly,
+	    &xn->xn_fh);
 }
 
 static void

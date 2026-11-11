@@ -344,6 +344,9 @@ extern int (*const nfsrv_xattr_procs[NFS_NPROCS])(struct nfsrv_descript *,
 int nfsrv_xattr_marked(const nfsrvfh_t *, bool, uint8_t *, size_t *);
 int nfsrv_xattr_mkfh(const nfsrvfh_t *, bool, int, const char *,
 	nfsrvfh_t *);
+int nfsrv_xattr_fhtovp(const nfsrvfh_t *, bool, kauth_cred_t,
+	struct nfssvc_sock *, struct mbuf *, int, struct vnode **, int *,
+	char *, int *, nfsrvfh_t *);
 #endif
 void nfsrv_zapsock(struct nfssvc_sock *);
 void nfsrv_slpderef(struct nfssvc_sock *);

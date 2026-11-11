@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 120
+          fetch-depth: 200
       - id: select
         run: |
           t=$(sh ci/nfsv4/select.sh "${{ github.event.before }}" HEAD)

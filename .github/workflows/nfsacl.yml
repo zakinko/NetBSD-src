@@ -27,13 +27,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 120
+      # azure.archive.ubuntu.com has failed to resolve for hours at a time.
+      - name: The main Ubuntu archive for apt
+        run: |
+          getent hosts azure.archive.ubuntu.com archive.ubuntu.com || :
+          for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+            [ -f "$f" ] && sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$f"
+          done
+          cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
+          sudo apt-get update -q 2>&1 | tail -3 || :
       - uses: actions/cache/restore@v4
         with:
           path: nb/tools
           key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
       - name: The option off leaves sys/nfs as it was
         run: |
-          sudo apt-get install -y -q unifdef >/dev/null
+          # The tree's own: the Ubuntu mirror has failed to resolve.
+          mkdir -p "$HOME/bin"
+          cc -w -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -D'__printflike(a,b)=' -D'__dead=' -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
+          export PATH="$HOME/bin:$PATH"
           # From this series' base: the GSS series before it already
           # changes nfs.h, nfs_socket.c and nfs_srvsubs.c with it off.
           sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsacl/base)"
@@ -80,11 +92,29 @@ jobs:
         with:
           name: out
           path: out
+      # azure.archive.ubuntu.com has failed to resolve for hours at a time.
+      - name: The main Ubuntu archive for apt
+        run: |
+          getent hosts azure.archive.ubuntu.com archive.ubuntu.com || :
+          for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+            [ -f "$f" ] && sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$f"
+          done
+          cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
+          sudo apt-get update -q 2>&1 | tail -3 || :
+      # For the OmniOS VM: it reaches the NetBSD one through the runner.
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'
           cpu: 2
           mem: 4096
+          nat: |
+            "2049": "2049"
+            udp:"2049": "2049"
+            "4002": "4002"
+            udp:"4002": "4002"
+            "111": "111"
+            udp:"111": "111"
           sync: rsync
           copyback: false
           run: uname -a
@@ -110,6 +140,20 @@ jobs:
           ssh netbsd 'showmount -e 127.0.0.1'
       - name: getfacl and setfacl over version 3, AUTH_SYS and Kerberos, and the probe
         run: sh ci/nfsacl/linux.sh "$PWD/out"
+      - name: The illumos client
+        id: omnios
+        uses: vmactions/omnios-vm@v1
+        with:
+          release: r151060
+          cpu: 2
+          mem: 2048
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: getfacl and setfacl of illumos over versions 3 and 2
+        run: |
+          sudo systemctl stop rpcbind rpcbind.socket 2>/dev/null || :
+          sh ci/nfsacl/omnios-check.sh "$PWD/out"
       - name: Wireshark reads it
         if: always()
         run: sh ci/nfsacl/tshark.sh out/nfsacl.pcap out | tee out/nfsacl-tshark.txt; test "${PIPESTATUS[0]}" = 0

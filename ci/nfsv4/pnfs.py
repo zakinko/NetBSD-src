@@ -28,10 +28,12 @@ def vm(cmd):
 UADDR = "127.0.0.1.8.1"		# 2049, RFC 5665 s5.2.3.3
 ANY = 0xffffffffffffffff
 recalls = []
-orig = nfs4client.NFS4Client.op_cb_layoutrecall
+# pynfs's own handler sends LAYOUTRETURN before it answers (run
+# 43076329181); this one only answers, so that the conflicts of
+# s12.5.5.2.1.3 can be seen before the return.
 def spy(self, arg, env):
     recalls.append(arg)
-    return orig(self, arg, env)
+    return nfs4client.encode_status(NFS4_OK)
 nfs4client.NFS4Client.op_cb_layoutrecall = spy
 
 export = sys.argv[1].strip('/').encode().split(b'/')

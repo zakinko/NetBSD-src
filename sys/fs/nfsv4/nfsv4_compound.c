@@ -421,7 +421,7 @@ nfsv4_one_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a)
 	}
 
 	/* SETATTR4res has its bitmap whatever the status, s16.32.3. */
-	if (op == NFSV4_OP_SETATTR && !nfsv4_attr_put_mask(c->c_rx, 0))
+	if (op == NFSV4_OP_SETATTR && !nfsv4_attr_put_mask(c->c_rx, 0, 0))
 		return NFS4ERR_RESOURCE;
 	return st;
 }

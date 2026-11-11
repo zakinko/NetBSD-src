@@ -450,7 +450,7 @@ nfsv4_op_readdir(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (cf->cf_vp != NULL && cf->cf_attr == 0 &&
 	    cf->cf_vp->v_type != VDIR)
 		return NFS4ERR_NOTDIR;
-	if (!nfsv4_attr_getonly_ok(&ra->mask))
+	if (!nfsv4_attr_getonly_ok(&ra->mask, c->c_minor))
 		return NFS4ERR_INVAL;
 	/* RFC 7530 s16.24.4 */
 	if (ra->cookie == 1 || ra->cookie == 2)

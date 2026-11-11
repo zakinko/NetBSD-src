@@ -93,7 +93,7 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct vnode *vp;
 	enum vtype vt;
 	uint64_t set;
-	uint32_t st;
+	uint32_t st, w2;
 	bool noattr;
 	int error;
 
@@ -217,8 +217,10 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 		vrele(vp);
 		return st;
 	}
+	w2 = c->c_xs.xs_did2;
+	c->c_xs.xs_did2 = 0;
 	return nfsv4_xdr_change_info(c->c_rx, &ci) &&
-	    nfsv4_attr_put_mask(c->c_rx, set) ? NFS4_OK : NFS4ERR_RESOURCE;
+	    nfsv4_attr_put_mask(c->c_rx, set, w2) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
 /* RFC 7530 s16.26 */
@@ -258,6 +260,9 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_dir_change(nd.ni_dvp, cf->cf_cred, &ci.ci_before);
 	if (error == 0 && (vp->v_vflag & VV_ROOT) != 0)
 		error = EBUSY;
+	/* s5.13, the name of a retained file; see nfsv4_op_write(). */
+	if (error == 0 && nfsv4_retained(vp, true))
+		error = EACCES;
 	if (error != 0) {
 		VOP_ABORTOP(nd.ni_dvp, &nd.ni_cnd);
 		if (nd.ni_dvp == vp)
@@ -389,8 +394,12 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 		VOP_UNLOCK(fromnd.ni_dvp);
 	fvp = fromnd.ni_vp;
 
-	error = nfsv4_namei(&tond, tf->cf_vp, ra->newname.nm_str, RENAME,
-	    LOCKPARENT | LOCKLEAF | NOCACHE, tf->cf_cred);
+	/* s5.13: neither name of a retained file goes; see nfsv4_op_write(). */
+	if (nfsv4_retained(fvp, false))
+		error = EACCES;
+	else
+		error = nfsv4_namei(&tond, tf->cf_vp, ra->newname.nm_str,
+		    RENAME, LOCKPARENT | LOCKLEAF | NOCACHE, tf->cf_cred);
 	if (error != 0) {
 		VFS_RENAMELOCK_EXIT(mp);
 		VOP_ABORTOP(fromnd.ni_dvp, &fromnd.ni_cnd);
@@ -415,6 +424,8 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s16.27.4: the same file under both names is no work. */
 	if (error == 0 && fvp == tvp)
 		error = -1;
+	if (error == 0 && tvp != NULL && nfsv4_retained(tvp, true))
+		error = EACCES;
 
 	if (error == 0) {
 		error = VOP_RENAME(fromnd.ni_dvp, fromnd.ni_vp, &fromnd.ni_cnd,
@@ -536,7 +547,7 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct vnode *vp = cf->cf_vp;
 	struct vattr va;
 	uint64_t set = 0;
-	uint32_t st;
+	uint32_t st, w2;
 	int error;
 
 	st = nfsv4_attr_parse(c, &sa->attrs, &va, &set);
@@ -553,6 +564,12 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = nfsv4_io_check(c, &sa->stateid, true);
 	} else if (st == NFS4_OK && c->c_minor != 0)
 		st = nfsv4_setattr_stateid(c, &sa->stateid);	/* RFC 8881 s8.2.6 */
+	/* RFC 8881 s5.13, before anything is changed; see nfsv4_op_write(). */
+	if (st == NFS4_OK && (set & (1ULL << FATTR4_SIZE)) != 0 &&
+	    nfsv4_retained(vp, false))
+		st = NFS4ERR_ACCESS;
+	if (st == NFS4_OK)
+		st = nfsv4_retention_check(c, vp, cf->cf_cred);
 	/* s10.4.4; RFC 8881 s8.2.6: a session says who, and not the stateid. */
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break(vp, c->c_client, c->c_rq->rq_connid,
@@ -573,7 +590,9 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		}
 	} else
 		set = 0;
-	if (!nfsv4_attr_put_mask(c->c_rx, set))
+	w2 = c->c_xs.xs_did2;
+	c->c_xs.xs_did2 = 0;
+	if (!nfsv4_attr_put_mask(c->c_rx, set, w2))
 		return NFS4ERR_RESOURCE;
 	return st;
 }
@@ -623,7 +642,7 @@ verify_same(struct nfsv4_compound *c, const struct nfsv4_fattr *fa, bool *same)
 	/* s16.35.5 */
 	if (fa->fa_mask.bm_more)
 		return NFS4ERR_ATTRNOTSUPP;
-	if (!nfsv4_attr_getonly_ok(&fa->fa_mask) ||
+	if (!nfsv4_attr_getonly_ok(&fa->fa_mask, c->c_minor) ||
 	    (fa->fa_mask.bm_n > 0 &&
 	    (fa->fa_mask.bm_w[0] & (1U << FATTR4_RDATTR_ERROR)) != 0))
 		return NFS4ERR_INVAL;

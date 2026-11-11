@@ -158,6 +158,11 @@ jobs:
           cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
+      - name: Retention, RFC 8881 s5.13, where extended attributes are
+        run: |
+          cp ci/nfsv4/retention.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 300 python3 ./retention.py /export/acl 2>&1 | tee "$OLDPWD/out/retention.txt" || true
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -241,6 +246,7 @@ jobs:
             out/linux-client-*.txt
             out/t41.txt
             out/t41b.txt
+            out/retention.txt
             out/t40rm.txt
             out/aclcreate.txt
             out/named-attr.txt

@@ -91,7 +91,18 @@ struct nfsv4_xstore {
 	uint32_t	xs_mimelen;
 	char		xs_mime[NFSV4_MIME_MAX];
 	struct timespec	xs_backup;
+	/* retention_set, retentevt_set and retention_hold, RFC 8881 s5.13 */
+	uint32_t	xs_set2;	/* of the third word */
+	uint32_t	xs_did2;	/* what was set of it */
+	struct {
+		bool		rs_enable;
+		bool		rs_hasdur;
+		uint64_t	rs_duration;
+	}		xs_ret[2];	/* NFSV4_RET_* */
+	uint64_t	xs_hold;
 };
+#define	NFSV4_RET		0	/* retention_set */
+#define	NFSV4_RETEVT		1	/* retentevt_set */
 
 /* What CB_GETATTR said, s10.4.3. */
 struct nfsv4_attrov {
@@ -196,14 +207,14 @@ uint32_t nfsv4_attr_fill(struct nfsv4_compound *, const struct nfsv4_cfh *,
 	    const struct nfsv4_bitmap *, uint32_t, char *, size_t,
 	    struct nfsv4_bitmap *, u_int *);
 uint64_t nfsv4_attr_change(const struct vnode *, const struct vattr *);
-bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *);
+bool	nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *, uint32_t);
 bool	nfsv4_attr_supported(const struct nfsv4_compound *,
 	    const struct nfsv4_bitmap *, struct vnode *);
 int	nfsv4_access_vp(const struct nfsv4_cfh *, int);
 
 uint32_t nfsv4_attr_parse(struct nfsv4_compound *,
 	    const struct nfsv4_fattr *, struct vattr *, uint64_t *);
-bool	nfsv4_attr_put_mask(XDR *, uint64_t);
+bool	nfsv4_attr_put_mask(XDR *, uint64_t, uint32_t);
 
 uint32_t nfsv4_file_check(const struct nfsv4_compound *,
 	    const struct nfsv4_cfh *);
@@ -222,6 +233,12 @@ uint32_t nfsv4_xstore_apply(struct nfsv4_compound *, struct vnode *,
 bool	nfsv4_xstore_bool(struct vnode *, const char *);
 u_int	nfsv4_xstore_mime(struct vnode *, char *);
 void	nfsv4_xstore_time(struct vnode *, struct timespec *);
+uint32_t nfsv4_retention_check(struct nfsv4_compound *, struct vnode *,
+	    kauth_cred_t);
+bool	nfsv4_retained(struct vnode *, bool);
+void	nfsv4_retention_get(struct vnode *, u_int, uint64_t *,
+	    struct timespec *);
+uint64_t nfsv4_retention_hold(struct vnode *);
 
 void	nfsv4_idmap_init(void);
 void	nfsv4_idmap_fini(void);

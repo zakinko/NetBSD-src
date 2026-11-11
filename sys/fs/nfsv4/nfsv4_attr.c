@@ -210,6 +210,23 @@ const uint64_t nfsv4_attr_exclcreat =
 #define	W2_EXCLCREAT	(1U << (FATTR4_SUPPATTR_EXCLCREAT - 64))
 #define	W2_CHARSET	(1U << (FATTR4_FS_CHARSET_CAP - 64))
 #define	W2_ALL		(W2_LOCINFO | W2_EXCLCREAT | W2_CHARSET)
+/* s5.13; kept as attr_stored is, so supported only where those are. */
+#define	W2_RETGET	(1U << (FATTR4_RETENTION_GET - 64))
+#define	W2_RETSET	(1U << (FATTR4_RETENTION_SET - 64))
+#define	W2_EVTGET	(1U << (FATTR4_RETENTEVT_GET - 64))
+#define	W2_EVTSET	(1U << (FATTR4_RETENTEVT_SET - 64))
+#define	W2_HOLD		(1U << (FATTR4_RETENTION_HOLD - 64))
+#define	W2_RETENTION	(W2_RETGET | W2_RETSET | W2_EVTGET | W2_EVTSET | \
+			    W2_HOLD)
+#define	W2_SETONLY	(W2_RETSET | W2_EVTSET)		/* s5.5 */
+
+static uint32_t
+attr_w2_supported(struct vnode *vp)
+{
+
+	return vp != NULL && nfsv4_xstore_ok(vp) ? W2_ALL | W2_RETENTION :
+	    W2_ALL;
+}
 
 /* Words past two that this minor version has nothing to say of. */
 static inline bool
@@ -219,7 +236,7 @@ attr_more(const struct nfsv4_bitmap *bm, uint32_t minor)
 
 	w2 = bm->bm_n > 2 ? bm->bm_w[2] : 0;
 	if (minor != 0)
-		w2 &= ~W2_ALL;
+		w2 &= ~(W2_ALL | W2_RETENTION);
 	return bm->bm_more || w2 != 0;
 }
 
@@ -236,9 +253,11 @@ attr_mask(const struct nfsv4_bitmap *bm)
 
 /* RFC 7530 s5.5: asking for a set-only attribute is NFS4ERR_INVAL. */
 bool
-nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm)
+nfsv4_attr_getonly_ok(const struct nfsv4_bitmap *bm, uint32_t minor)
 {
 
+	if (minor != 0 && bm->bm_n > 2 && (bm->bm_w[2] & W2_SETONLY) != 0)
+		return false;
 	return (attr_mask(bm) & attr_setonly) == 0;
 }
 
@@ -260,6 +279,9 @@ nfsv4_attr_supported(const struct nfsv4_compound *c,
 
 	if (c->c_minor == 0)
 		m &= ~attr_v41;
+	if (c->c_minor != 0 && bm->bm_n > 2 &&
+	    (bm->bm_w[2] & ~attr_w2_supported(vp)) != 0)
+		return false;
 	return !attr_more(bm, c->c_minor) && (attr_mask(bm) & ~m) == 0;
 }
 
@@ -704,7 +726,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = attr_u32(&x, c->c_minor != 0 ? 3 : 2) &&
 			    attr_u32(&x, W0(sup)) && attr_u32(&x, W1(sup));
 			if (ok && c->c_minor != 0)
-				ok = attr_u32(&x, W2_ALL);
+				ok = attr_u32(&x, cf->cf_attr == 0 ?
+				    attr_w2_supported(vp) : W2_ALL);
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
@@ -910,12 +933,27 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	w2 = 0;
 	if (ok && rderr == NFS4_OK && c->c_minor != 0 && want->bm_n > 2)
 		w2 = want->bm_w[2] &
-		    (cf->cf_ref == NULL ? W2_ALL : W2_LOCINFO);	/* s11.17 */
+		    (cf->cf_ref != NULL ? W2_LOCINFO :		/* s11.17 */
+		    cf->cf_attr == 0 && (want->bm_w[2] & W2_RETENTION) != 0 ?
+		    attr_w2_supported(vp) & ~W2_SETONLY : W2_ALL);
 	if ((w2 & W2_LOCINFO) != 0) {
 		ok = attr_fs_locations_info(&x, cf);
 		if (cf->cf_ref != NULL)
 			c->c_probed = true;	/* as for fs_locations */
 	}
+	/* retention_get4, s5.13.1 and s5.13.3; 69, 71, 73 in order. */
+	for (n = 0; n < 2 && ok; n++) {
+		uint64_t d;
+		struct timespec bt;
+
+		if ((w2 & (n == 0 ? W2_RETGET : W2_EVTGET)) == 0)
+			continue;
+		nfsv4_retention_get(vp, n, &d, &bt);
+		ok = attr_u64(&x, d) && attr_u32(&x, timespecisset(&bt)) &&
+		    (!timespecisset(&bt) || attr_time(&x, &bt));
+	}
+	if (ok && (w2 & W2_HOLD) != 0)
+		ok = attr_u64(&x, nfsv4_retention_hold(vp));
 	if (ok && (w2 & W2_EXCLCREAT) != 0) {
 		sup = nfsv4_attr_exclcreat & attr_supported_by(vp);
 		ok = attr_u32(&x, 2) && attr_u32(&x, W0(sup)) &&
@@ -950,7 +988,7 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	u_int len;
 	uint32_t st;
 
-	if (!nfsv4_attr_getonly_ok(&a->getattr.mask))
+	if (!nfsv4_attr_getonly_ok(&a->getattr.mask, c->c_minor))
 		return NFS4ERR_INVAL;
 	/*
 	 * s10.4.3: a client with a write delegation may have what these
@@ -1057,6 +1095,23 @@ attr_parse_nfstime(XDR *x, struct timespec *ts)
 	return NFS4_OK;
 }
 
+/* retention_set4, RFC 8881 s5.13.2: a bool and an array of up to one. */
+static uint32_t
+attr_parse_retset(XDR *x, struct nfsv4_xstore *xs, u_int i)
+{
+	uint32_t en, n;
+
+	if (!xdr_u_int32_t(x, &en) || en > 1 || !xdr_u_int32_t(x, &n))
+		return NFS4ERR_BADXDR;
+	if (n > 1)
+		return NFS4ERR_BADXDR;
+	xs->xs_ret[i].rs_enable = en != 0;
+	xs->xs_ret[i].rs_hasdur = n != 0;
+	if (n != 0 && !xdr_u_int64_t(x, &xs->xs_ret[i].rs_duration))
+		return NFS4ERR_BADXDR;
+	return NFS4_OK;
+}
+
 /* settime4; RFC 7531 s2 */
 static uint32_t
 attr_parse_settime(XDR *x, struct timespec *ts, u_int *flags)
@@ -1097,7 +1152,7 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 {
 	XDR *x = c->c_ax;
 	uint64_t m = attr_mask(&fa->fa_mask);
-	uint32_t st, v, id;
+	uint32_t st, v, id, w2;
 	u_int n, end;
 
 	vattr_null(va);
@@ -1107,15 +1162,18 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		c->c_setacl = NULL;
 	}
 	c->c_xs.xs_set = 0;
+	c->c_xs.xs_set2 = 0;
+	c->c_xs.xs_did2 = 0;
+	w2 = c->c_minor != 0 && fa->fa_mask.bm_n > 2 ? fa->fa_mask.bm_w[2] : 0;
 	/* RFC 8881 s5.5: it is known, and get-only. */
-	if (c->c_minor != 0 && !attr_more(&fa->fa_mask, 1) &&
-	    fa->fa_mask.bm_n > 2 && fa->fa_mask.bm_w[2] != 0)
+	if (!attr_more(&fa->fa_mask, c->c_minor) &&
+	    (w2 & ~(W2_SETONLY | W2_HOLD)) != 0)
 		return NFS4ERR_INVAL;
-	if (attr_more(&fa->fa_mask, 0) ||
+	if (attr_more(&fa->fa_mask, c->c_minor) ||
 	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
 		return NFS4ERR_ATTRNOTSUPP;
 	/* Whether these can be set depends on the file system. */
-	if ((m & attr_stored) != 0 && (c->c_cur.cf_vp == NULL ||
+	if (((m & attr_stored) != 0 || w2 != 0) && (c->c_cur.cf_vp == NULL ||
 	    !nfsv4_xstore_ok(c->c_cur.cf_vp)))
 		return NFS4ERR_ATTRNOTSUPP;
 	if ((m & ~attr_settable) != 0)
@@ -1207,6 +1265,17 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 			break;
 		}
 	}
+	/* retention_set4, s5.13.2 and s5.13.4, then retention_hold. */
+	for (n = 0; n < 2 && st == NFS4_OK; n++) {
+		if ((w2 & (n == 0 ? W2_RETSET : W2_EVTSET)) == 0)
+			continue;
+		st = attr_parse_retset(x, &c->c_xs, n);
+	}
+	if (st == NFS4_OK && (w2 & W2_HOLD) != 0 &&
+	    !xdr_u_int64_t(x, &c->c_xs.xs_hold))
+		st = NFS4ERR_BADXDR;
+	if (st == NFS4_OK)
+		c->c_xs.xs_set2 = w2;
 	if (st == NFS4_OK && XDR_GETPOS(x) != fa->fa_pos + fa->fa_len)
 		st = NFS4ERR_BADXDR;
 	if (!XDR_SETPOS(x, end))
@@ -1216,15 +1285,16 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	return st;
 }
 
-/* The bitmap of what was set, for attrset and attrsset. */
+/* The bitmap of what was set, for attrset and attrsset; set2 of 4.1. */
 bool
-nfsv4_attr_put_mask(XDR *x, uint64_t set)
+nfsv4_attr_put_mask(XDR *x, uint64_t set, uint32_t set2)
 {
 	struct nfsv4_bitmap bm;
 
 	memset(&bm, 0, sizeof(bm));
-	bm.bm_n = 2;
+	bm.bm_n = set2 != 0 ? 3 : 2;
 	bm.bm_w[0] = W0(set);
 	bm.bm_w[1] = W1(set);
+	bm.bm_w[2] = set2;
 	return nfsv4_xdr_bitmap(x, &bm);
 }

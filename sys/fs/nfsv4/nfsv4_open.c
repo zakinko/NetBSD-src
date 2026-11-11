@@ -159,7 +159,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		}
 		/* RFC 8881 s18.16.3 */
 		if (oa->createmode == EXCLUSIVE4_1 &&
-		    (set & ~nfsv4_attr_exclcreat) != 0)
+		    ((set & ~nfsv4_attr_exclcreat) != 0 ||
+		    c->c_xs.xs_set2 != 0))
 			return NFS4ERR_INVAL;
 	} else if (dvp == NULL)
 		/*
@@ -415,7 +416,7 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
     struct nfsv4_open_deleg *od, u_int *rlen)
 {
 	struct nfsv4_client *cl = sw->sw_client;
-	uint32_t rflags;
+	uint32_t rflags, w2;
 	XDR rb;
 
 	c->c_curst = *si;
@@ -426,11 +427,14 @@ open_reply(struct nfsv4_compound *c, struct nfsv4_owner_s *sw,
 
 	nfsv4_client_stable(cl);
 
+	/* Retention set here, s5.13; an OPEN that set none has none. */
+	w2 = c->c_xs.xs_did2;
+	c->c_xs.xs_did2 = 0;
 	xdrmem_create(&rb, c->c_rbuf, NFSV4_REPLAY_MAX, XDR_ENCODE);
 	if (!nfsv4_xdr_stateid(&rb, si) ||
 	    !nfsv4_xdr_change_info(&rb, ci) ||
 	    !xdr_u_int32_t(&rb, &rflags) ||
-	    !nfsv4_attr_put_mask(&rb, set) ||
+	    !nfsv4_attr_put_mask(&rb, set, w2) ||
 	    !nfsv4_xdr_open_deleg(&rb, od))
 		return NFS4ERR_SERVERFAULT;
 	*rlen = xdr_getpos(&rb);
@@ -685,6 +689,10 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	}
 	/* RFC 8881 s18.16.4: truncating is a write, whatever the access. */
 	if (trunc) {
+		/* s5.13; RFC 8881 names no error, see nfsv4_op_write(). */
+		st = nfsv4_retained(vp, false) ? NFS4ERR_ACCESS : NFS4_OK;
+		if (st != NFS4_OK)
+			goto bad;
 		st = nfsv4_deleg_break(vp, sw->sw_client, 0, NFSV4_DC_WRITE);
 		if (st != NFS4_OK)
 			goto bad;
@@ -1297,6 +1305,15 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = nfsv4_access_vp(cf, VWRITE);
 	if (error != 0)
 		return nfsv4_errno(error);
+	/*
+	 * RFC 8881 s5.13: a retained file's data MUST NOT change, and no
+	 * error is named for it.  NFS4ERR_ACCESS is one that WRITE, SETATTR,
+	 * OPEN, REMOVE and RENAME may all return (s15.2); NFS4ERR_PERM,
+	 * of not being the owner, is not one of REMOVE's or RENAME's, and
+	 * the owner is refused here too.
+	 */
+	if (nfsv4_retained(vp, false))
+		return NFS4ERR_ACCESS;
 
 	/* s16.36.4: the server may write less than asked. */
 	n = MIN(wa->len, NFSV4_MAXIO);

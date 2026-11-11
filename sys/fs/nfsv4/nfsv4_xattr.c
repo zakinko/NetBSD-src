@@ -218,17 +218,27 @@ nfsv4_xstore_ok(struct vnode *vp)
 }
 
 static int
-xs_get(struct vnode *vp, const char *name, void *buf, size_t len, size_t *gotp)
+xs_get_locked(struct vnode *vp, const char *name, void *buf, size_t len,
+    size_t *gotp)
 {
 	struct iovec iov;
 	struct uio uio;
 	int error;
 
 	xa_uio(&uio, &iov, buf, len, UIO_READ);
-	vn_lock(vp, LK_SHARED | LK_RETRY);
 	error = VOP_GETEXTATTR(vp, XS_NS, name, &uio, NULL, NOCRED);
-	VOP_UNLOCK(vp);
 	*gotp = len - uio.uio_resid;
+	return error;
+}
+
+static int
+xs_get(struct vnode *vp, const char *name, void *buf, size_t len, size_t *gotp)
+{
+	int error;
+
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = xs_get_locked(vp, name, buf, len, gotp);
+	VOP_UNLOCK(vp);
 	return error;
 }
 
@@ -278,22 +288,193 @@ nfsv4_xstore_time(struct vnode *vp, struct timespec *ts)
 		timespecclear(ts);
 }
 
+/*
+ * The retention attributes, RFC 8881 s5.13, kept in one record beside
+ * the others so that the check on every WRITE is one read.  A begin
+ * time is kept only while enabled.
+ */
+struct ret_rec {
+	struct {
+		uint64_t	r_duration;
+		int64_t		r_on;
+		int64_t		r_sec;
+		int64_t		r_nsec;
+	}		rr[2];		/* NFSV4_RET* */
+	uint64_t	rr_hold;
+};
+
+static void
+ret_read(struct vnode *vp, bool locked, struct ret_rec *r)
+{
+	size_t got;
+	int error;
+
+	if (locked)
+		error = xs_get_locked(vp, "nfsv4.retention", r, sizeof(*r),
+		    &got);
+	else
+		error = xs_get(vp, "nfsv4.retention", r, sizeof(*r), &got);
+	if (error != 0 || got != sizeof(*r))
+		memset(r, 0, sizeof(*r));
+}
+
+/*
+ * The duration left, counting down one a second from the begin time
+ * (s5.13.2), rounded up so that it is 0 just when retention ends; 0 too
+ * if it is not enabled.  A clock set back counts as no time gone.
+ */
+static uint64_t
+ret_left(const struct ret_rec *r, u_int i, const struct timespec *now)
+{
+	uint64_t d = r->rr[i].r_duration;
+	int64_t gone;
+
+	if (r->rr[i].r_on == 0 || d == RET4_DURATION_INFINITE)
+		return r->rr[i].r_on == 0 ? 0 : d;
+	gone = now->tv_sec - r->rr[i].r_sec;
+	if (gone < 0 || (gone == 0 && now->tv_nsec < r->rr[i].r_nsec))
+		return d;
+	if (now->tv_nsec < r->rr[i].r_nsec)
+		gone--;
+	return (uint64_t)gone >= d ? 0 : d - (uint64_t)gone;
+}
+
+/*
+ * Retained, s5.13: by a hold, s5.13.5, or by either kind of retention,
+ * each whatever the other says, s5.13.4.  locked says vp is locked.
+ */
+bool
+nfsv4_retained(struct vnode *vp, bool locked)
+{
+	struct ret_rec r;
+	struct timespec now;
+
+	ret_read(vp, locked, &r);
+	if (r.rr_hold != 0)
+		return true;
+	getnanotime(&now);
+	return ret_left(&r, NFSV4_RET, &now) != 0 ||
+	    ret_left(&r, NFSV4_RETEVT, &now) != 0;
+}
+
+/* retention_get4, s5.13.1: no begin time once the duration is 0. */
+void
+nfsv4_retention_get(struct vnode *vp, u_int i, uint64_t *dur,
+    struct timespec *begin)
+{
+	struct ret_rec r;
+	struct timespec now;
+
+	ret_read(vp, false, &r);
+	getnanotime(&now);
+	timespecclear(begin);
+	if (r.rr[i].r_on == 0) {
+		*dur = r.rr[i].r_duration;
+		return;
+	}
+	*dur = ret_left(&r, i, &now);
+	if (*dur != 0) {
+		begin->tv_sec = r.rr[i].r_sec;
+		begin->tv_nsec = (long)r.rr[i].r_nsec;
+	}
+}
+
+uint64_t
+nfsv4_retention_hold(struct vnode *vp)
+{
+	struct ret_rec r;
+
+	ret_read(vp, false, &r);
+	return r.rr_hold;
+}
+
+/*
+ * What SETATTR asked of retention, made into the record that would be
+ * stored, or why it may not be.  NetBSD's ACLs have no bit for
+ * ACE4_WRITE_RETENTION or ACE4_WRITE_RETENTION_HOLD (an ACE naming them
+ * is refused), so who holds them is this server's choice, s6.2.1.3.1:
+ * the owner and the privileged, which is VADMIN.
+ */
+static uint32_t
+ret_make(struct nfsv4_compound *c, struct vnode *vp, kauth_cred_t cred,
+    struct ret_rec *r)
+{
+	const struct nfsv4_xstore *xs = &c->c_xs;
+	struct timespec now;
+	uint64_t d, left;
+	u_int i;
+	int error;
+
+	vn_lock(vp, LK_SHARED | LK_RETRY);
+	error = VOP_ACCESS(vp, VADMIN, cred);
+	VOP_UNLOCK(vp);
+	if (error != 0)
+		return NFS4ERR_ACCESS;		/* s5.13.2, s5.13.5: MUST */
+	ret_read(vp, false, r);
+	getnanotime(&now);
+	for (i = 0; i < 2; i++) {
+		if ((xs->xs_set2 & (1U << (FATTR4_RETENTION_SET - 64 +
+		    2 * i))) == 0)
+			continue;
+		d = xs->xs_ret[i].rs_hasdur ? xs->xs_ret[i].rs_duration :
+		    r->rr[i].r_duration;
+		left = ret_left(r, i, &now);
+		/* s5.13.2: neither disabled nor shortened while enabled. */
+		if (left != 0 && (!xs->xs_ret[i].rs_enable ||
+		    (d != RET4_DURATION_INFINITE &&
+		    (left == RET4_DURATION_INFINITE || d < left))))
+			return NFS4ERR_INVAL;
+		r->rr[i].r_duration = d;
+		r->rr[i].r_on = xs->xs_ret[i].rs_enable;
+		r->rr[i].r_sec = r->rr[i].r_on ? now.tv_sec : 0;
+		r->rr[i].r_nsec = r->rr[i].r_on ? now.tv_nsec : 0;
+	}
+	if ((xs->xs_set2 & (1U << (FATTR4_RETENTION_HOLD - 64))) != 0)
+		r->rr_hold = xs->xs_hold;
+	return NFS4_OK;
+}
+
+/* Whether ret_make() would refuse, before anything else is changed. */
+uint32_t
+nfsv4_retention_check(struct nfsv4_compound *c, struct vnode *vp,
+    kauth_cred_t cred)
+{
+	struct ret_rec r;
+
+	return c->c_xs.xs_set2 == 0 ? NFS4_OK : ret_make(c, vp, cred, &r);
+}
+
 uint32_t
 nfsv4_xstore_apply(struct nfsv4_compound *c, struct vnode *vp,
     kauth_cred_t cred)
 {
 	struct nfsv4_xstore *xs = &c->c_xs;
 	uint64_t set = xs->xs_set;
+	struct ret_rec r;
+	uint32_t st;
 	uint8_t v;
 	int64_t t[2];
 	int error = 0;
 
 	xs->xs_set = 0;
-	if (set == 0)
-		return NFS4_OK;
-	vn_lock(vp, LK_SHARED | LK_RETRY);
-	error = VOP_ACCESS(vp, VWRITE, cred);
-	VOP_UNLOCK(vp);
+	xs->xs_did2 = 0;
+	if (xs->xs_set2 != 0) {
+		/* Not VWRITE; a retained file still takes these, s5.13. */
+		st = ret_make(c, vp, cred, &r);
+		if (st == NFS4_OK)
+			error = xs_set(vp, "nfsv4.retention", &r, sizeof(r));
+		if (st == NFS4_OK && error == 0)
+			xs->xs_did2 = xs->xs_set2;
+		xs->xs_set2 = 0;
+		if (st != NFS4_OK)
+			return st;
+	}
+	if (error == 0 && set != 0) {
+		vn_lock(vp, LK_SHARED | LK_RETRY);
+		error = VOP_ACCESS(vp, VWRITE, cred);
+		VOP_UNLOCK(vp);
+	} else
+		set = 0;
 	if (error == 0 && (set & (1ULL << FATTR4_ARCHIVE)) != 0) {
 		v = xs->xs_archive != 0;
 		error = xs_set(vp, "nfsv4.archive", &v, 1);
@@ -563,7 +744,7 @@ xa_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	if (st != NFS4_OK)
 		set = 0;
-	return nfsv4_attr_put_mask(c->c_rx, set) ? st : NFS4ERR_RESOURCE;
+	return nfsv4_attr_put_mask(c->c_rx, set, 0) ? st : NFS4ERR_RESOURCE;
 }
 
 static uint32_t
@@ -749,7 +930,7 @@ nfsv4_xattr_op(struct nfsv4_compound *c, uint32_t op, union nfsv4_args *a,
 	case NFSV4_OP_SETATTR:
 		if (!dir)
 			return xa_op_setattr(c, a);
-		return nfsv4_attr_put_mask(c->c_rx, 0) ? NFS4ERR_ISDIR :
+		return nfsv4_attr_put_mask(c->c_rx, 0, 0) ? NFS4ERR_ISDIR :
 		    NFS4ERR_RESOURCE;
 	default:
 		/* RFC 8881 s5.3 */

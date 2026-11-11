@@ -290,7 +290,12 @@ dtlscall(SSL *ssl)
 
 	len = (int)mkcall(call, xid, AUTH_NONE);
 	for (i = 0; i < 8; i++) {
-		if (i % 2 == 0 && (n = SSL_write(ssl, call, len)) != len) {
+		/*
+		 * After our KeyUpdate OpenSSL writes nothing until it has
+		 * read the ACK, RFC 9147 s8, and says so with WANT_READ.
+		 */
+		if (i % 2 == 0 && (n = SSL_write(ssl, call, len)) != len &&
+		    SSL_get_error(ssl, n) != SSL_ERROR_WANT_READ) {
 			why("SSL_write", ssl, n);
 			return false;
 		}

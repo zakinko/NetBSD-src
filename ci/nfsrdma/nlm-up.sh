@@ -36,7 +36,15 @@ timeout 8 bash -c 'exec 3<>/dev/tcp/10.77.0.2/111' && echo 'tcp 111 connects' ||
 sleep 14
 cat "$OUT/nb0.txt" "$OUT/tun0.txt"
 # Both ways, to tell the link from the redirection when one fails.
+# A TCP connection to 111 completes (run 43016625749) and rpcinfo still
+# gets nothing: watch what it sends, by TCP and by UDP.
+sudo timeout 25 tcpdump -n -i nb0 -c 40 -v >"$OUT/nb0-rpc.txt" 2>&1 &
+sleep 2
+timeout -s KILL 10 rpcinfo -T tcp 10.77.0.2 100000 2 || echo 'rpcinfo -T tcp: no answer'
+timeout -s KILL 10 rpcinfo -T udp 10.77.0.2 100000 2 || echo 'rpcinfo -T udp: no answer'
 timeout -s KILL 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
+sleep 3
+cat "$OUT/nb0-rpc.txt"
 timeout -s KILL 20 rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 192.0.2.1'
 sudo iptables -t nat -L -n -v
 ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\.111 "'

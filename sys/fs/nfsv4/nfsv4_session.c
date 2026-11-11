@@ -172,6 +172,8 @@ session_rele(struct nfsv4_session *se)
 			    se->se_slots[i].sl_len);
 	}
 	nfsv4_ses_cost -= se->se_cost;
+	if (se->se_cbgss != NULL)
+		oncrpc_gssc_destroy(se->se_cbgss);
 	kmem_free(se, se->se_size);
 }
 
@@ -577,6 +579,33 @@ nfsv4_mach_check(const struct nfsv4_compound *c, const struct nfsv4_client *cl,
 	return mach_cred_is(c, cl) ? NFS4_OK : NFS4ERR_WRONG_CRED;
 }
 
+/*
+ * The RPCSEC_GSS element of callback_sec_parms4, s18.36.3 and s18.33.3:
+ * NFS4ERR_NOENT if the server has no context for the fore handle.  A
+ * handle of the client too long to keep, or a service out of range,
+ * cannot be used, and the other flavors offered are then left.
+ */
+static uint32_t
+cbsec_gss(const struct nfsv4_cbsec *cs, struct oncrpc_gssc **gcp)
+{
+	int error;
+
+	*gcp = NULL;
+	if (!cs->cs_gss)
+		return NFS4_OK;
+	if (cs->cs_hsrvlen == UINT32_MAX)
+		return NFS4ERR_NOENT;
+	if (cs->cs_hclilen == UINT32_MAX)
+		return cs->cs_any ? NFS4_OK : NFS4ERR_INVAL;
+	error = oncrpc_gssc_back(cs->cs_hsrv, cs->cs_hsrvlen, cs->cs_hcli,
+	    cs->cs_hclilen, cs->cs_gsssvc, gcp);
+	if (error == ENOENT)
+		return NFS4ERR_NOENT;
+	if (error != 0)
+		return cs->cs_any ? NFS4_OK : NFS4ERR_INVAL;
+	return NFS4_OK;
+}
+
 /* EXCHANGE_ID4resok, s18.35.2. */
 static uint32_t
 exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
@@ -744,9 +773,10 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	const struct nfsv4_args_create_session *ca = &a->create_session;
 	struct nfsv4_client *cl, *old;
 	struct nfsv4_session *se;
+	struct oncrpc_gssc *gc;
 	struct nfsv4_chanattrs fore = ca->fore;
 	char reply[NFSV4_CSREPLY_MAX];
-	uint32_t st, flags, nslots;
+	uint32_t st, gst, flags, nslots;
 	u_int len = 0;
 	size_t size, cost;
 
@@ -769,6 +799,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	fore.ca_maxreqs = nslots;
 	size = session_size(nslots);
 	se = kmem_zalloc(size, KM_SLEEP);
+	/* The answer is for phase 4; it sleeps, so it is had first. */
+	gst = cbsec_gss(&ca->sec, &gc);
 
 	mutex_enter(&nfsv4_state_lock);
 	/* 1 */
@@ -800,9 +832,9 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = cl->cl_csstatus = NFS4ERR_CLID_INUSE;
 		goto out;
 	}
-	/* 4; s18.36.3, there being no RPCSEC_GSS handle at all. */
-	if (ca->sec.cs_gss) {
-		st = cl->cl_csstatus = NFS4ERR_NOENT;
+	/* 4; s18.36.3 */
+	if (gst != NFS4_OK) {
+		st = cl->cl_csstatus = gst;
 		goto out;
 	}
 	cost = nslots * (size_t)fore.ca_maxcached;
@@ -829,6 +861,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	se->se_nslots = nslots;
 	se->se_cbprog = ca->cb_program;
 	se->se_cbsec = ca->sec;
+	se->se_cbgss = gc;
+	gc = NULL;
 	se->se_cbseq = 1;		/* s18.36.3 */
 	se->se_cbvers = NFSV4_VERSION;	/* s18.36.3 */
 	se->se_cost = cost;
@@ -854,6 +888,8 @@ out:
 	mutex_exit(&nfsv4_state_lock);
 	if (se != NULL)
 		kmem_free(se, size);
+	if (gc != NULL)		/* not taken by the session */
+		oncrpc_gssc_destroy(gc);
 	if (st == NFS4_OK && !XDR_PUTBYTES(c->c_rx, reply, len))
 		return NFS4ERR_RESOURCE;
 	return st;
@@ -956,17 +992,30 @@ nfsv4_op_bind_conn(struct nfsv4_compound *c, union nfsv4_args *a)
 	    NFS4_OK : NFS4ERR_RESOURCE;
 }
 
-/* s18.33.3; no RPCSEC_GSS handle exists. */
+/*
+ * s18.33.3.  A new back handle takes the old one's place: the RFC has
+ * handles added, and the server free to use any of those offered,
+ * s2.10.8.2, so keeping the latest is one such use.
+ */
 uint32_t
 nfsv4_op_backchannel_ctl(struct nfsv4_compound *c, union nfsv4_args *a)
 {
+	struct oncrpc_gssc *gc, *old = NULL;
+	uint32_t st;
 
-	if (a->backchannel_ctl.sec.cs_gss)
-		return NFS4ERR_NOENT;
+	st = cbsec_gss(&a->backchannel_ctl.sec, &gc);
+	if (st != NFS4_OK)
+		return st;
 	mutex_enter(&nfsv4_state_lock);
 	c->c_sess->se_cbprog = a->backchannel_ctl.cb_program;
 	c->c_sess->se_cbsec = a->backchannel_ctl.sec;
+	if (gc != NULL) {
+		old = c->c_sess->se_cbgss;
+		c->c_sess->se_cbgss = gc;
+	}
 	mutex_exit(&nfsv4_state_lock);
+	if (old != NULL)
+		oncrpc_gssc_destroy(old);
 	return NFS4_OK;
 }
 

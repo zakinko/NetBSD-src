@@ -112,6 +112,7 @@ struct oncrpc_gss_call {
 	uint8_t			gg_verfbody[ONCRPC_GSS_MAXVERF];
 };
 
+struct gss_krb5_ctx;
 struct oncrpc_gssc;
 struct oncrpc_opaque_auth;
 struct sockaddr;
@@ -119,6 +120,12 @@ struct sockaddr;
 int	oncrpc_gssc_create(const struct sockaddr *, uint32_t, uint32_t,
 	    const char *, uint32_t, int, struct oncrpc_gssc **);
 void	oncrpc_gssc_destroy(struct oncrpc_gssc *);
+void	oncrpc_gssc_hold(struct oncrpc_gssc *);
+int	oncrpc_gssc_back(const uint8_t *, uint32_t, const uint8_t *, uint32_t,
+	    uint32_t, struct oncrpc_gssc **);
+struct oncrpc_gss_ctx *
+	oncrpc_gss_ctx_hold(const uint8_t *, uint32_t, struct gss_krb5_ctx **);
+void	oncrpc_gss_ctx_rele(struct oncrpc_gss_ctx *);
 void	oncrpc_gssc_close(const struct sockaddr *, uint32_t, uint32_t,
 	    struct oncrpc_gssc *, int);
 bool	oncrpc_gssc_header(struct oncrpc_gssc *, uint32_t, uint32_t, uint32_t,

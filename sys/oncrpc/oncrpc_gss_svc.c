@@ -220,6 +220,41 @@ gss_ctx_insert(struct oncrpc_gss_ctx *gx)
 }
 
 /*
+ * A finished context by its handle, held, for a session's backchannel:
+ * RFC 8881 s2.10.8.2 has the server call the client with the client's
+ * own context.  NULL if there is none.  *krbp is its key, good while
+ * the hold lasts.
+ */
+struct oncrpc_gss_ctx *
+oncrpc_gss_ctx_hold(const uint8_t *handle, uint32_t len,
+    struct gss_krb5_ctx **krbp)
+{
+	struct oncrpc_gss_cred gc;
+	struct oncrpc_gss_ctx *gx;
+
+	if (len > sizeof(gc.gc_handle))
+		return NULL;
+	memset(&gc, 0, sizeof(gc));
+	gc.gc_handlelen = len;
+	memcpy(gc.gc_handle, handle, len);
+	gx = gss_ctx_lookup(&gc);
+	if (gx != NULL && (!gx->gx_complete || gx->gx_expire <= time_uptime)) {
+		gss_ctx_rele(gx);
+		gx = NULL;
+	}
+	if (gx != NULL)
+		*krbp = gx->gx_krb;
+	return gx;
+}
+
+void
+oncrpc_gss_ctx_rele(struct oncrpc_gss_ctx *gx)
+{
+
+	gss_ctx_rele(gx);
+}
+
+/*
  * The creation request retransmitted, RFC 2203 s5.2.3.1 says nothing of
  * it: Kerberos would see the replay of an authenticator and say no,
  * failing a client whose only trouble was a lost reply.  The answer is

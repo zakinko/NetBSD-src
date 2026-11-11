@@ -39,6 +39,7 @@
 __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
+#include <sys/atomic.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
@@ -51,6 +52,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 struct oncrpc_gssc {
 	struct gss_krb5_ctx *gc_krb;
+	struct oncrpc_gss_ctx *gc_srv;	/* the server's, if gc_krb is its */
+	volatile u_int	gc_refs;	/* for a back handle in use */
 	uint32_t	gc_service;
 	uint32_t	gc_proc;	/* RPCSEC_GSS_DATA, or DESTROY at the end */
 	uint32_t	gc_seq;		/* the last sent */
@@ -247,10 +250,60 @@ oncrpc_gssc_close(const struct sockaddr *to, uint32_t prog, uint32_t vers,
 	oncrpc_gssc_destroy(gc);
 }
 
+/*
+ * The back handle of RFC 8881 s2.10.8.2: calls on a session's
+ * backchannel under the client's context, the fore handle shandle, whose
+ * GSS context the back one shares, with chandle in the credential and
+ * service as gcbp_service says.  Its sequence numbers are its own.
+ * ENOENT if the server has no such context, which s18.36.3 and s18.33.3
+ * turn into NFS4ERR_NOENT.
+ */
+int
+oncrpc_gssc_back(const uint8_t *shandle, uint32_t slen, const uint8_t *chandle,
+    uint32_t clen, uint32_t service, struct oncrpc_gssc **gcp)
+{
+	struct oncrpc_gssc *gc;
+	struct gss_krb5_ctx *krb;
+	struct oncrpc_gss_ctx *gx;
+
+	if (clen > sizeof(gc->gc_handle) || service < RPCSEC_GSS_SVC_NONE ||
+	    service > RPCSEC_GSS_SVC_PRIVACY)
+		return EINVAL;
+	gx = oncrpc_gss_ctx_hold(shandle, slen, &krb);
+	if (gx == NULL)
+		return ENOENT;
+	gc = kmem_zalloc(sizeof(*gc), KM_SLEEP);
+	gc->gc_krb = krb;
+	gc->gc_srv = gx;
+	gc->gc_refs = 1;
+	gc->gc_service = service;
+	gc->gc_proc = RPCSEC_GSS_DATA;
+	gc->gc_hlen = clen;
+	memcpy(gc->gc_handle, chandle, clen);
+	*gcp = gc;
+	return 0;
+}
+
+/* A back handle, kept for a call while the session may drop it. */
+void
+oncrpc_gssc_hold(struct oncrpc_gssc *gc)
+{
+
+	KASSERT(gc->gc_srv != NULL);
+	atomic_inc_uint(&gc->gc_refs);
+}
+
 void
 oncrpc_gssc_destroy(struct oncrpc_gssc *gc)
 {
 
+	if (gc->gc_srv != NULL) {
+		if (atomic_dec_uint_nv(&gc->gc_refs) != 0)
+			return;
+		oncrpc_gss_ctx_rele(gc->gc_srv);
+		kmem_free(gc, sizeof(*gc));
+		return;
+	}
 	gss_krb5_ctx_destroy(gc->gc_krb);
 	kmem_free(gc, sizeof(*gc));
 }

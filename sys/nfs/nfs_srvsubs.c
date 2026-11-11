@@ -72,6 +72,10 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: nfs_srvsubs.c,v 1.17 2023/03/23 19:52:42 riastradh Exp $");
 
+#ifdef _KERNEL_OPT
+#include "opt_nfs_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/proc.h>
 #include <sys/systm.h>
@@ -304,6 +308,22 @@ nfsrv_fhtovp(nfsrvfh_t *nsfh, int lockflag, struct vnode **vpp,
 
 	fhp = NFSRVFH_FHANDLE(nsfh);
 	*vpp = (struct vnode *)0;
+
+#ifdef NFSSERVER_ONCRPC
+	/*
+	 * Past the file system's part a handle is zero, or marked by
+	 * nfs_srvxattr.c as a named attribute of the file, which only
+	 * nfsrv_xattr_procs[] take.  One that strays here is not the file.
+	 */
+	if (NFSRVFH_SIZE(nsfh) > FHANDLE_SIZE(fhp)) {
+		const uint8_t *d = NFSRVFH_DATA(nsfh);
+		size_t i;
+
+		for (i = FHANDLE_SIZE(fhp); i < NFSRVFH_SIZE(nsfh); i++)
+			if (d[i] != 0)
+				return ESTALE;
+	}
+#endif
 
 	if (nfs_ispublicfh(nsfh)) {
 		if (!pubflag || !nfs_pub.np_valid)

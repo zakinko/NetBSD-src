@@ -48,6 +48,9 @@
  * nfs_rephead() writes the RPC header into the reply, from inside the
  * procedures, so replies go back through ONCRPC_RAWREPLY as they are.
  *
+ * A call whose first handle is of a named attribute goes to
+ * nfsrv_xattr_procs[] instead, see nfs_srvxattr.c.
+ *
  * Write gathering holds a call past its dispatch.  It belongs to no
  * thread of the layer, which can be lent by nfsd and gone, so a thread
  * here takes the place of nfsrv_timer() waking an nfsd.
@@ -80,6 +83,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/rpcv2.h>
 #include <nfs/nfs.h>
 #include <nfs/nfsrvcache.h>
+#include <nfs/xdr_subs.h>
 #include <nfs/nfs_var.h>
 
 #include <oncrpc/oncrpc.h>
@@ -291,6 +295,39 @@ nfs_oncrpc_avail(const struct nfsrv_descript *nd)
 }
 
 /*
+ * Is the first handle of the call marked as a named attribute?  It is
+ * read without being taken, for the procedure to take it again.  A
+ * call too short for one is left to the procedure to refuse.
+ */
+static bool
+nfs_oncrpc_xattr(const struct nfsrv_descript *nd, bool v3)
+{
+	nfsrvfh_t nsfh;
+	uint32_t len = NFSX_V2FH;
+	u_int avail, off;
+
+	if (nd->nd_procnum == NFSPROC_NULL || nd->nd_procnum == NFSPROC_NOOP)
+		return false;
+	avail = nfs_oncrpc_avail(nd);
+	off = (char *)nd->nd_dpos - mtod(nd->nd_md, char *);
+	if (v3) {
+		if (avail < NFSX_UNSIGNED)
+			return false;
+		m_copydata(nd->nd_md, off, NFSX_UNSIGNED, &len);
+		len = fxdr_unsigned(uint32_t, len);
+		if (len < FHANDLE_SIZE_MIN || len > NFSX_V3FHMAX)
+			return false;
+		off += NFSX_UNSIGNED;
+		avail -= NFSX_UNSIGNED;
+	}
+	if (avail < len)
+		return false;
+	m_copydata(nd->nd_md, off, len, NFSRVFH_DATA(&nsfh));
+	nsfh.nsfh_size = len;
+	return nfsrv_xattr_marked(&nsfh, v3, NULL, NULL) != 0;
+}
+
+/*
  * The RC_ cases are those of nfssvc_nfsd(), with one difference: a reply
  * with an error from the procedure is freed, where the loop there drops
  * the pointer.  Nothing keeps it, nfsrv_updatecache() with false least
@@ -304,7 +341,7 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 	struct mbuf *mreq, *mrep, *md;
 	char *dpos;
 	int cacherep, error;
-	bool v3 = rq->rq_vers == NFS_VER3;
+	bool v3 = rq->rq_vers == NFS_VER3, xattr;
 
 	/* nfsrv_getcache() and the exports go by the peer's address. */
 	if (rq->rq_nam == NULL)
@@ -351,12 +388,13 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 		nd->nd_procnum = NFSPROC_NOOP;
 	}
 	getmicrotime(&nd->nd_starttime);
+	xattr = nfs_oncrpc_xattr(nd, v3);
 
 	cacherep = nfsrv_getcache(nd, &nx->nx_slp, &mreq);
 	switch (cacherep) {
 	case RC_DOIT:
 		if (!v3 && nd->nd_procnum == NFSPROC_WRITE &&
-		    nfsrvw_procrastinate > 0) {
+		    nfsrvw_procrastinate > 0 && !xattr) {
 			/* Too short to be a WRITE, as for nfsm_dissect(). */
 			if (nfs_oncrpc_avail(nd) < NFSX_V2WRITEHDR) {
 				m_freem(nd->nd_mrep);
@@ -368,8 +406,9 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 		}
 		mreq = NULL;
 		netexport_rdlock();
-		error = (*nfsrv3_procs[nd->nd_procnum])(nd, &nx->nx_slp,
-		    curlwp, &mreq);
+		error = (*(xattr ? nfsrv_xattr_procs :
+		    nfsrv3_procs)[nd->nd_procnum])(nd, &nx->nx_slp, curlwp,
+		    &mreq);
 		netexport_rdunlock();
 		if (mreq == NULL) {
 			/*

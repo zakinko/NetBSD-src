@@ -58,6 +58,9 @@ for v in 3 2; do
 	echo "xattr-want v$v $(cksum </etc/hosts)"
 	echo "xattr-wantnl v$v $( (cat /etc/hosts; echo) | cksum)"
 	n runat $x mkdir d
+	# Does ls -l ask NFSACL for the ACL of an attribute?  See the capture.
+	echo "xattr-lsl v$v"; runat $x ls -l
+	echo "xattr-lsl-end v$v $(date -u +%H:%M:%S)"
 	echo '# and the ACLs are still there after it'
 	show v$v-after /export/pacl/o$v "" $f
 	t umount $m

@@ -5,7 +5,20 @@ OUT=$1
 H=$(cd "$(dirname "$0")" && pwd)
 L=$OUT/nfsacl-omnios.txt
 scp "$H/omnios.sh" omnios:/var/tmp/omnios.sh
+# The calls of the illumos client, to see what runat and ls -l ask.
+sudo tcpdump -i any -s 0 -w "$OUT/nfsacl-omnios.pcap" 'tcp port 2049' >/dev/null 2>&1 &
+sleep 2
 ssh omnios 'sh /var/tmp/omnios.sh' >"$L" 2>&1
+sudo pkill -x tcpdump
+sleep 1
+sudo chmod 644 "$OUT/nfsacl-omnios.pcap" 2>/dev/null
+if command -v tshark >/dev/null; then
+	tshark -r "$OUT/nfsacl-omnios.pcap" -Y 'nfsacl || nfs' -T fields \
+	    -e frame.time_relative -e rpc.program -e rpc.programversion \
+	    -e rpc.procedure -e rpc.msgtyp -e nfs.status3 \
+	    >"$OUT/nfsacl-omnios-calls.txt" 2>&1 || :
+	echo "calls captured: $(wc -l <"$OUT/nfsacl-omnios-calls.txt")"
+fi
 awk '/^=== /{f=sprintf("%s/acl.%s", T, $2); print $3 " " $4 > (f ".where"); next}
     f != "" && /^[a-z]+:/{print > f}
     /^\$ |^ok|^FAILED|^failures/{f=""}' T="$OUT" "$L"

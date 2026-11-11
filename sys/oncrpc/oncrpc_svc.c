@@ -149,7 +149,6 @@ struct oncrpc_ireq {
 };
 
 static u_int oncrpc_nsvc;
-static const struct oncrpc_xprt_ops xprt_stream_ops;
 static int xprt_addsock(struct oncrpc_svc *, file_t *, struct mbuf *,
     const void *, const struct oncrpc_xprt_ops *, void *);
 static kmutex_t oncrpc_named_lock;
@@ -566,17 +565,39 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 
 	mutex_enter(&svc->svc_lock);
 	xp = xprt_byid(svc, id);
-	/*
-	 * On the framing of RFC 5531 only, until a transport says how it
-	 * carries a call the other way.
-	 */
-	if (xp == NULL || xp->xp_ops != &xprt_stream_ops) {
+	if (xp == NULL || xp->xp_ops->xo_bcall == NULL) {
 		mutex_exit(&svc->svc_lock);
 		kmem_free(ir, sizeof(*ir));
 		m_freem(m);
 		return ENOTCONN;
 	}
-	xp->xp_refs += 2;	/* for this, and for ir */
+	xp->xp_refs++;
+	mutex_exit(&svc->svc_lock);
+
+	/* The transport may have to wait for room at the peer. */
+	end = time_uptime + timeo;
+	while ((error = (*xp->xp_ops->xo_bcall)(xp, m->m_pkthdr.len)) ==
+	    EAGAIN) {
+		mutex_enter(&svc->svc_lock);
+		if ((xp->xp_flags & XP_DEAD) != 0)
+			error = ECONNRESET;
+		else if (time_uptime >= end)
+			error = ETIMEDOUT;
+		else
+			(void)cv_timedwait(&svc->svc_bcv, &svc->svc_lock, hz);
+		mutex_exit(&svc->svc_lock);
+		if (error != EAGAIN)
+			break;
+	}
+	if (error != 0) {
+		kmem_free(ir, sizeof(*ir));
+		m_freem(m);
+		oncrpc_xprt_rele(xp);
+		return error;
+	}
+
+	mutex_enter(&svc->svc_lock);
+	xp->xp_refs++;		/* for ir */
 	xp->xp_nreqs++;
 	LIST_INSERT_HEAD(&xp->xp_bcalls, &bc, bc_list);
 	mutex_exit(&svc->svc_lock);
@@ -585,7 +606,6 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 	ir->ir_reply = m;
 	xprt_send(ir);
 
-	end = time_uptime + timeo;
 	error = 0;
 	mutex_enter(&svc->svc_lock);
 	while (bc.bc_reply == NULL) {
@@ -1244,11 +1264,20 @@ xprt_stream_destroy(struct oncrpc_xprt *xp)
 	kmem_free(rm, sizeof(*rm));
 }
 
+/* RFC 5531 s11 frames a call as it does a reply. */
+static int
+xprt_stream_bcall(struct oncrpc_xprt *xp, u_int len)
+{
+
+	return len <= ONCRPC_BCALL_MAX ? 0 : EMSGSIZE;
+}
+
 static const struct oncrpc_xprt_ops xprt_stream_ops = {
 	.xo_recv = xprt_stream_recv,
 	.xo_send = xprt_sock_send,
 	.xo_shutdown = xprt_sock_shutdown,
 	.xo_destroy = xprt_stream_destroy,
+	.xo_bcall = xprt_stream_bcall,
 };
 
 static const struct oncrpc_xprt_ops xprt_dgram_ops = {

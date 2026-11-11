@@ -130,7 +130,11 @@ fcntl.lockf(f, fcntl.LOCK_UN, 1, 5)"
 			t cp "$BIN" "$d/dg"
 			t sh -c "sync; sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'"
 			r0=$(dreturns "$M")
-			exec 3<"$d/dg"
+			# Held open by a process of its own, so that a close
+			# that gets no answer is bounded, as run 43007424174's
+			# was not.
+			sh -c "exec 3<$d/dg; sleep 10" &
+			h=$!
 			sleep 1
 			echo '$ conflict, with the file held open'
 			if [ -d "$HOME/pynfs/nfs4.1" ]; then
@@ -138,14 +142,17 @@ fcntl.lockf(f, fcntl.LOCK_UN, 1, 5)"
 			else
 				echo "FAILED (no pynfs)"; fails=$((fails + 1))
 			fi
-			exec 3<&-
-			echo "DELEGRETURN before $r0 after $(dreturns "$M")"
+			t timeout 60 sh -c "while kill -0 $h 2>/dev/null; do sleep 1; done"
+			echo "DELEGRETURN before $r0 after $(timeout 10 cat /proc/self/mountstats >/dev/null && dreturns "$M")"
 			t test "$(dreturns "$M")" -gt "$r0"
+			t timeout 30 stat "$d/dg"
+			[ "$fails" -eq 0 ] || ssh netbsd 'sh /var/tmp/nfsv4/diag.sh'
+			[ "$fails" -eq 0 ] || sudo cat /proc/self/mountstats | grep -A12 "$M" | head -30
 			;;
 		esac
 		sudo grep -E 'xprt:' /proc/self/mountstats
 		sudo grep -A3 -E 'READ:|WRITE:|DELEGRETURN:' /proc/self/mountstats | head -24
-		t sudo umount "$M"
+		t timeout 60 sudo umount "$M" || sudo umount -f -l "$M"
 	fi
 	echo "FAILURES $V: $fails"
 done

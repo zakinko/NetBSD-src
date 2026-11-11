@@ -74,7 +74,7 @@ jobs:
   test:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -97,7 +97,7 @@ jobs:
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsrdma/tunpipe.c ci/nfsrdma/try.c netbsd:/var/tmp/nfsv4/
+          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsrdma/tunpipe.c ci/nfsrdma/try.c ci/nfsrdma/diag.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
@@ -129,6 +129,7 @@ jobs:
         run: |
           cat out/linux-client.txt || true
           ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -30" | tee out/kernel.txt || echo no answer
+          ssh -o ConnectTimeout=20 netbsd 'sh /var/tmp/nfsv4/diag.sh' | tee -a out/kernel.txt || :
           grep 'FAILURES' out/linux-client.txt | tee -a "$GITHUB_STEP_SUMMARY"
           grep -q 'FAILURES 4.0: 0' out/linux-client.txt
       - uses: actions/upload-artifact@v4

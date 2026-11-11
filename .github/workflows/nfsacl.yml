@@ -30,8 +30,12 @@ jobs:
       # azure.archive.ubuntu.com has failed to resolve for hours at a time.
       - name: The main Ubuntu archive for apt
         run: |
-          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || :
-          sudo apt-get update -q >/dev/null || :
+          getent hosts azure.archive.ubuntu.com archive.ubuntu.com || :
+          for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+            [ -f "$f" ] && sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$f"
+          done
+          cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
+          sudo apt-get update -q 2>&1 | tail -3 || :
       - uses: actions/cache/restore@v4
         with:
           path: nb/tools
@@ -91,8 +95,12 @@ jobs:
       # azure.archive.ubuntu.com has failed to resolve for hours at a time.
       - name: The main Ubuntu archive for apt
         run: |
-          sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || :
-          sudo apt-get update -q >/dev/null || :
+          getent hosts azure.archive.ubuntu.com archive.ubuntu.com || :
+          for f in /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list; do
+            [ -f "$f" ] && sudo sed -i 's/azure\.archive\.ubuntu\.com/archive.ubuntu.com/g' "$f"
+          done
+          cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
+          sudo apt-get update -q 2>&1 | tail -3 || :
       # For the OmniOS VM: it reaches the NetBSD one through the runner.
       - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - uses: vmactions/netbsd-vm@v1

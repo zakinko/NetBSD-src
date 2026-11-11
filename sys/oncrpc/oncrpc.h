@@ -198,5 +198,6 @@ void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
 void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
 int	oncrpc_svc_addrdma(struct oncrpc_svc *, struct file *, struct mbuf *);
 void	oncrpc_req_ddp_result(struct oncrpc_req *, u_int, u_int);
+u_int	oncrpc_req_rdma_ird(struct oncrpc_req *);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

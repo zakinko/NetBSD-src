@@ -60,6 +60,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/gss_mech.h>
 #include <oncrpc/gss_ssv.h>
+#include <oncrpc/oncrpc.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_xdr.h>
 
@@ -934,16 +935,34 @@ min32(uint32_t a, uint32_t b)
 	return a < b ? a : b;
 }
 
+/*
+ * ca_rdma_ird, s18.36.2: the server "MAY decrease this value, but MUST
+ * NOT increase it", so with ird the depth of the connection's transport
+ * it is the lesser of the two; and none on a connection with no RDMA,
+ * or where the client offered none.
+ */
+static void
+cs_ird(struct nfsv4_chanattrs *ca, u_int ird)
+{
+
+	if (ca->ca_nird == 0 || ird == 0) {
+		ca->ca_nird = 0;
+		return;
+	}
+	ca->ca_ird = min32(ca->ca_ird, ird);
+}
+
 /* Fill in cl_csreply; the room for it is counted in nfsv4_state.h. */
 static void
 cs_reply(struct nfsv4_client *cl, struct nfsv4_session *se, uint32_t seq,
     uint32_t flags, const struct nfsv4_chanattrs *fore,
-    const struct nfsv4_chanattrs *back)
+    const struct nfsv4_chanattrs *back, u_int ird)
 {
 	struct nfsv4_chanattrs f = *fore, b = *back;
 	XDR x;
 
-	f.ca_nird = b.ca_nird = 0;
+	cs_ird(&f, ird);
+	cs_ird(&b, ird);
 	f.ca_headerpad = b.ca_headerpad = 0;
 	xdrmem_create(&x, cl->cl_csreply, sizeof(cl->cl_csreply), XDR_ENCODE);
 	(void)nfsv4_xdr_sessionid(&x, &se->se_id);
@@ -1065,7 +1084,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	    se_hash);
 	LIST_INSERT_HEAD(&cl->cl_sessions, se, se_list);
 
-	cs_reply(cl, se, ca->sequence, flags, &fore, &ca->back);
+	cs_reply(cl, se, ca->sequence, flags, &fore, &ca->back,
+	    oncrpc_req_rdma_ird(c->c_rq));
 	st = cl->cl_csstatus = NFS4_OK;
 	len = cl->cl_cslen;
 	memcpy(reply, cl->cl_csreply, len);

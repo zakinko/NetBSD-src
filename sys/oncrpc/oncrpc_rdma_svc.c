@@ -1224,6 +1224,18 @@ static const struct oncrpc_xprt_ops rdma_ops = {
 };
 
 /*
+ * The inbound RDMA Read queue depth of the connection a call came on, as
+ * NFS version 4.1 tells it in ca_rdma_ird, RFC 8881 s18.36.2; 0 for one
+ * with no RDMA.
+ */
+u_int
+oncrpc_req_rdma_ird(struct oncrpc_req *rq)
+{
+
+	return rq->rq_xprt->xp_ops == &rdma_ops ? IW_IRD : 0;
+}
+
+/*
  * Serve a connected TCP socket, accepted on the port of RFC 8267 s9 as
  * oncrpc_svc_addsock() would, as an iWARP passive endpoint.  The file
  * gets a reference of its own, and nam is consumed.

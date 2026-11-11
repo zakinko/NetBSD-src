@@ -43,6 +43,22 @@
  * s9.14.3, until it has probed or two leases are over.  One RENEW after
  * fs_locations counts for all the file systems gone so far.  How the
  * data gets there is the administrator's.
+ *
+ * The receiving end, RFC 8881 s4.2.2: a migrated file system's new server
+ * MUST honor the filehandles of the old one.  vfs.nfsv4.arrived gets
+ *
+ *	0123abcd:4567ef01 /export/here
+ *
+ * the fsid (f_fsidx, its two words in hex) that the old server put in
+ * its handles, and the mount point where the file system now is.
+ * Handles with that fsid are taken as of this mount, and handles of
+ * this mount are made with it, so that they stay what they were.  That
+ * the file IDs inside are still good is the file system's: so they are
+ * when the same disk is mounted here, or a copy that keeps inode numbers
+ * and generations (zfs send and receive).  State does not come along;
+ * the client reclaims it in the grace period, s11.11.9.  Handle classes
+ * are those of s11.11.2: the same, when this is configured.  An empty
+ * line forgets them all.
  */
 
 #include <sys/cdefs.h>
@@ -67,12 +83,20 @@ static u_int referral_n;
 static uint32_t moved_gen;
 static time_t moved_end;
 
+struct nfsv4_arrival {
+	SLIST_ENTRY(nfsv4_arrival) ar_list;
+	fsid_t		ar_fsid;	/* in the old server's handles */
+	struct vnode	*ar_vp;		/* the root here, held */
+};
+static SLIST_HEAD(, nfsv4_arrival) arrivals;
+
 void
 nfsv4_referral_init(void)
 {
 
 	mutex_init(&referral_lock, MUTEX_DEFAULT, IPL_NONE);
 	SLIST_INIT(&referrals);
+	SLIST_INIT(&arrivals);
 	referral_n = 0;
 	moved_gen = 0;
 }
@@ -81,11 +105,17 @@ void
 nfsv4_referral_fini(void)
 {
 	struct nfsv4_referral *rf;
+	struct nfsv4_arrival *ar;
 
 	while ((rf = SLIST_FIRST(&referrals)) != NULL) {
 		SLIST_REMOVE_HEAD(&referrals, rf_list);
 		vrele(rf->rf_vp);
 		kmem_free(rf, sizeof(*rf));
+	}
+	while ((ar = SLIST_FIRST(&arrivals)) != NULL) {
+		SLIST_REMOVE_HEAD(&arrivals, ar_list);
+		vrele(ar->ar_vp);
+		kmem_free(ar, sizeof(*ar));
 	}
 	mutex_destroy(&referral_lock);
 }
@@ -168,6 +198,99 @@ nfsv4_moved_line(const char *s)
 	}
 	mutex_exit(&referral_lock);
 	return error;
+}
+
+/* Eight hex digits, into *vp; false if they are not that. */
+static bool
+arrived_hex(const char *s, uint32_t *vp)
+{
+	uint32_t v = 0;
+	int i, d;
+
+	for (i = 0; i < 8; i++) {
+		if (s[i] >= '0' && s[i] <= '9')
+			d = s[i] - '0';
+		else if (s[i] >= 'a' && s[i] <= 'f')
+			d = s[i] - 'a' + 10;
+		else
+			return false;
+		v = v << 4 | d;
+	}
+	*vp = v;
+	return true;
+}
+
+/* One line of vfs.nfsv4.arrived, s4.2.2. */
+int
+nfsv4_arrived_line(const char *s)
+{
+	struct nfsv4_arrival *ar;
+	struct vnode *vp;
+	uint32_t w0, w1;
+	int error;
+
+	if (*s == '\0') {
+		mutex_enter(&referral_lock);
+		while ((ar = SLIST_FIRST(&arrivals)) != NULL) {
+			SLIST_REMOVE_HEAD(&arrivals, ar_list);
+			mutex_exit(&referral_lock);
+			vrele(ar->ar_vp);
+			kmem_free(ar, sizeof(*ar));
+			mutex_enter(&referral_lock);
+		}
+		mutex_exit(&referral_lock);
+		return 0;
+	}
+	if (strlen(s) < 19 || s[8] != ':' || s[17] != ' ' ||
+	    !arrived_hex(s, &w0) || !arrived_hex(s + 9, &w1))
+		return EINVAL;
+	error = namei_simple_kernel(s + 18, NSM_FOLLOW_NOEMULROOT, &vp);
+	if (error != 0)
+		return error;
+	if ((vp->v_vflag & VV_ROOT) == 0) {
+		vrele(vp);
+		return EINVAL;
+	}
+	ar = kmem_zalloc(sizeof(*ar), KM_SLEEP);
+	ar->ar_fsid.__fsid_val[0] = (int32_t)w0;
+	ar->ar_fsid.__fsid_val[1] = (int32_t)w1;
+	ar->ar_vp = vp;
+	mutex_enter(&referral_lock);
+	SLIST_INSERT_HEAD(&arrivals, ar, ar_list);
+	mutex_exit(&referral_lock);
+	return 0;
+}
+
+/* A handle's fsid, of a file system that came here: this mount's. */
+void
+nfsv4_arrived_in(fsid_t *fsid)
+{
+	struct nfsv4_arrival *ar;
+
+	mutex_enter(&referral_lock);
+	SLIST_FOREACH(ar, &arrivals, ar_list) {
+		if (memcmp(&ar->ar_fsid, fsid, sizeof(*fsid)) == 0) {
+			*fsid = ar->ar_vp->v_mount->mnt_stat.f_fsidx;
+			break;
+		}
+	}
+	mutex_exit(&referral_lock);
+}
+
+/* The fsid for handles of mp: the old server's, if it came here. */
+void
+nfsv4_arrived_out(const struct mount *mp, fsid_t *fsid)
+{
+	struct nfsv4_arrival *ar;
+
+	mutex_enter(&referral_lock);
+	SLIST_FOREACH(ar, &arrivals, ar_list) {
+		if (ar->ar_vp->v_mount == mp) {
+			*fsid = ar->ar_fsid;
+			break;
+		}
+	}
+	mutex_exit(&referral_lock);
 }
 
 uint32_t

@@ -514,3 +514,28 @@ ws("OPEN to create", [op.putfh(secfh), cre], WS, OP_PUTFH)
 byfh = op.open(0, OPEN4_SHARE_ACCESS_READ, 0, open_owner4(0, b"ws"), openflag4(OPEN4_NOCREATE),
                open_claim4(CLAIM_FH))
 ws("OPEN by handle", [op.putfh(secfile), byfh], WS, OP_PUTFH)
+
+# s4.2.2, the receiving end of a migration: vfs.nfsv4.arrived names the
+# fsid of the old server's handles.  Here an fsid made up for it stands
+# for the old server, and the file system is the export itself.
+import struct
+sc = lambda v: subprocess.call(["ssh", "netbsd", "sudo sysctl -w %s || sysctl -w %s" % (v, v)])
+fh, sid = mk(b"arr")
+fake = struct.pack("<II", 0x0badf00d, 0x0000beef)	# f_fsidx, amd64
+old = fh[:4] + fake + fh[12:]
+t("s4.2.2 an unknown fsid before", s.compound([op.putfh(old)]).status,
+  NFS4ERR_STALE)
+sc("'vfs.nfsv4.arrived=0badf00d:0000beef /%s'" % b"/".join(export).decode())
+res = s.compound([op.putfh(old), op.getattr(nfs4lib.list2bitmap([FATTR4_FILEID])),
+                  op.getfh()])
+t("s4.2.2 the old server's handle", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    t("s4.2.2 and handles made here stay the old ones",
+      res.resarray[-1].object, old)
+res = s.compound([op.putfh(dirfh), op.lookup(stamp + b"arr"), op.getfh()])
+t("s4.2.2 LOOKUP gives the old server's handle",
+  res.resarray[-1].object if res.status == NFS4_OK else res.status, old)
+sc("vfs.nfsv4.arrived=")
+res = s.compound([op.putfh(dirfh), op.lookup(stamp + b"arr"), op.getfh()])
+t("s4.2.2 forgotten, handles are this server's again",
+  res.resarray[-1].object if res.status == NFS4_OK else res.status, fh)

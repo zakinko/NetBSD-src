@@ -29,6 +29,7 @@
 #ifndef _FS_NFSV4_NFSV4_VAR_H_
 #define _FS_NFSV4_NFSV4_VAR_H_
 
+#include <sys/fstypes.h>
 #include <sys/queue.h>
 
 #include <oncrpc/oncrpc.h>
@@ -272,6 +273,9 @@ const struct nfsv4_referral *
 	nfsv4_referral_find(const struct vnode *);
 bool	nfsv4_referral_allowed(uint32_t, const union nfsv4_args *);
 int	nfsv4_moved_line(const char *);
+int	nfsv4_arrived_line(const char *);
+void	nfsv4_arrived_in(fsid_t *);
+void	nfsv4_arrived_out(const struct mount *, fsid_t *);
 bool	nfsv4_moved_mount(const struct mount *);
 uint32_t nfsv4_moved_gen(void);
 bool	nfsv4_moved_grace(void);

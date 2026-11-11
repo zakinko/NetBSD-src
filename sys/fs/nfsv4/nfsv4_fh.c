@@ -324,6 +324,9 @@ nfsv4_cfh_setvp(struct nfsv4_compound *c, struct nfsv4_cfh *cf,
 		kauth_cred_free(n.cf_cred);
 		return NFS4ERR_SERVERFAULT;
 	}
+	/* RFC 8881 s4.2.2: as the server it came from made them. */
+	nfsv4_arrived_out(vp->v_mount,
+	    &((fhandle_t *)(n.cf_fh.fh_data + NFSV4_FH_HDR))->fh_fsid);
 	n.cf_fh.fh_data[0] = NFSV4_FHT_REAL;
 	n.cf_fh.fh_len = NFSV4_FH_HDR + size;
 	n.cf_vp = vp;
@@ -522,6 +525,8 @@ nfsv4_cfh_put(struct nfsv4_compound *c, const struct nfsv4_fh *fh)
 	    FHANDLE_SIZE(fhp) != len)
 		return NFS4ERR_BADHANDLE;
 
+	/* s4.2.2: one of the server a file system came from. */
+	nfsv4_arrived_in(&u.fh.fh_fsid);
 	/* No longer exported, as far as a client can tell, is gone. */
 	if (netexport_check(&fhp->fh_fsid, c->c_rq->rq_nam, &mp, &exflags,
 	    &anon) != 0)

@@ -777,6 +777,13 @@ nfsv4_sysctl_referral(SYSCTLFN_ARGS)
 }
 
 static int
+nfsv4_sysctl_arrived(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_arrived_line);
+}
+
+static int
 nfsv4_sysctl_pnfs_ds(SYSCTLFN_ARGS)
 {
 
@@ -940,6 +947,10 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_trace", SYSCTL_DESCR("Log GETATTR under write delegations"),
 	    NULL, 0, &nfsv4_cb_trace, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "arrived", SYSCTL_DESCR("Honor an old server's handles of a file system migrated here"),
+	    nfsv4_sysctl_arrived, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "pnfs_ds", SYSCTL_DESCR("netid and uaddr of the pNFS data server; empty for no pNFS"),

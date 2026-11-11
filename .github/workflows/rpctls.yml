@@ -224,6 +224,7 @@ jobs:
             out/tlshd-*.log
             out/cb-client.txt
             out/trace-krb5.txt
+            out/trace-krb5-noidmap.txt
             out/rpc.gssd-tls.log
             out/kernel.txt
             out/summary.txt

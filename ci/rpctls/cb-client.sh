@@ -36,11 +36,6 @@ scp netbsd:/var/tmp/nfsv4/client.keytab "$OUT/client.keytab"
 sudo install -m 600 "$OUT/client.keytab" /etc/krb5.keytab
 rm -f "$OUT/client.keytab"
 sudo useradd -m -u 2097 alice
-# As ci/nfsgss/client.sh: owners by name in the server's domain.
-printf '[General]\nDomain = nfsgss.test\n[Mapping]\nNobody-User = nobody\nNobody-Group = nogroup\n' |
-    sudo tee /etc/idmapd.conf
-sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
-sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
 sudo -u alice sh -c 'echo alice-pw | kinit alice' && sudo -u alice klist
 fails=0
 # The bindings need the 192-bit checksum of enctype 20 (RFC 5403 s9 as
@@ -74,6 +69,24 @@ ps -axo pid,ppid,command | grep -E '[g]ssd'
 T=/sys/kernel/tracing
 sudo sh -c "echo > $T/trace; echo 1 > $T/events/nfs4/enable; echo 1 > $T/events/rpcgss/enable; echo 1 > $T/events/sunrpc/rpc_task_end/enable" || :
 sudo mkdir -p /mnt/k
+# The control: one write before the client is told the server's id
+# domain, traced, to show what refused it in run 42978657495.
+sudo -u alice sh -c 'echo alice-pw | kinit alice'
+cat /sys/module/nfs/parameters/nfs4_disable_idmapping
+if sudo timeout 90 mount -t nfs -o vers=4.0,sec=krb5,xprtsec=tls,soft,timeo=50,retrans=1 \
+    $S:/export/krb5all /mnt/k; then
+	sudo -u alice sh -c "echo x >/mnt/k/control" && echo "control: write ok" ||
+	    echo "control: write refused"
+	sudo -u alice ls -ln /mnt/k
+	sudo cat $T/trace >"$OUT/trace-krb5-noidmap.txt" 2>&1 || :
+	sudo sh -c "echo > $T/trace"
+	sudo umount /mnt/k
+fi
+# As ci/nfsgss/client.sh: owners by name in the server's domain.
+printf '[General]\nDomain = nfsgss.test\n[Mapping]\nNobody-User = nobody\nNobody-Group = nogroup\n' |
+    sudo tee /etc/idmapd.conf
+sudo systemctl restart nfs-idmapd 2>/dev/null || sudo rpc.idmapd
+sudo sh -c 'echo N >/sys/module/nfs/parameters/nfs4_disable_idmapping' || :
 for sec in krb5 krb5i krb5p; do
 	sudo -u alice sh -c 'echo alice-pw | kinit alice'
 	if sudo timeout 90 mount -t nfs -o vers=4.0,sec=$sec,xprtsec=tls,soft,timeo=50,retrans=1 \

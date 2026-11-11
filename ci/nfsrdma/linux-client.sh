@@ -42,9 +42,9 @@ for V in $VERSIONS; do
 	echo "=== version $V"
 	case $V in
 	3)	# RFC 8267 s5.1: MOUNT, NLM and NSM stay on TCP.  MOUNT is on
-		# the port mountd was given; NLM is not reached through the
-		# tunnel, so locks are the client's own.
-		o="vers=3,proto=rdma,port=20049,mountport=1234,mountproto=tcp,nolock" ;;
+		# the port mountd was given, NLM and NSM over the link of
+		# nlm-up.sh.
+		o="vers=3,proto=rdma,port=20049,mountport=1234,mountproto=tcp" ;;
 	*)	o="vers=$V,proto=rdma,port=20049,clientaddr=$A" ;;
 	esac
 	t sudo mount -v -t nfs -o $o,addr=$A,sec=sys,hard,timeo=100,retrans=2 \
@@ -84,13 +84,43 @@ for V in $VERSIONS; do
 		t sudo sh -c 'echo 3 >/proc/sys/vm/drop_caches'
 		t test "$(ls "$d/big" | wc -l)" = 400
 		t rm -rf "$d/big"
-		# A lock: by the protocol itself from 4.0 on, the client's own
-		# under version 3 with nolock.
+		# A lock: by the protocol itself from 4.0 on, by NLM under 3.
 		t python3 -c "
 import fcntl
 f=open('$d/a','r+')
 fcntl.lockf(f,fcntl.LOCK_EX,10,0)
 fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
+		# NLM, seen from the server, and a lock the server grants by
+		# calling back, NLM_GRANTED.
+		if [ "$V" = 3 ]; then
+			python3 -c "
+import fcntl, time
+f = open('$d/a', 'r+')
+fcntl.lockf(f, fcntl.LOCK_EX, 1, 0)
+time.sleep(20)" &
+			h=$!
+			sleep 3
+			echo '$ a process on the server meets the lock of the client'
+			if ssh netbsd '/var/tmp/try /export/x/d3/a 0'; then
+				echo 'FAILED (granted)'; fails=$((fails + 1))
+			else
+				echo ok
+			fi
+			t ssh netbsd '/var/tmp/try /export/x/d3/a 1'
+			kill $h; wait $h 2>/dev/null
+			ssh netbsd '/var/tmp/try -h 8 /export/x/d3/a 5' &
+			h=$!
+			sleep 3
+			s0=$(date +%s)
+			t python3 -c "
+import fcntl
+f = open('$d/a', 'r+')
+fcntl.lockf(f, fcntl.LOCK_EX, 1, 5)
+fcntl.lockf(f, fcntl.LOCK_UN, 1, 5)"
+			echo "waited $(( $(date +%s) - s0 ))s for the grant"
+			wait $h
+			ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"'
+		fi
 		# A delegation recalled by a second client on TCP, which the
 		# server asks for on the backchannel of this connection,
 		# RFC 8267 s6.5.2 and RFC 8167.

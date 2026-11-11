@@ -3,6 +3,8 @@
 /*
  * Accept connections on the NFS port and hand them to the kernel.  For
  * development of the version 4 server, which has no daemon yet.
+ * nfsv4d [stable [port]]: a stable of "-" is none, for a second one on
+ * another port, the pNFS data server's.
  */
 
 #include <sys/types.h>
@@ -12,6 +14,7 @@
 #include <netinet/in.h>
 
 #include <err.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -22,7 +25,8 @@ main(int argc, char **argv)
 	int ls, s, on = 1;
 
 	/* The file of clients that can reclaim, before any client comes. */
-	if (argc > 1 && sysctlbyname("vfs.nfsv4.stable", NULL, NULL, argv[1],
+	if (argc > 1 && strcmp(argv[1], "-") != 0 &&
+	    sysctlbyname("vfs.nfsv4.stable", NULL, NULL, argv[1],
 	    strlen(argv[1]) + 1) == -1)
 		err(1, "stable");
 
@@ -32,7 +36,7 @@ main(int argc, char **argv)
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_len = sizeof(sin);
 	sin.sin_family = AF_INET;
-	sin.sin_port = htons(2049);
+	sin.sin_port = htons(argc > 2 ? atoi(argv[2]) : 2049);
 	sin.sin_addr.s_addr = htonl(INADDR_ANY);
 	if (bind(ls, (void *)&sin, sizeof(sin)) == -1)
 		err(1, "bind");

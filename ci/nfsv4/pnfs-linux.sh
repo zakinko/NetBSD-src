@@ -1,14 +1,27 @@
 #!/bin/sh
 # The client of Linux on the pNFS file layout (RFC 8881 s13), with this
 # server as its own data server: does it get layouts and send its I/O by
-# them.  Counts from /proc/self/mountstats.
+# them.  Counts from /proc/self/mountstats, and on the wire: the data
+# server is the same server on another port, 2051 (a second nfsv4d),
+# so tcpdump on the runner's loopback tells its traffic from the
+# metadata server's on 2049.
+uname -r
 sudo modprobe nfs 2>/dev/null || {
 	sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" >/dev/null 2>&1
 	sudo modprobe nfs
 }
 sudo modprobe nfsv4
 sudo modprobe nfs_layout_nfsv41_files 2>/dev/null || echo "no nfs_layout_nfsv41_files module"
-ssh -o LogLevel=ERROR netbsd "sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.1'"
+ssh -o LogLevel=ERROR netbsd "cd /var/tmp/nfsv4 && { pgrep -f 'nfsv4d - 2051' >/dev/null ||
+    nohup ./nfsv4d - 2051 </dev/null >nfsv4d-ds.log 2>&1 & }
+sleep 1
+sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.3'
+netstat -an -f inet | grep '\.2051 '"
+command -v tcpdump >/dev/null || sudo apt-get install -y -q tcpdump >/dev/null 2>&1
+cap=$(mktemp)
+sudo tcpdump -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>/dev/null &
+tp=$!
+sleep 1
 given() { ssh -o LogLevel=ERROR netbsd "sysctl -n vfs.nfsv4.layouts_given"; }
 g0=$(given)
 m=/mnt/nfsv4pnfs
@@ -33,4 +46,18 @@ echo "LAYOUTGET alone $lg GETDEVICEINFO $di layouts given $g0 -> $g1"
 sudo rm -f "$f"
 rm -f "$src"
 sudo umount "$m"
+sudo kill "$tp"
+wait "$tp" 2>/dev/null
+port() {
+	tcpdump -r "$cap" -nn -q "tcp port $1" 2>/dev/null |
+	    awk '{ n += $NF } END { print n + 0 }'
+}
+b49=$(port 2049) b51=$(port 2051)
+echo "bytes over 2049 (metadata server) $b49, over 2051 (data server) $b51"
+# 4 MiB written and read back: 8 MiB of data, if all of it went there.
+[ "$b51" -gt 6291456 ] && ok=ok || ok=FAILED
+printf '%-6s %s\n' "$ok" "READ and WRITE went to the data server"
+[ "$b49" -lt 1048576 ] && ok=ok || ok=FAILED
+printf '%-6s %s\n' "$ok" "little went to the metadata server"
+rm -f "$cap"
 ssh -o LogLevel=ERROR netbsd "sysctl -w vfs.nfsv4.pnfs_ds=; dmesg | tail -5"

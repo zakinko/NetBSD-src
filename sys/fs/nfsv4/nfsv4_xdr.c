@@ -291,28 +291,33 @@ xdr_skip_opaque(XDR *x)
 	return U32(x, &len) && nfsv4_xdr_skip(x, len);
 }
 
-/* Step over count elements of opaque<>: sec_oid4<>, gsshandle4_t. */
+/*
+ * sec_oid4<> of ssv_sp_parms4, s18.35.1.  Past NFSV4_SSV_ALGS they are
+ * only skipped, and one longer than any known has the length 0.
+ */
 static bool
-xdr_skip_opaques(XDR *x)
+xdr_ssv_oids(XDR *x, struct nfsv4_oid *o, uint32_t *np)
 {
-	uint32_t n, i;
+	uint32_t n, i, len;
 
 	if (!U32(x, &n) || n > NFSV4_BITMAP_READ)
 		return false;
+	*np = n;
 	for (i = 0; i < n; i++) {
-		if (!xdr_skip_opaque(x))
+		if (!U32(x, &len))
 			return false;
+		if (len > sizeof(o[0].o_data) || i >= NFSV4_SSV_ALGS) {
+			if (!nfsv4_xdr_skip(x, len))
+				return false;
+			if (i < NFSV4_SSV_ALGS)
+				o[i].o_len = 0;
+			continue;
+		}
+		if (!xdr_opaque(x, (char *)o[i].o_data, len))
+			return false;
+		o[i].o_len = len;
 	}
 	return true;
-}
-
-/* state_protect_ops4 */
-static bool
-xdr_skip_spo(XDR *x)
-{
-	struct nfsv4_bitmap bm;
-
-	return nfsv4_xdr_bitmap(x, &bm) && nfsv4_xdr_bitmap(x, &bm);
 }
 
 /* RFC 8881 s18.35.1 */
@@ -335,8 +340,11 @@ xdr_args_exchange_id(XDR *x, struct nfsv4_args_exchange_id *a)
 			return false;
 		break;
 	case SP4_SSV:
-		if (!xdr_skip_spo(x) || !xdr_skip_opaques(x) ||
-		    !xdr_skip_opaques(x) || !U32(x, &t) || !U32(x, &t))
+		if (!nfsv4_xdr_bitmap(x, &a->must_enforce) ||
+		    !nfsv4_xdr_bitmap(x, &a->must_allow) ||
+		    !xdr_ssv_oids(x, a->hash, &a->nhash) ||
+		    !xdr_ssv_oids(x, a->encr, &a->nencr) ||
+		    !U32(x, &a->ssv_window) || !U32(x, &a->ssv_nhandles))
 			return false;
 		break;
 	default:
@@ -758,7 +766,10 @@ nfsv4_xdr_args(XDR *x, uint32_t op, uint32_t minor, union nfsv4_args *a)
 			return false;
 		}
 	case NFSV4_OP_SET_SSV:
-		return xdr_skip_opaque(x) && xdr_skip_opaque(x);
+		return xdr_vopaque(x, a->set_ssv.ssv, &a->set_ssv.ssvlen,
+		    sizeof(a->set_ssv.ssv)) &&
+		    xdr_vopaque(x, a->set_ssv.digest, &a->set_ssv.diglen,
+		    sizeof(a->set_ssv.digest));
 	case NFSV4_OP_TEST_STATEID:
 		return xdr_args_test_stateid(x, &a->test_stateid);
 	case NFSV4_OP_RECLAIM_COMPLETE:

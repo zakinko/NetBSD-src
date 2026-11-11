@@ -56,6 +56,7 @@ int	gss_ssv_create(int, int, uint32_t, struct gss_ssv **);
 void	gss_ssv_hold(struct gss_ssv *);
 void	gss_ssv_rele(struct gss_ssv *);
 void	gss_ssv_confirm(struct gss_ssv *);
+void	gss_ssv_kill(struct gss_ssv *);
 size_t	gss_ssv_len(const struct gss_ssv *);
 int	gss_ssv_set(struct gss_ssv *, const void *, size_t, const void *,
 	    size_t, const void *, size_t, const void *, size_t, void *,

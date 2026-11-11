@@ -22,7 +22,7 @@ for f in $(git diff --name-only "$before" HEAD); do
 	ci/rpctls/probe*|ci/rpctls/tlsstub.c|ci/rpctls/mkcerts.sh|ci/nfsv4/build.sh|\
 	ci/nfsv4/in-vm.sh|ci/oncrpc/swap.sh)
 		vm=true ;;
-	sys/fs/nfsv4/*|sys/modules/nfsv4/*)
+	sys/fs/nfsv4/*|sys/modules/nfsv4/*|ci/nfsv4/each-commit.sh)
 		vm=true nfsv4=true ;;
 	esac
 done

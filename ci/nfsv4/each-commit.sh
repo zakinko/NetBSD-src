@@ -5,6 +5,15 @@ set -eu
 T=$1/tools; J=$(nproc)
 tip=$(git rev-parse HEAD)
 base=$(git log --format=%H --grep='^Add the protocol constants' -1 "$tip")
+# Without the start of the series nothing would be built, and that
+# would pass for success; a shallow clone is the usual cause.
+if [ -z "$base" ]; then
+	echo "each-commit: the start of the series is not in the history" >&2
+	exit 1
+fi
+n=$(git rev-list --count "$base..$tip")
+echo "each-commit: $n commits from $(git rev-parse --short "$base")"
+[ "$n" -gt 0 ] || { echo "each-commit: nothing to build" >&2; exit 1; }
 for c in $(git rev-list --reverse "$base..$tip"); do
 	git checkout -q "$c"
 	git log -1 --format='=== %h %s'

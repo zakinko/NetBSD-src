@@ -42,6 +42,8 @@ sudo -u alice python3 "$HERE/cbprobe.py" $S "$CERTS/ca.pem" || fails=$((fails + 
 
 # The Linux client: RPCSEC_GSS version 1 inside TLS.
 sudo modprobe rpcsec_gss_krb5
+sudo mkdir -p /run/rpc_pipefs
+mountpoint -q /run/rpc_pipefs || sudo mount -t rpc_pipefs sunrpc /run/rpc_pipefs
 sudo sh -c "/usr/sbin/tlshd -s >$OUT/tlshd-krb5.log 2>&1 & echo \$! >$OUT/tlshd.pid"
 sudo sh -c "rpc.gssd -v -f >$OUT/rpc.gssd-tls.log 2>&1 & echo \$! >$OUT/gssd.pid"
 sleep 2

@@ -199,8 +199,7 @@ jobs:
           grep -h -E '^(ok|FAIL)|failures|mount exit|io ok|krb5 over tls' out/probe*.txt out/linux-*.txt out/cb-client.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - name: The verdict
         run: |
-          ! grep -h '^FAIL' out/probe*.txt out/cb-client.txt
-          ! grep -h -E 'failures [1-9]' out/probe*.txt out/cb-client.txt
+          if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt; then exit 1; fi
           grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
       - uses: actions/upload-artifact@v4
         if: always()

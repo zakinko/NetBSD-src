@@ -1,8 +1,13 @@
 # The heavy tier, by hand at a resting point: the Linux client on siw
 # with every version, locks and recalls, and pynfs.  Its own group, so a
 # push does not cancel it; every step bounded, so a stall costs minutes.
+# workflow_dispatch reaches only a workflow on the default branch, which
+# this one is not on, so it is run by pushing the commit to measure to
+# the branch below:  git push origin HEAD:nfsrdma2-heavy
 name: nfsrdma-heavy
 on:
+  push:
+    branches: [nfsrdma2-heavy]
   workflow_dispatch:
 concurrency:
   group: nfsrdma-heavy-${{ github.ref }}

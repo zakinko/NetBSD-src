@@ -4,6 +4,9 @@
 # tunpipe, from ci/nlm of the nfsnlm branch), and everything but the
 # forwarded ports of 192.0.2.1 sent down it.  nlm-up.sh OUT
 OUT=$1
+# Each command with the time, to find where it waits.
+PS4='+ $(date +%T) '
+set -x
 F=$OUT/tun.in
 rm -f "$F"
 mkfifo "$F"
@@ -15,6 +18,7 @@ ssh netbsd 'ifconfig tun0 10.77.0.2 10.77.0.1 netmask 255.255.255.255 up'
 sudo ip addr add 10.77.0.1 peer 10.77.0.2 dev nb0
 sudo ip link set nb0 up mtu 1400
 ping -c 2 10.77.0.2
+ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\\.111 "'
 # The mount names 192.0.2.1; rpcbind, NLM and NSM of the server are on
 # the far side of nb0, and the server calls back to 10.77.0.1.
 sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p tcp -m multiport \

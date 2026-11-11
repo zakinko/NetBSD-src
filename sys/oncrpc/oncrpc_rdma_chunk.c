@@ -240,9 +240,46 @@ oncrpc_rdma_call_peek(const void *buf, u_int len,
 		off += 8;
 		if (alen > len - off || ROUNDUP4(alen) > len - off)
 			return true;
+		if (i == 0) {
+			ri->ri_flavor = get32(p + off - 8);
+			/*
+			 * RFC 2203 s5: the body of an RPCSEC_GSS credential
+			 * is the version, gss_proc, seq_num and service, and
+			 * only rpc_gss_svc_none (1) of RPCSEC_GSS_DATA (0)
+			 * leaves the arguments as the program has them.
+			 */
+			ri->ri_plain = ri->ri_flavor != 6 ||
+			    (alen >= 16 && get32(p + off + 4) == 0 &&
+			    get32(p + off + 12) == 1);
+		}
 		off += (u_int)ROUNDUP4(alen);
 	}
 	ri->ri_argoff = off;
+	return true;
+}
+
+/*
+ * Where the results of a reply begin, RFC 5531 s9: past the verifier of
+ * an accepted reply whose accept_stat is SUCCESS.  False for any other.
+ */
+bool
+oncrpc_rdma_reply_peek(const void *buf, u_int len, u_int *offp)
+{
+	const uint8_t *p = buf;
+	uint32_t alen;
+	u_int off;
+
+	/* xid, REPLY (1), MSG_ACCEPTED (0), the verifier's flavor, length */
+	if (len < 20 || get32(p + 4) != 1 || get32(p + 8) != 0)
+		return false;
+	alen = get32(p + 16);
+	off = 20;
+	if (alen > 400 || ROUNDUP4(alen) + 4 > len - off)	/* s8.2 */
+		return false;
+	off += (u_int)ROUNDUP4(alen);
+	if (get32(p + off) != 0)		/* SUCCESS */
+		return false;
+	*offp = off + 4;
 	return true;
 }
 

@@ -535,6 +535,167 @@ test_ulb_v2(void)
 	CHECK(!scan(ub, 2, 8, a, &rc, 1));
 }
 
+/* An accepted, successful reply, with a verifier of vlen bytes. */
+static void
+reply(uint32_t vlen)
+{
+	u_int i;
+
+	wn = 0;
+	w(0x11223344);
+	w(1);			/* REPLY */
+	w(0);			/* MSG_ACCEPTED */
+	w(vlen != 0 ? 6 : 0);
+	w(vlen);
+	for (i = 0; i < (vlen + 3) / 4; i++)
+		w(0);
+	w(0);			/* SUCCESS */
+}
+
+static void
+test_peek_plain(void)
+{
+	struct oncrpc_rdma_callinfo ri;
+
+	call(100003, 3, 6);
+	CHECK(oncrpc_rdma_call_peek(wire, wn, &ri));
+	CHECK(ri.ri_flavor == 1 && ri.ri_plain);
+
+	/* RPCSEC_GSS, RFC 2203 s5: vers, gss_proc, seq, service, handle */
+	wn = 0;
+	w(0x11223344); w(0); w(2); w(100003); w(3); w(6);
+	w(6); w(20); w(1); w(0); w(7); w(1); w(0);	/* DATA, svc_none */
+	w(0); w(0);
+	CHECK(oncrpc_rdma_call_peek(wire, wn, &ri));
+	CHECK(ri.ri_flavor == 6 && ri.ri_plain && ri.ri_argoff == wn);
+	wire[44 + 3] = 2;	/* rpc_gss_svc_integrity */
+	CHECK(oncrpc_rdma_call_peek(wire, wn, &ri) && !ri.ri_plain);
+	wire[44 + 3] = 3;	/* rpc_gss_svc_privacy */
+	CHECK(oncrpc_rdma_call_peek(wire, wn, &ri) && !ri.ri_plain);
+	wire[44 + 3] = 1;
+	wire[36 + 3] = 1;	/* RPCSEC_GSS_INIT */
+	CHECK(oncrpc_rdma_call_peek(wire, wn, &ri) && !ri.ri_plain);
+}
+
+static void
+test_reply_peek(void)
+{
+	u_int off;
+
+	reply(0);
+	CHECK(oncrpc_rdma_reply_peek(wire, wn, &off) && off == wn);
+	reply(5);		/* padded to 8 */
+	CHECK(oncrpc_rdma_reply_peek(wire, wn, &off) && off == wn);
+	CHECK(!oncrpc_rdma_reply_peek(wire, wn - 1, &off));
+	wire[wn - 1] = 1;	/* PROG_UNAVAIL */
+	CHECK(!oncrpc_rdma_reply_peek(wire, wn, &off));
+	reply(0);
+	wire[11] = 1;		/* MSG_DENIED */
+	CHECK(!oncrpc_rdma_reply_peek(wire, wn, &off));
+	reply(0);
+	wire[19] = 0xff;	/* a verifier past the reply */
+	CHECK(!oncrpc_rdma_reply_peek(wire, wn, &off));
+	reply(0);
+	wire[7] = 0;		/* a CALL */
+	CHECK(!oncrpc_rdma_reply_peek(wire, wn, &off));
+}
+
+/* The item ub_reply finds in the reply in wire, its results at off. */
+static bool
+rscan(const struct oncrpc_rdma_ulb *ub, uint32_t vers, uint32_t proc,
+    u_int total, struct oncrpc_rdma_mark *dm)
+{
+	u_int off;
+
+	return ub->ub_reply != NULL &&
+	    oncrpc_rdma_reply_peek(wire, wn, &off) &&
+	    (*ub->ub_reply)(wire, wn, off, total, vers, proc, dm);
+}
+
+static void
+test_ulb_reply(void)
+{
+	const struct oncrpc_rdma_ulb *ub = &oncrpc_rdma_ulb_nfs23;
+	struct oncrpc_rdma_mark dm;
+	u_int i, d;
+
+	/* READ3resok, RFC 1813 s3.3.6: attributes, count, eof, data */
+	reply(0);
+	w(0);			/* NFS3_OK */
+	w(1);
+	for (i = 0; i < 84 / 4; i++)
+		w(0);
+	w(4096); w(1);
+	w(4096);
+	d = wn;
+	CHECK(rscan(ub, 3, 6, d + 4096, &dm) && dm.dm_pos == d &&
+	    dm.dm_len == 4096);
+	CHECK(!rscan(ub, 3, 6, d + 4095, &dm));	/* past the reply */
+	CHECK(!rscan(ub, 3, 1, d + 4096, &dm));	/* GETATTR */
+	CHECK(!rscan(ub, 4, 6, d + 4096, &dm));
+
+	/* Without the attributes. */
+	reply(0);
+	w(0); w(0); w(10); w(0); w(10);
+	d = wn;
+	CHECK(rscan(ub, 3, 6, d + 12, &dm) && dm.dm_pos == d &&
+	    dm.dm_len == 10);
+
+	/* READ3resfail: an error has no data. */
+	reply(0);
+	w(5); w(0);		/* NFS3ERR_IO */
+	CHECK(!rscan(ub, 3, 6, wn, &dm));
+
+	/* READLINK3resok, s3.3.5: attributes, path */
+	reply(0);
+	w(0); w(0); w(3);
+	d = wn;
+	w(0x61626300);
+	CHECK(rscan(ub, 3, 5, wn, &dm) && dm.dm_pos == d && dm.dm_len == 3);
+
+	/* readres of version 2, RFC 1094 s2.2.7: fattr, data */
+	reply(0);
+	w(0);
+	for (i = 0; i < 68 / 4; i++)
+		w(0);
+	w(8192);
+	d = wn;
+	CHECK(rscan(ub, 2, 6, d + 8192, &dm) && dm.dm_pos == d &&
+	    dm.dm_len == 8192);
+	/* readlinkres, s2.2.6 */
+	reply(8);
+	w(0); w(1);
+	d = wn;
+	w(0x2f000000);
+	CHECK(rscan(ub, 2, 5, wn, &dm) && dm.dm_pos == d && dm.dm_len == 1);
+
+	/* A header cut short leaves nothing found. */
+	reply(0);
+	w(0); w(1); w(0);
+	CHECK(!rscan(ub, 3, 6, 100000, &dm));
+
+	/* NFSACL, RFC 8267 s5.2: no item, in or out. */
+	CHECK(oncrpc_rdma_ulb_nfsacl.ub_reply == NULL);
+}
+
+static void
+test_ulb_acl(void)
+{
+	struct oncrpc_rdma_rchunk rc;
+	const struct oncrpc_rdma_ulb *ub = &oncrpc_rdma_ulb_nfsacl;
+	u_int a;
+
+	memset(&rc, 0, sizeof(rc));
+	call(100227, 3, 2);	/* SETACL */
+	a = wn;
+	w(8); w(1); w(2);
+	w(4); w(64);
+	rc.rc_pos = wn - 4;
+	rc.rc_len = 64;
+	CHECK(!scan(ub, 3, 2, a, &rc, 1));
+	CHECK(scan(ub, 3, 2, a, &rc, 0));
+}
+
 static void
 test_ulb_v4(void)
 {
@@ -959,6 +1120,10 @@ main(void)
 	test_ulb_v3();
 	test_ulb_v2();
 	test_ulb_v4();
+	test_peek_plain();
+	test_reply_peek();
+	test_ulb_reply();
+	test_ulb_acl();
 	test_plan();
 	test_fill();
 	test_bc();

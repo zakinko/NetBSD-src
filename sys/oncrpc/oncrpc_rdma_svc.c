@@ -134,6 +134,9 @@ struct rdma_ctx {
 	struct oncrpc_rdma_mark	*rc_marks;	/* one per Write chunk */
 	u_int			 rc_nmark;
 	u_int			 rc_maxmark;
+	struct oncrpc_rdma_callinfo rc_ri;
+	const struct oncrpc_rdma_ulb *rc_ub;	/* for a whole reply */
+	bool			 rc_fixed;	/* the program gave marks */
 };
 
 static struct iw_conn *
@@ -732,6 +735,7 @@ rdma_gather(struct oncrpc_xprt *xp, struct rdma_ctx *rc, const uint8_t *msg,
 	if (!oncrpc_rdma_call_peek(base, baselen, &ri) ||
 	    ri.ri_xid != h->rh_xid)	/* s4.5.2 */
 		goto chunkerr;
+	rc->rc_ri = ri;
 
 	first = nc - ndata;
 	oncrpc_rdma_layout_init(&rl, chunks + first, ndata, baselen);
@@ -860,9 +864,13 @@ rdma_message(struct oncrpc_xprt *xp, const struct iw_msg *im, struct mbuf **mp,
 		return error;
 	}
 	rc->rc_maxmark = rc->rc_hdr.rh_nwrite;
-	if (rc->rc_maxmark != 0)
+	if (rc->rc_maxmark != 0) {
 		rc->rc_marks = kmem_alloc(rc->rc_maxmark *
 		    sizeof(*rc->rc_marks), KM_SLEEP);
+		if (rc->rc_ri.ri_mtype == ONCRPC_CALL)
+			rc->rc_ub = oncrpc_svc_ulb(xp->xp_svc,
+			    rc->rc_ri.ri_prog, rc->rc_ri.ri_vers);
+	}
 	*ctxp = rc;
 	return 0;
 }
@@ -922,6 +930,32 @@ rdma_put_chunk(struct oncrpc_xprt *xp, const struct oncrpc_rdma_wchunk *rw,
 	return 0;
 }
 
+/*
+ * A reply the program made whole, and so told nothing of: its binding
+ * finds the eligible item, RFC 8267 s4.  Not when the results are
+ * wrapped by RPCSEC_GSS, where the item is not as the binding has it;
+ * the chunk then goes back unused, RFC 8166 s4.3.2.2.
+ */
+static void
+rdma_reply_marks(struct rdma_ctx *rc, struct mbuf *m)
+{
+	const struct oncrpc_rdma_ulb *ub = rc->rc_ub;
+	uint8_t *buf;
+	u_int len, off;
+
+	if (rc->rc_maxmark == 0 || ub == NULL || ub->ub_reply == NULL ||
+	    !rc->rc_ri.ri_plain)
+		return;
+	len = MIN(m->m_pkthdr.len, ONCRPC_RDMA_REPLY_PEEK);
+	buf = kmem_alloc(len, KM_SLEEP);
+	m_copydata(m, 0, len, buf);
+	if (oncrpc_rdma_reply_peek(buf, len, &off) &&
+	    (*ub->ub_reply)(buf, len, off, m->m_pkthdr.len, rc->rc_ri.ri_vers,
+	    rc->rc_ri.ri_proc, &rc->rc_marks[0]))
+		rc->rc_nmark = 1;
+	kmem_free(buf, len);
+}
+
 static int
 rdma_send(struct oncrpc_xprt *xp, struct mbuf *m, struct mbuf *nam, void *ctx)
 {
@@ -937,6 +971,8 @@ rdma_send(struct oncrpc_xprt *xp, struct mbuf *m, struct mbuf *nam, void *ctx)
 	size_t ofsz = rc->rc_nmark * sizeof(int);
 
 	paylen = m->m_pkthdr.len;
+	if (!rc->rc_fixed)
+		rdma_reply_marks(rc, m);
 	if (rc->rc_nmark != 0)
 		chunkof = kmem_alloc(ofsz, KM_SLEEP);
 	oncrpc_rdma_reply_plan(call, rc->rc_marks, rc->rc_nmark, paylen,
@@ -1047,6 +1083,7 @@ rdma_ddp_fix(void *ctx, u_int hdrlen, bool kept)
 	struct rdma_ctx *rc = ctx;
 	u_int i;
 
+	rc->rc_fixed = true;
 	if (!kept)
 		rc->rc_nmark = 0;
 	for (i = 0; i < rc->rc_nmark; i++)

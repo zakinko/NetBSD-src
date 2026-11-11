@@ -169,10 +169,13 @@ struct oncrpc_rdma_callinfo {
 	uint32_t	ri_vers;
 	uint32_t	ri_proc;
 	u_int		ri_argoff;	/* in the reduced stream */
+	uint32_t	ri_flavor;	/* of the credential */
+	bool		ri_plain;	/* the arguments are not wrapped */
 };
 
 bool	oncrpc_rdma_call_peek(const void *, u_int,
 	    struct oncrpc_rdma_callinfo *);
+bool	oncrpc_rdma_reply_peek(const void *, u_int, u_int *);
 
 /*
  * Going through the arguments of a call, looking for what the chunks
@@ -194,24 +197,36 @@ bool	oncrpc_rdma_ddp_item(struct oncrpc_rdma_ddpscan *, u_int, uint32_t,
 	    uint32_t *);
 bool	oncrpc_rdma_ddp_done(const struct oncrpc_rdma_ddpscan *);
 
-/*
- * An upper-layer binding, RFC 8166 s6.  ub_scan walks the arguments of
- * proc at off in the reduced stream, and returns false if they do not
- * parse.  The DDP-eligible results are told to the transport as they
- * are encoded, by oncrpc_req_ddp_result().
- */
-struct oncrpc_rdma_ulb {
-	bool	(*ub_scan)(const void *, u_int, u_int, uint32_t, uint32_t,
-		    struct oncrpc_rdma_ddpscan *);
-};
-
-extern const struct oncrpc_rdma_ulb oncrpc_rdma_ulb_nfs23;
-
 /* A DDP-eligible result, in the unreduced Payload stream. */
 struct oncrpc_rdma_mark {
 	u_int		dm_pos;
 	u_int		dm_len;
 };
+
+/*
+ * An upper-layer binding, RFC 8166 s6.  ub_scan walks the arguments of
+ * proc at off in the reduced stream, and returns false if they do not
+ * parse.  The DDP-eligible results are told to the transport as they
+ * are encoded, by oncrpc_req_ddp_result().
+ *
+ * A program that hands the transport whole replies it made itself has
+ * no place to say that, and gives ub_reply instead: given the first len
+ * bytes of a reply of total bytes, its results at off, it finds the one
+ * eligible item there may be, and returns false for none.  Only the
+ * bindings of RFC 8267 s4 need it, as no reply of theirs has two.
+ */
+struct oncrpc_rdma_ulb {
+	bool	(*ub_scan)(const void *, u_int, u_int, uint32_t, uint32_t,
+		    struct oncrpc_rdma_ddpscan *);
+	bool	(*ub_reply)(const void *, u_int, u_int, u_int, uint32_t,
+		    uint32_t, struct oncrpc_rdma_mark *);
+};
+
+/* Bytes of a reply ub_reply may need: the RPC header and a fattr3. */
+#define	ONCRPC_RDMA_REPLY_PEEK	1024
+
+extern const struct oncrpc_rdma_ulb oncrpc_rdma_ulb_nfs23;
+extern const struct oncrpc_rdma_ulb oncrpc_rdma_ulb_nfsacl;
 
 enum oncrpc_rdma_form {
 	ONCRPC_RDMA_SHORT,	/* RDMA_MSG, the stream inline, s3.5.1 */

@@ -84,6 +84,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/oncrpc.h>
 #include <oncrpc/oncrpc_gss.h>
+#include <oncrpc/oncrpc_rdma.h>
 
 /* RFC 1094 s2.2.9, writeargs up to the data: the handle and four words. */
 #define	NFSX_V2WRITEHDR	(NFSX_V2FH + 4 * NFSX_UNSIGNED)
@@ -413,6 +414,11 @@ static const struct oncrpc_program nfs_oncrpc_program = {
 	.op_vers_low = NFS_VER2,
 	.op_vers_high = NFS_VER3,
 	.op_dispatch = nfs_oncrpc_dispatch,
+	/*
+	 * RFC 8267 s4.  The replies are whole when they reach the layer,
+	 * so the binding finds READ's data in them itself.
+	 */
+	.op_ulb = &oncrpc_rdma_ulb_nfs23,
 };
 
 int

@@ -674,58 +674,83 @@ drop:
 }
 
 /*
- * Send one record of type, under the current sending epoch, which s7
- * makes a MUST for an ACK after the handshake.  With dp_txlock; *rnp is
- * the record's RecordNumber when rnp is not NULL.
+ * Records sealed under dp_txlock and sent after it is released: sending
+ * may sleep, and a mutex must not be held across that.
+ */
+#define	DTLS_RECMAX	(1 + DTLS13_MAXCID + 2 + 2 + 2 + \
+			 ONCRPC_DTLS_NACK * DTLS13_RECNUMLEN + 1 + TLS13_TAGLEN)
+#define	DTLS_NOUT	3	/* an alert or an ACK, and our message */
+
+struct dtls_out {
+	uint8_t		o_rec[DTLS_NOUT][DTLS_RECMAX];
+	size_t		o_len[DTLS_NOUT];
+	u_int		o_n;
+};
+
+/*
+ * Seal one record of type into o, under the current sending epoch,
+ * which s7 makes a MUST for an ACK after the handshake.  With
+ * dp_txlock; *rnp is the record's RecordNumber when rnp is not NULL.
  */
 static int
 dtls_send(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *in,
-    size_t len, uint64_t *rnp)
+    size_t len, uint64_t *rnp, struct dtls_out *o)
 {
-	struct oncrpc_dtls *d = p->dp_dtls;
-	uint8_t buf[1 + DTLS13_MAXCID + 4 + 2 + 2 * ONCRPC_DTLS_NACK *
-	    DTLS13_RECNUMLEN + 1 + TLS13_TAGLEN];
-	size_t hmax = 1 + DTLS13_MAXCID + 2 + 2, reclen;
-	struct mbuf *m;
+	size_t hmax = 1 + DTLS13_MAXCID + 2 + 2;
+	uint8_t *rec;
 	int error;
 
 	KASSERT(mutex_owned(&p->dp_txlock));
-	if (hmax + len + 1 + TLS13_TAGLEN > sizeof(buf))
+	if (o->o_n == DTLS_NOUT || hmax + len + 1 + TLS13_TAGLEN > DTLS_RECMAX)
 		return EMSGSIZE;
-	memcpy(buf + hmax, in, len);
+	rec = o->o_rec[o->o_n];
+	memcpy(rec + hmax, in, len);
 	if (rnp != NULL) {
 		rnp[0] = p->dp_tx.dd_epoch;
 		rnp[1] = p->dp_tx.dd_seq;
 	}
 	error = dtls13_seal(&p->dp_tx, type, p->dp_tcid, p->dp_tcidlen,
-	    buf + hmax, len, buf, &reclen);
-	explicit_memset(buf + hmax, 0, sizeof(buf) - hmax);
-	DTLS_DPRINTF("send type %u len %zu epoch %ju: %d\n", type, len,
+	    rec + hmax, len, rec, &o->o_len[o->o_n]);
+	DTLS_DPRINTF("seal type %u len %zu epoch %ju: %d\n", type, len,
 	    (uintmax_t)p->dp_tx.dd_epoch, error);
-	if (error != 0)
-		return error;
-	m = m_gethdr(M_WAIT, MT_DATA);
-	m->m_len = m->m_pkthdr.len = 0;
-	m_copyback(m, 0, reclen, buf);
-	if (m->m_pkthdr.len != (int)reclen) {
-		m_freem(m);
-		return ENOBUFS;
-	}
-	error = (*d->d_so->so_send)(d->d_so, (struct sockaddr *)&p->dp_addr,
-	    NULL, m, NULL, 0, curlwp);
-	DTLS_DPRINTF("sent: %d\n", error);
+	if (error == 0)
+		o->o_n++;
 	return error;
+}
+
+/* Send what dtls_send() sealed, with no lock held. */
+static void
+dtls_flush(struct oncrpc_dtlspeer *p, struct dtls_out *o)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+	struct mbuf *m;
+	u_int i;
+	int error;
+
+	for (i = 0; i < o->o_n; i++) {
+		m = m_gethdr(M_WAIT, MT_DATA);
+		m->m_len = m->m_pkthdr.len = 0;
+		m_copyback(m, 0, o->o_len[i], o->o_rec[i]);
+		if (m->m_pkthdr.len != (int)o->o_len[i]) {
+			m_freem(m);
+			continue;	/* lost, as on the wire */
+		}
+		error = (*d->d_so->so_send)(d->d_so,
+		    (struct sockaddr *)&p->dp_addr, NULL, m, NULL, 0, curlwp);
+		DTLS_DPRINTF("sent %u bytes: %d\n", (u_int)o->o_len[i], error);
+	}
+	o->o_n = 0;
 }
 
 /* (Re)transmit the pending message as a new record, s5.2.  dp_txlock. */
 static void
-dtls_send_pend(struct oncrpc_dtlspeer *p)
+dtls_send_pend(struct oncrpc_dtlspeer *p, struct dtls_out *o)
 {
 	uint64_t rn[2];
 
 	KASSERT(mutex_owned(&p->dp_txlock));
 	if (dtls_send(p, TLS13_CT_HANDSHAKE, p->dp_pend, p->dp_pendlen,
-	    rn) != 0)
+	    rn, o) != 0)
 		return;		/* the timer tries again */
 	if (p->dp_npendrn < ONCRPC_DTLS_NPENDRN) {
 		p->dp_pendrn[p->dp_npendrn][0] = rn[0];
@@ -738,7 +763,7 @@ dtls_send_pend(struct oncrpc_dtlspeer *p)
 /* Queue a handshake message of ours, with dp_txlock and none pending. */
 static void
 dtls_pend(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *body,
-    size_t blen)
+    size_t blen, struct dtls_out *o)
 {
 	struct oncrpc_dtls *d = p->dp_dtls;
 
@@ -756,7 +781,7 @@ dtls_pend(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *body,
 			callout_schedule(&d->d_tick, ONCRPC_DTLS_TICK);
 	}
 	mutex_exit(&d->d_lock);
-	dtls_send_pend(p);
+	dtls_send_pend(p, o);
 }
 
 /* The pending message is acknowledged, or given up.  dp_txlock. */
@@ -786,16 +811,19 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 {
 	uint8_t buf[2 + ONCRPC_DTLS_NACK * DTLS13_RECNUMLEN], b;
 	static const uint8_t nonecid[3] = { 0, 0, 1 };	/* cids<>, spare */
+	struct dtls_out o;
 	size_t n;
 
+	o.o_n = 0;
 	mutex_enter(&p->dp_txlock);
 	if (c->c_alert >= 0) {
 		buf[0] = ONCRPC_TLS_FATAL;
 		buf[1] = (uint8_t)c->c_alert;
-		(void)dtls_send(p, TLS13_CT_ALERT, buf, 2, NULL);
+		(void)dtls_send(p, TLS13_CT_ALERT, buf, 2, NULL, &o);
 		if (p->dp_pendlen != 0)
 			dtls_unpend(p);
 		mutex_exit(&p->dp_txlock);
+		dtls_flush(p, &o);
 		mutex_enter(&d->d_lock);
 		if (p->dp_state == DP_ESTABLISHED)
 			dtls_close(p);
@@ -819,7 +847,7 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 	if (c->c_nack != 0) {
 		n = dtls13_ack_build(buf, sizeof(buf), &c->c_ack[0][0],
 		    c->c_nack);
-		(void)dtls_send(p, TLS13_CT_ACK, buf, n, NULL);
+		(void)dtls_send(p, TLS13_CT_ACK, buf, n, NULL, &o);
 	}
 	/*
 	 * Only one message of ours outstanding, s8 and s9: a request
@@ -829,12 +857,14 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 	if (c->c_keyupdate && p->dp_pendlen == 0 &&
 	    p->dp_tx.dd_epoch < (1ULL << 48) - 1) {
 		b = 0;		/* update_not_requested, RFC 8446 s4.6.3 */
-		dtls_pend(p, DTLS13_HS_KEY_UPDATE, &b, 1);
+		dtls_pend(p, DTLS13_HS_KEY_UPDATE, &b, 1, &o);
 	} else if (c->c_reqcid && p->dp_pendlen == 0) {
 		/* s9 MAY: "fewer than num_cids CIDs, including no CIDs" */
-		dtls_pend(p, DTLS13_HS_NEW_CID, nonecid, sizeof(nonecid));
+		dtls_pend(p, DTLS13_HS_NEW_CID, nonecid, sizeof(nonecid),
+		    &o);
 	}
 	mutex_exit(&p->dp_txlock);
+	dtls_flush(p, &o);
 }
 
 /*
@@ -1008,14 +1038,17 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 		case TLS13_CT_APPDATA:
 			if (clen == 0)
 				break;
-			m = m_gethdr(M_WAIT, MT_DATA);
+			/* Under dp_rxlock: nothing that sleeps; lost if so. */
+			if ((m = m_gethdr(M_DONTWAIT, MT_DATA)) == NULL)
+				break;
 			m->m_len = m->m_pkthdr.len = 0;
 			m_copyback(m, 0, clen, content);
-			if (m->m_pkthdr.len != (int)clen) {
+			if (m->m_pkthdr.len != (int)clen ||
+			    (out = kmem_intr_alloc(sizeof(*out),
+			    KM_NOSLEEP)) == NULL) {
 				m_freem(m);
 				break;
 			}
-			out = kmem_intr_alloc(sizeof(*out), KM_SLEEP);
 			out->dg_m = m;
 			out->dg_peer = p;
 			mutex_enter(&d->d_lock);
@@ -1428,8 +1461,10 @@ dtls_tick(void *arg)
 static void
 dtls_retransmit(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 {
+	struct dtls_out o;
 	bool giveup = false;
 
+	o.o_n = 0;
 	mutex_enter(&p->dp_txlock);
 	if (p->dp_pendlen != 0 && getticks() - p->dp_due >= 0) {
 		if (++p->dp_tries > ONCRPC_DTLS_MAXRETX) {
@@ -1437,10 +1472,11 @@ dtls_retransmit(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 			giveup = true;
 		} else {
 			p->dp_rto = MIN(p->dp_rto * 2, ONCRPC_DTLS_RTOMAX);
-			dtls_send_pend(p);
+			dtls_send_pend(p, &o);
 		}
 	}
 	mutex_exit(&p->dp_txlock);
+	dtls_flush(p, &o);
 	if (giveup) {
 		mutex_enter(&d->d_lock);
 		if (p->dp_state == DP_ESTABLISHED)

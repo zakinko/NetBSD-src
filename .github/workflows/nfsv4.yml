@@ -157,7 +157,7 @@ jobs:
         run: |
           cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
-          timeout 400 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
+          timeout 600 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up

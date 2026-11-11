@@ -172,9 +172,31 @@ if d is not None and d.delegation_type == OPEN_DELEGATE_READ:
             break
         time.sleep(0.5)
     t("s8.2.2 CB_RECALL seqid", recalled, [[0]])
+    # s went on using its slot after WANT_DELEGATION, so the reply is
+    # retired and there is nothing to refer to.
     print("  referring lists", refs)
-    t("s2.10.6.3 lists", bool(refs and refs[-1]), True)
+    t("s2.10.6.3 retired, no list", refs[-1:], [[[]]])
     t("DELEGRETURN", s.compound(nofh(fh, op.delegreturn(d.read.stateid))).status, NFS4_OK)
+    # Now with WANT_DELEGATION the last thing s sent: it MUST be referred to.
+    fh3, sid3 = mk(b"wd2")
+    close_file(s, fh3, sid3)
+    res = wd(fh3, OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
+    d3 = res.resarray[-1].wdr_resok4 if res.status == 0 else None
+    t("s18.49 second delegation", d3 and d3.delegation_type, OPEN_DELEGATE_READ)
+    if d3 is not None and d3.delegation_type == OPEN_DELEGATE_READ:
+        del recalled[:]
+        del refs[:]
+        o = op.open(0, OPEN4_SHARE_ACCESS_WRITE, 0, open_owner4(0, b"w3"),
+                    openflag4(OPEN4_NOCREATE), open_claim4(CLAIM_FH))
+        t("s10.4 recall by OPEN, again", s2.compound(nofh(fh3, o)).status, NFS4ERR_DELAY)
+        for i in range(20):
+            if recalled:
+                break
+            time.sleep(0.5)
+        print("  referring lists", refs)
+        t("s2.10.6.3 the unretired WANT_DELEGATION", any(l.rcl_sessionid == s.sessionid and
+          len(l.rcl_referring_calls) > 0 for l in (refs[-1] if refs else [])), True)
+        t("DELEGRETURN", s.compound(nofh(fh3, op.delegreturn(d3.read.stateid))).status, NFS4_OK)
 
 # s18.16.3
 res = s.compound(nofh(fh, op.openattr(True), op.open(0, OPEN4_SHARE_ACCESS_BOTH, 0,
@@ -210,7 +232,7 @@ if res.status == NFS4_OK:
     dsid = r.gddrnf_resok4.gddr_stateid
     r = gdd(ddfh).resarray[-1].gddr_res_non_fatal4
     t("s18.39.3 held already", (r.gddrnf_status, r.gddrnf_will_signal_deleg_avail),
-      (GDD4_UNAVAIL, False))
+      [(GDD4_UNAVAIL, False)])
     n = op.create(createtype4(NF4DIR), stamp + b"in", {})
     t("s10.9 the holder may change it", s.compound(nofh(ddfh, n)).status, NFS4_OK)
     n = op.create(createtype4(NF4DIR), stamp + b"in2", {})
@@ -282,8 +304,9 @@ res = open_file(s2, b"late", path=P(b"exp"), access=OPEN4_SHARE_ACCESS_BOTH)
 check(res)
 sid4 = res.resarray[-2].stateid
 print("  letting the lease run out"); sys.stdout.flush()
-for i in range(47):		# s2 lives on
+for i in range(47):		# s and s2 live on
     time.sleep(2)
+    s.compound([])
     s2.compound([])
 seen = []
 for i in range(20):

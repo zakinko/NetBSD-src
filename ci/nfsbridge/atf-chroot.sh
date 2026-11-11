@@ -9,7 +9,7 @@ diag() {
 	rump_server -s -v -lrumpvfs -lrumpdev -lrumpnet -lrumpnet_net \
 	    -lrumpnet_netinet -lrumpnet_netinet6 -lrumpnet_local \
 	    -lrumpnet_shmif -lrumpdev_disk -lrumpfs_ffs -lrumpfs_nfs \
-	    -lrumpfs_nfsserver -d key=/dk,hostpath=fsimage,size=host \
+	    -lrumpfs_nfsserver -lrumpkern_crypto -d key=/dk,hostpath=fsimage,size=host \
 	    $RUMP_SERVER >rs.log 2>&1 &
 	p=$!
 	sleep 3
@@ -27,21 +27,49 @@ diag() {
 	rm -f rump_server.core
 	unset RUMP_SERVER RUMP_VERBOSE
 }
+# The nfs cases of tests/fs/vfs, adding their failures to f.
+vfs_cases()
+{
+	cd /usr/tests/fs/vfs
+	for t in t_vfsops t_vnops t_rmdirrace t_renamerace t_ro; do
+		[ -x $t ] || continue
+		for c in $(./$t -l | sed -n 's/^ident: //p' | grep '^nfs'); do
+			# Run directly, a case has no atf timeout of its own: t_vfsops
+			# nfs_tfhremove hung until the 40-minute bound of the whole run
+			# in run 43130006853, and nothing after it was measured.
+			# A hung case left its rumpnfsd behind, and every case after
+			# nfs_dir_rmdirdotdot hung in run 43149505709; the stacks of a
+			# hung one are taken before it is killed.
+			rm -f /var/tmp/res.$$
+			./$t -r /var/tmp/res.$$ $c >/var/tmp/out.$$ 2>&1 &
+			tp=$!; n=0
+			while kill -0 $tp 2>/dev/null && [ $n -lt 300 ]; do
+				sleep 1; n=$((n + 1))
+			done
+			if kill -0 $tp 2>/dev/null; then
+				for p in $tp $(pgrep -x rumpnfsd); do
+					echo "--- stacks of $p, $(ps -o comm= -p $p)"
+					gdb -batch -p $p -ex 'thread apply all bt 30' 2>&1 |
+					    grep -E '^(Thread|#)' | head -200
+				done
+				kill -9 $tp 2>/dev/null
+			fi
+			wait $tp 2>/dev/null
+			pkill -9 -x rumpnfsd 2>/dev/null; sleep 1
+			r=$(head -1 /var/tmp/res.$$ 2>/dev/null)
+			case $r in '') r="broken: no result, hung or killed"; tail -20 /var/tmp/out.$$ ;; esac
+			echo "$t:$c: $r"
+			case $r in failed*|broken*) f=$((f + 1)) ;; esac
+		done
+	done
+}
 diag bridge
 cd /usr/tests/fs/nfs
 atf-run | tee /var/tmp/raw.bridge | atf-report
 echo '=== raw, bridge'
 cat /var/tmp/raw.bridge
 f=$(grep -cE '^tc-end:.*, (failed|broken),' /var/tmp/raw.bridge)
-cd /usr/tests/fs/vfs
-for t in t_vfsops t_vnops t_rmdirrace t_renamerace t_ro; do
-	[ -x $t ] || continue
-	for c in $(./$t -l | sed -n 's/^ident: //p' | grep '^nfs'); do
-		r=$(./$t -r /var/tmp/res.$$ $c >/dev/null 2>&1; head -1 /var/tmp/res.$$)
-		echo "$t:$c: $r"
-		case $r in failed*|broken*) f=$((f + 1)) ;; esac
-	done
-done
+vfs_cases
 echo "bridge failures: $f"
 so=$(ls /usr/lib/librumpfs_nfsserver.so.*.* | head -1)
 cp $so /usr/lib/bridge-nfsserver.so
@@ -52,4 +80,9 @@ cd /usr/tests/fs/nfs
 atf-run | tee /var/tmp/raw.stock | atf-report
 echo '=== raw, stock'
 cat /var/tmp/raw.stock
+# The same vfs cases on the stock library, so that a failure there tells
+# a flaky case from one the bridge brings.
+f=0
+vfs_cases
+echo "stock vfs failures: $f"
 cp /usr/lib/bridge-nfsserver.so $so

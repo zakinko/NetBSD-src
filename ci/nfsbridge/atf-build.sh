@@ -15,7 +15,10 @@ printf 'include "arch/amd64/conf/GENERIC"\noptions NFSSERVER_ONCRPC\n' \
 # so DESTDIR is whole when it is the one to fail.
 $B -u distribution >"$OUT/atf-build.log" 2>&1 ||
     grep -q '\[checkflist\] Error' "$OUT/atf-build.log" ||
-    { tail -60 "$OUT/atf-build.log"; exit 1; }
+    { grep -v 'warning' "$OUT/atf-build.log" |
+          grep -n -B40 -E 'undefined reference|cannot find|: error:|\*\*\* \[' |
+          grep -v '^[0-9]*-$' | head -300
+      tail -60 "$OUT/atf-build.log"; exit 1; }
 $B -u kernel=NFSBRON >>"$OUT/atf-build.log" 2>&1
 cp "$O/sys/arch/amd64/compile/NFSBRON/netbsd" "$OUT/netbsd.atf"
 nm -D "$D/usr/lib/librumpfs_nfsserver.so" | grep -c nfs_oncrpc_addsock

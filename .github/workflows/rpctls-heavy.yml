@@ -49,7 +49,6 @@ jobs:
       - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
-          sudo apt-get update -q >/dev/null
           sudo apt-get install -y -q libtirpc-dev >/dev/null
           mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
           cc -g -fsanitize=address,undefined -w -I/usr/include/tirpc -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -ltirpc

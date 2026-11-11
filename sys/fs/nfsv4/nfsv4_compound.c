@@ -790,6 +790,28 @@ nfsv4_sysctl_pnfs_ds(SYSCTLFN_ARGS)
 	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_layout_setds);
 }
 
+static int
+nfsv4_sysctl_ff_ds(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_layout_setff);
+}
+
+/* Writing anything fences every data file, RFC 8435 s2.2. */
+static int
+nfsv4_sysctl_ff_fence(SYSCTLFN_ARGS)
+{
+	struct sysctlnode node = *rnode;
+	int error, v = 0;
+
+	node.sysctl_data = &v;
+	error = sysctl_lookup(SYSCTLFN_CALL(&node));
+	if (error != 0 || newp == NULL)
+		return error;
+	nfsv4_ff_fence_all();
+	return 0;
+}
+
 /* Writing anything recalls every layout, RFC 8881 s12.5.5. */
 static int
 nfsv4_sysctl_layout_recall(SYSCTLFN_ARGS)
@@ -966,6 +988,18 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layout_recall", SYSCTL_DESCR("Recall every layout"),
 	    nfsv4_sysctl_layout_recall, 0, NULL, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "ff_ds", SYSCTL_DESCR("netid, uaddr and directory of the flexible file layout's NFSv3 storage device; empty for none"),
+	    nfsv4_sysctl_ff_ds, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "ff_fence", SYSCTL_DESCR("Fence every flexible file layout data file"),
+	    nfsv4_sysctl_ff_fence, 0, NULL, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READONLY, CTLTYPE_INT, "ff_fences", SYSCTL_DESCR("Data files given new synthetic ids"),
+	    NULL, 0, &nfsv4_ff_fences, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_getattr", SYSCTL_DESCR("Fail the nth GETATTR as if a value could not be had"),

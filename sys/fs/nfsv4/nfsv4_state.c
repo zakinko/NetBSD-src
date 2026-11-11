@@ -534,6 +534,8 @@ nfsv4_state_unlink(struct nfsv4_state *st, struct nfsv4_reap *reap, bool keep)
 
 	if (st->st_type == NFSV4_ST_DELEG && f != NULL)
 		nfsv4_deleg_gone(st);
+	if (st->st_type == NFSV4_ST_LAYOUT && f != NULL)
+		nfsv4_layout_gone(st);
 	while (!keep && (ls = LIST_FIRST(&st->st_locks)) != NULL) {
 		LIST_REMOVE(ls, st_plist);
 		ls->st_open = NULL;
@@ -814,6 +816,7 @@ lease_thread(void *arg)
 		}
 		mutex_exit(&nfsv4_state_lock);
 		nfsv4_reap_finish(&reap);
+		nfsv4_ff_reap();
 		nfsv4_grace_scan();
 		nfsv4_retention_scan();
 		mutex_enter(&nfsv4_state_lock);

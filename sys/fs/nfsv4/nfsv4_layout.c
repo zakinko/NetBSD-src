@@ -44,6 +44,17 @@
  * It covers all of the file, in the modes of st_liomode; a LAYOUTRETURN
  * of less than all of it leaves it held (s18.44.3 lets a part be
  * returned, and holding more than asked is what Table 22 allows).
+ *
+ * The flexible file layout, RFC 8435, is loosely coupled (s2.3.1): its
+ * storage device is the NFSv3 server of this host, nfsd(8), at the
+ * address in vfs.nfsv4.ff_ds, "netid uaddr directory".  The data file
+ * of a file with a layout is made in that directory, which the NFSv3
+ * server exports, owned by synthetic ids (s2.2).  The metadata file is
+ * copied to it when the first layout of the file is given, and back at
+ * LAYOUTCOMMIT and, by the lease thread, when the last is gone.  While
+ * there is one, READ, WRITE and SETATTR of the size on the metadata
+ * server recall the layouts and are told NFS4ERR_DELAY, so the two
+ * files are never both written.
  */
 
 #include <sys/cdefs.h>
@@ -51,10 +62,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/cprng.h>
 #include <sys/endian.h>
+#include <sys/fcntl.h>
 #include <sys/kmem.h>
 #include <sys/mount.h>
+#include <sys/namei.h>
 #include <sys/systm.h>
+#include <sys/vfs_syscalls.h>
 #include <sys/vnode.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
@@ -73,12 +88,85 @@ static char ds_uaddr[NFSV4_DS_UADDR];
 static uint32_t ds_gen;		/* in the device ID; changes with the address */
 int nfsv4_layouts_given;		/* vfs.nfsv4.layouts_given, to be counted */
 
+/* RFC 8435: the storage device, and the data files. */
+#define	NFSV4_FF_DIR		128
+#define	NFSV4_FF_NAME		(NFSV4_FF_DIR + 40)
+
+/*
+ * s2.2.1 leaves the synthetic ids to the implementation.  They are drawn
+ * at random from 2^30 up, never 0 (s2.2.1), and drawn again at each
+ * fencing, so that they follow no pattern (s2.2.2).
+ */
+#define	NFSV4_FF_IDBASE		0x40000000U
+#define	NFSV4_FF_IDMASK		0x00ffffffU
+
+/* ff_device_versions4, s4.1: NFSv3, so minor 0 and loosely coupled. */
+#define	NFSV4_FF_VERSION	3
+#define	NFSV4_FF_RWSIZE		MAXBSIZE	/* NFS_MAXDATA of nfsd(8) */
+#define	NFSV4_FF_FHMAX		64		/* RFC 1813 s2.4, NFS3_FHSIZE */
+
+struct ff_data {
+	LIST_ENTRY(ff_data) fd_list;
+	struct vnode	*fd_mvp;	/* the metadata file; its layouts' */
+	struct vnode	*fd_dvp;	/* the data file, open */
+	char		fd_name[NFSV4_FF_NAME];
+	struct nfsv4_fh	fd_fh;		/* of NFSv3, vfs_composefh() */
+	uint32_t	fd_uid;		/* s2.2: read and write */
+	uint32_t	fd_gid;		/* s2.2: read */
+	u_int		fd_refs;	/* layouts of LAYOUT4_FLEX_FILES */
+	bool		fd_fence;	/* to be given new ids, s2.2 */
+	bool		fd_dead;	/* no layouts; to be copied back */
+};
+
+static char ff_netid[NFSV4_DS_NETID];
+static char ff_uaddr[NFSV4_DS_UADDR];
+static char ff_dir[NFSV4_FF_DIR];
+static uint32_t ff_gen;
+static LIST_HEAD(, ff_data) ff_list = LIST_HEAD_INITIALIZER(ff_list);
+static volatile u_int ff_count;		/* on ff_list */
+int nfsv4_ff_fences;			/* vfs.nfsv4.ff_fences */
+
 /* pNFS is on; under nfsv4_state_lock, or as a hint. */
 bool
 nfsv4_pnfs_on(void)
 {
 
-	return ds_uaddr[0] != '\0';
+	return ds_uaddr[0] != '\0' || ff_uaddr[0] != '\0';
+}
+
+/* Layouts of type t are given. */
+static bool
+layout_on(uint32_t t)
+{
+
+	switch (t) {
+	case LAYOUT4_NFSV4_1_FILES:
+		return ds_uaddr[0] != '\0';
+	case LAYOUT4_FLEX_FILES:
+		return ff_uaddr[0] != '\0';
+	default:
+		return false;
+	}
+}
+
+static bool
+layout_known(uint32_t t)
+{
+
+	return t == LAYOUT4_NFSV4_1_FILES || t == LAYOUT4_FLEX_FILES;
+}
+
+/* fs_layout_type and layout_type, s5.12.1, s5.12.3; at most 2. */
+u_int
+nfsv4_layout_typelist(uint32_t *types)
+{
+	u_int n = 0;
+
+	if (layout_on(LAYOUT4_NFSV4_1_FILES))
+		types[n++] = LAYOUT4_NFSV4_1_FILES;
+	if (layout_on(LAYOUT4_FLEX_FILES))
+		types[n++] = LAYOUT4_FLEX_FILES;
+	return n;
 }
 
 /*
@@ -113,15 +201,60 @@ nfsv4_layout_setds(const char *line)
 	return 0;
 }
 
-/* s3.3.14: the one device ID; not valid across restarts, s12.2.10. */
+/*
+ * vfs.nfsv4.ff_ds: "netid uaddr directory" of the storage device of the
+ * flexible file layout, RFC 8435, or "" for none.  The directory is
+ * where the data files are made; the NFSv3 server must export it.
+ */
+int
+nfsv4_layout_setff(const char *line)
+{
+	const char *sp, *sp2;
+	size_t n, u;
+
+	if (*line == '\0') {
+		mutex_enter(&nfsv4_state_lock);
+		ff_uaddr[0] = ff_netid[0] = ff_dir[0] = '\0';
+		ff_gen++;
+		mutex_exit(&nfsv4_state_lock);
+		return 0;
+	}
+	sp = strchr(line, ' ');
+	if (sp == NULL || (n = sp - line) == 0 || n >= sizeof(ff_netid))
+		return EINVAL;
+	sp2 = strchr(sp + 1, ' ');
+	if (sp2 == NULL || (u = sp2 - sp - 1) == 0 || u >= sizeof(ff_uaddr) ||
+	    sp2[1] != '/' || strlen(sp2 + 1) >= sizeof(ff_dir) ||
+	    strchr(sp2 + 1, ' ') != NULL)
+		return EINVAL;
+	mutex_enter(&nfsv4_state_lock);
+	memcpy(ff_netid, line, n);
+	ff_netid[n] = '\0';
+	memcpy(ff_uaddr, sp + 1, u);
+	ff_uaddr[u] = '\0';
+	strlcpy(ff_dir, sp2 + 1, sizeof(ff_dir));
+	ff_gen++;
+	mutex_exit(&nfsv4_state_lock);
+	return 0;
+}
+
+/*
+ * s3.3.14: the one device ID of each layout type; not valid across
+ * restarts, s12.2.10.
+ */
 static void
-ds_devid(uint8_t *id)
+ds_devid(uint8_t *id, uint32_t type)
 {
 
 	memset(id, 0, NFS4_DEVICEID4_SIZE);
 	be32enc(id, nfsv4_boot);
-	be32enc(id + 4, ds_gen);
-	memcpy(id + 8, "NetBSDds", 8);
+	if (type == LAYOUT4_FLEX_FILES) {
+		be32enc(id + 4, ff_gen);
+		memcpy(id + 8, "NetBSDff", 8);
+	} else {
+		be32enc(id + 4, ds_gen);
+		memcpy(id + 8, "NetBSDds", 8);
+	}
 }
 
 /* The roles of EXCHANGE_ID, s13.1: ours and what the client asked. */
@@ -212,21 +345,418 @@ layout_find(const struct nfsv4_client *cl, struct vnode *vp)
 	return NULL;
 }
 
-/* s13.3, nfsv4_1_file_layout_ds_addr4, in da_addr_body of s3.3.15. */
-static u_int
-ds_addr_len(void)
+/* RFC 8435: the data file of the metadata file vp, under the lock. */
+static struct ff_data *
+ff_find(struct vnode *vp)
 {
-	size_t n = strlen(ds_netid), u = strlen(ds_uaddr);
+	struct ff_data *fd;
 
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(fd, &ff_list, fd_list) {
+		if (fd->fd_mvp == vp)
+			return fd;
+	}
+	return NULL;
+}
+
+/* s2.2.1, s2.2.2: new synthetic ids, the two not the same. */
+static void
+ff_ids(struct ff_data *fd)
+{
+	uint32_t u, g;
+
+	u = NFSV4_FF_IDBASE + (cprng_fast32() & NFSV4_FF_IDMASK);
+	do
+		g = NFSV4_FF_IDBASE + (cprng_fast32() & NFSV4_FF_IDMASK);
+	while (g == u || g == fd->fd_gid);
+	if (u == fd->fd_uid)
+		u = g + 1;
+	fd->fd_uid = u;
+	fd->fd_gid = g;
+}
+
+/* Give the data file the ids of fd and the modes of s2.2; locked. */
+static int
+ff_own(struct ff_data *fd)
+{
+	struct vattr va;
+
+	vattr_null(&va);
+	va.va_uid = fd->fd_uid;
+	va.va_gid = fd->fd_gid;
+	va.va_mode = 0640;	/* s2.2: uid reads and writes, gid reads */
+	return VOP_SETATTR(fd->fd_dvp, &va, lwp0.l_cred);
+}
+
+/* Make to the same as from, both locked. */
+static int
+ff_copy(struct vnode *from, struct vnode *to)
+{
+	struct vattr va;
+	kauth_cred_t cred = lwp0.l_cred;
+	off_t off, size;
+	size_t n, resid;
+	char *buf;
+	int error;
+
+	if ((error = VOP_GETATTR(from, &va, cred)) != 0)
+		return error;
+	size = va.va_size;
+	vattr_null(&va);
+	va.va_size = size;
+	if ((error = VOP_SETATTR(to, &va, cred)) != 0)
+		return error;
+	buf = kmem_alloc(MAXBSIZE, KM_SLEEP);
+	for (off = 0; error == 0 && off < size; off += n) {
+		n = MIN(MAXBSIZE, size - off);
+		error = vn_rdwr(UIO_READ, from, buf, n, off, UIO_SYSSPACE,
+		    IO_NODELOCKED, cred, &resid, curlwp);
+		if (error == 0 && resid != 0)
+			error = EIO;
+		if (error == 0)
+			error = vn_rdwr(UIO_WRITE, to, buf, n, off,
+			    UIO_SYSSPACE, IO_NODELOCKED, cred, NULL, curlwp);
+	}
+	kmem_free(buf, MAXBSIZE);
+	return error;
+}
+
+/* What a layout is made of, taken under the lock. */
+struct ff_snap {
+	struct nfsv4_fh	fs_fh;
+	uint32_t	fs_uid;
+	uint32_t	fs_gid;
+};
+
+/*
+ * Take a reference to the data file of vp, made and filled from vp if
+ * there is none.  A data file that is to be copied back first is
+ * NFS4ERR_DELAY, the lease thread being woken to do it.
+ */
+static uint32_t
+ff_attach(struct vnode *vp, struct ff_snap *sn)
+{
+	struct ff_data *fd, *nfd;
+	struct pathbuf *pb;
+	struct vattr va;
+	char dir[NFSV4_FF_DIR];
+	bool dead = false;
+	int error;
+
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	mutex_enter(&nfsv4_state_lock);
+	fd = ff_find(vp);
+	if (fd != NULL && !fd->fd_dead) {
+		fd->fd_refs++;
+		sn->fs_fh = fd->fd_fh;
+		sn->fs_uid = fd->fd_uid;
+		sn->fs_gid = fd->fd_gid;
+	}
+	if (fd != NULL && fd->fd_dead) {
+		dead = true;
+		cv_broadcast(&nfsv4_state_cv);
+	}
+	strlcpy(dir, ff_dir, sizeof(dir));
+	mutex_exit(&nfsv4_state_lock);
+	if (fd != NULL) {
+		VOP_UNLOCK(vp);
+		return dead ? NFS4ERR_DELAY : NFS4_OK;
+	}
+	if (dir[0] == '\0') {
+		VOP_UNLOCK(vp);
+		return NFS4ERR_LAYOUTUNAVAILABLE;
+	}
+
+	nfd = kmem_zalloc(sizeof(*nfd), KM_SLEEP);
+	nfd->fd_mvp = vp;
+	nfd->fd_refs = 1;
+	ff_ids(nfd);
+	error = VOP_GETATTR(vp, &va, lwp0.l_cred);
+	if (error != 0)
+		goto fail;
+	snprintf(nfd->fd_name, sizeof(nfd->fd_name), "%s/%llx.%llx", dir,
+	    (unsigned long long)va.va_fsid, (unsigned long long)va.va_fileid);
+	pb = pathbuf_create(nfd->fd_name);
+	if (pb == NULL) {
+		error = ENOMEM;
+		goto fail;
+	}
+	error = vn_open(NULL, pb, 0, FREAD | FWRITE | O_CREAT | O_TRUNC |
+	    O_NOFOLLOW, 0600, &nfd->fd_dvp, NULL, NULL);
+	pathbuf_destroy(pb);
+	if (error != 0)
+		goto fail;
+	if (nfd->fd_dvp->v_type != VREG)
+		error = EINVAL;
+	if (error == 0)
+		error = ff_own(nfd);
+	if (error == 0)
+		error = ff_copy(vp, nfd->fd_dvp);
+	if (error == 0) {
+		size_t len = sizeof(nfd->fd_fh.fh_data);
+
+		error = vfs_composefh(nfd->fd_dvp,
+		    (fhandle_t *)nfd->fd_fh.fh_data, &len);
+		nfd->fd_fh.fh_len = len;
+		if (error == 0 && len > NFSV4_FF_FHMAX)
+			error = EOPNOTSUPP;
+	}
+	VOP_UNLOCK(nfd->fd_dvp);
+	if (error != 0) {
+		(void)vn_close(nfd->fd_dvp, FREAD | FWRITE, lwp0.l_cred);
+		(void)do_sys_unlink(nfd->fd_name, UIO_SYSSPACE);
+		goto fail;
+	}
+	sn->fs_fh = nfd->fd_fh;
+	sn->fs_uid = nfd->fd_uid;
+	sn->fs_gid = nfd->fd_gid;
+	mutex_enter(&nfsv4_state_lock);
+	LIST_INSERT_HEAD(&ff_list, nfd, fd_list);
+	atomic_inc_uint(&ff_count);
+	mutex_exit(&nfsv4_state_lock);
+	VOP_UNLOCK(vp);
+	return NFS4_OK;
+fail:
+	VOP_UNLOCK(vp);
+	kmem_free(nfd, sizeof(*nfd));
+	return nfsv4_errno(error);
+}
+
+/* A reference to the data file of fd is gone; under the lock. */
+static void
+ff_unref(struct ff_data *fd)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+	KASSERT(fd->fd_refs > 0);
+
+	if (--fd->fd_refs == 0) {
+		fd->fd_dead = true;
+		vref(fd->fd_mvp);	/* the layouts' may go */
+		cv_broadcast(&nfsv4_state_cv);
+	}
+}
+
+/* Of a layout ending, from nfsv4_state_unlink(). */
+void
+nfsv4_layout_gone(struct nfsv4_state *st)
+{
+	struct ff_data *fd;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (st->st_ltype != LAYOUT4_FLEX_FILES || st->st_file == NULL)
+		return;
+	fd = ff_find(st->st_file->f_vp);
+	KASSERT(fd != NULL && !fd->fd_dead);
+	/* s2.3.1: what the client was not told of is fenced, s2.2. */
+	if (st->st_lfence)
+		fd->fd_fence = true;
+	ff_unref(fd);
+}
+
+/*
+ * The lease thread: give fenced data files new ids, s2.2, and copy back
+ * and remove those with no layout.  Each under its metadata file's lock,
+ * which ff_attach() and LAYOUTCOMMIT take too.
+ */
+void
+nfsv4_ff_reap(void)
+{
+	struct ff_data *fd;
+	struct vnode *mvp;
+	bool dead, fence;
+	int error;
+
+	for (;;) {
+		mutex_enter(&nfsv4_state_lock);
+		LIST_FOREACH(fd, &ff_list, fd_list) {
+			if (fd->fd_dead || fd->fd_fence)
+				break;
+		}
+		if (fd == NULL) {
+			mutex_exit(&nfsv4_state_lock);
+			return;
+		}
+		mvp = fd->fd_mvp;
+		vref(mvp);
+		mutex_exit(&nfsv4_state_lock);
+
+		vn_lock(mvp, LK_EXCLUSIVE | LK_RETRY);
+		mutex_enter(&nfsv4_state_lock);
+		fence = fd->fd_fence;
+		fd->fd_fence = false;
+		if (fence)
+			ff_ids(fd);
+		dead = fd->fd_dead;
+		if (dead) {
+			LIST_REMOVE(fd, fd_list);
+			atomic_dec_uint(&ff_count);
+		}
+		mutex_exit(&nfsv4_state_lock);
+		vn_lock(fd->fd_dvp, LK_EXCLUSIVE | LK_RETRY);
+		if (fence) {
+			error = ff_own(fd);
+			if (error == 0)
+				atomic_inc_uint((volatile u_int *)
+				    &nfsv4_ff_fences);
+			else
+				printf("nfsv4: fencing %s: error %d\n",
+				    fd->fd_name, error);
+		}
+		if (dead && (error = ff_copy(fd->fd_dvp, mvp)) != 0)
+			printf("nfsv4: copying back %s: error %d\n",
+			    fd->fd_name, error);
+		VOP_UNLOCK(fd->fd_dvp);
+		VOP_UNLOCK(mvp);
+		vrele(mvp);
+		if (dead) {
+			(void)vn_close(fd->fd_dvp, FREAD | FWRITE,
+			    lwp0.l_cred);
+			(void)do_sys_unlink(fd->fd_name, UIO_SYSSPACE);
+			vrele(fd->fd_mvp);	/* of ff_unref() */
+			kmem_free(fd, sizeof(*fd));
+		}
+	}
+}
+
+/* vfs.nfsv4.ff_fence: fence every data file now, s2.2. */
+void
+nfsv4_ff_fence_all(void)
+{
+	struct ff_data *fd;
+
+	mutex_enter(&nfsv4_state_lock);
+	LIST_FOREACH(fd, &ff_list, fd_list)
+		fd->fd_fence = true;
+	cv_broadcast(&nfsv4_state_cv);
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/* Drop the reference ff_attach() took for a LAYOUTGET that made none. */
+static void
+ff_drop(struct vnode *vp)
+{
+	struct ff_data *fd;
+
+	mutex_enter(&nfsv4_state_lock);
+	fd = ff_find(vp);
+	KASSERT(fd != NULL && !fd->fd_dead);
+	ff_unref(fd);
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/* LAYOUTCOMMIT: the data file's contents to vp, which is locked. */
+static int
+ff_commit(struct vnode *vp)
+{
+	struct ff_data *fd;
+	struct vnode *dvp;
+	int error;
+
+	mutex_enter(&nfsv4_state_lock);
+	fd = ff_find(vp);
+	dvp = fd != NULL ? fd->fd_dvp : NULL;
+	mutex_exit(&nfsv4_state_lock);
+	/* Under vp's lock, the lease thread cannot close dvp. */
+	if (dvp == NULL)
+		return 0;
+	vn_lock(dvp, LK_EXCLUSIVE | LK_RETRY);
+	error = ff_copy(dvp, vp);
+	VOP_UNLOCK(dvp);
+	return error;
+}
+
+static void
+layout_recall(struct nfsv4_state *st)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (st->st_file == NULL || st->st_lrecall)
+		return;
+	layout_bump(st);
+	st->st_lrecall = true;
+	st->st_lanswered = false;
+	st->st_lrend = time_uptime + NFSV4_LEASE;
+	if (!nfsv4_cb_layoutrecall(st))
+		st->st_lrecall = false;
+}
+
+/*
+ * I/O on the metadata server to vp, of which there is a data file: the
+ * layouts are recalled, and it waits for them, RFC 8435 s2.  Also while
+ * the data file is to be copied back.
+ */
+uint32_t
+nfsv4_layout_ff_conflict(struct vnode *vp)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	struct ff_data *fd;
+	uint32_t status = NFS4_OK;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (atomic_load_relaxed(&ff_count) == 0 || (fd = ff_find(vp)) == NULL)
+		return NFS4_OK;
+	if (fd->fd_dead) {
+		cv_broadcast(&nfsv4_state_cv);
+		return NFS4ERR_DELAY;
+	}
+	if ((f = nfsv4_file_find(vp)) == NULL)
+		return NFS4_OK;
+	LIST_FOREACH(st, &f->f_states, st_flist) {
+		if (st->st_type == NFSV4_ST_LAYOUT &&
+		    st->st_ltype == LAYOUT4_FLEX_FILES) {
+			status = NFS4ERR_DELAY;
+			layout_recall(st);
+		}
+	}
+	return status;
+}
+
+/*
+ * da_addr_body of s3.3.15: s13.3, nfsv4_1_file_layout_ds_addr4, or RFC
+ * 8435 s4.1, ff_device_addr4.
+ */
+static u_int
+ds_addr_len(uint32_t type)
+{
+	size_t n, u;
+
+	if (type == LAYOUT4_FLEX_FILES) {
+		n = strlen(ff_netid);
+		u = strlen(ff_uaddr);
+		/* netaddrs<1>, versions<1> of five words */
+		return 4 + 4 + roundup(n, 4) + 4 + roundup(u, 4) + 4 + 5 * 4;
+	}
+	n = strlen(ds_netid);
+	u = strlen(ds_uaddr);
 	/* indices<1>, list<1> of multipath<1> of netaddr4 */
 	return 4 + 4 + 4 + 4 + 4 + roundup(n, 4) + 4 + roundup(u, 4);
 }
 
 static bool
-ds_addr_put(XDR *x)
+ds_addr_put(XDR *x, uint32_t type)
 {
 	char *n = ds_netid, *u = ds_uaddr;
 
+	if (type == LAYOUT4_FLEX_FILES) {
+		n = ff_netid;
+		u = ff_uaddr;
+		/* s4.1: version 3 MUST have minor 0 and not tightly coupled */
+		return nfsv4_xdr_u32(x, 1) &&
+		    xdr_string(x, &n, NFSV4_DS_NETID) &&
+		    xdr_string(x, &u, NFSV4_DS_UADDR) &&
+		    nfsv4_xdr_u32(x, 1) &&
+		    nfsv4_xdr_u32(x, NFSV4_FF_VERSION) &&
+		    nfsv4_xdr_u32(x, 0) &&
+		    nfsv4_xdr_u32(x, NFSV4_FF_RWSIZE) &&
+		    nfsv4_xdr_u32(x, NFSV4_FF_RWSIZE) &&
+		    nfsv4_xdr_u32(x, 0);
+	}
 	return nfsv4_xdr_u32(x, 1) && nfsv4_xdr_u32(x, 0) &&
 	    nfsv4_xdr_u32(x, 1) && nfsv4_xdr_u32(x, 1) &&
 	    xdr_string(x, &n, NFSV4_DS_NETID) &&
@@ -239,22 +769,19 @@ nfsv4_op_getdeviceinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	const struct nfsv4_args_getdeviceinfo *ga = &a->getdeviceinfo;
 	uint8_t id[NFS4_DEVICEID4_SIZE];
-	char netid[NFSV4_DS_NETID], uaddr[NFSV4_DS_UADDR];
 	uint32_t status, len, need;
-	bool ok;
+	bool ok, on;
 
 	if ((status = layout_client(c)) != NFS4_OK)
 		return status;
-	if (ga->type != LAYOUT4_NFSV4_1_FILES)
+	if (!layout_known(ga->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	mutex_enter(&nfsv4_state_lock);
-	ds_devid(id);
-	memcpy(netid, ds_netid, sizeof(netid));
-	memcpy(uaddr, ds_uaddr, sizeof(uaddr));
-	len = ds_addr_len();
+	ds_devid(id, ga->type);
+	on = layout_on(ga->type);
+	len = ds_addr_len(ga->type);
 	mutex_exit(&nfsv4_state_lock);
-	if (uaddr[0] == '\0' ||
-	    memcmp(id, ga->devid, NFS4_DEVICEID4_SIZE) != 0)
+	if (!on || memcmp(id, ga->devid, NFS4_DEVICEID4_SIZE) != 0)
 		return NFS4ERR_NOENT;
 	/* type, body<>, and an empty gdir_notification: none are sent. */
 	need = 4 + 4 + len + 4;
@@ -265,11 +792,15 @@ nfsv4_op_getdeviceinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	if (ga->maxcount == 0)
 		len = 0;
-	ok = nfsv4_xdr_u32(c->c_rx, LAYOUT4_NFSV4_1_FILES) &&
+	ok = nfsv4_xdr_u32(c->c_rx, ga->type) &&
 	    nfsv4_xdr_u32(c->c_rx, len);
 	if (ok && len != 0) {
 		mutex_enter(&nfsv4_state_lock);
-		ok = ds_addr_put(c->c_rx);
+		/* Changed meanwhile: the length was of the other. */
+		if (ds_addr_len(ga->type) != len)
+			ok = false;
+		else
+			ok = ds_addr_put(c->c_rx, ga->type);
 		mutex_exit(&nfsv4_state_lock);
 	}
 	if (!ok || !nfsv4_xdr_u32(c->c_rx, 0))
@@ -285,15 +816,17 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint8_t id[NFS4_DEVICEID4_SIZE];
 	struct nfsv4_verifier verf;
 	uint32_t status, n;
+	bool on;
 
 	if ((status = layout_client(c)) != NFS4_OK)
 		return status;
-	if (ga->type != LAYOUT4_NFSV4_1_FILES)
+	if (!layout_known(ga->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	if (c->c_cur.cf_vp == NULL)
 		return NFS4ERR_NOTSUPP;		/* the pseudo file system */
 	mutex_enter(&nfsv4_state_lock);
-	ds_devid(id);
+	ds_devid(id, ga->type);
+	on = layout_on(ga->type);
 	mutex_exit(&nfsv4_state_lock);
 	/* The verifier is the generation; a cookie of 0 needs none. */
 	memset(&verf, 0, sizeof(verf));
@@ -301,7 +834,7 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (ga->cookie != 0 &&
 	    memcmp(&verf, &ga->verf, sizeof(verf)) != 0)
 		return NFS4ERR_NOT_SAME;
-	n = ga->cookie == 0 && ga->maxdevices > 0 ? 1 : 0;
+	n = on && ga->cookie == 0 && ga->maxdevices > 0 ? 1 : 0;
 	if (ga->cookie > 1)
 		return NFS4ERR_BAD_COOKIE;
 	if (!xdr_u_int64_t(c->c_rx, &(uint64_t){ n }) ||
@@ -328,15 +861,19 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_file *sf = NULL;
 	struct nfsv4_stateid si;
 	struct nfsv4_fh fh = c->c_cur.cf_fh;
+	struct ff_snap sn;
 	uint8_t id[NFS4_DEVICEID4_SIZE];
+	char user[12], group[12];
 	uint32_t status, need, body, util;
+	size_t ul, gl;
+	bool ff = la->type == LAYOUT4_FLEX_FILES, held = false;
 	XDR *x = c->c_rx;
 
 	if ((status = layout_client(c)) != NFS4_OK)
 		return status;
 	if ((status = nfsv4_file_check(c, &c->c_cur)) != NFS4_OK)
 		return status;
-	if (la->type != LAYOUT4_NFSV4_1_FILES)
+	if (!layout_known(la->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	if (la->iomode != LAYOUTIOMODE4_READ && la->iomode != LAYOUTIOMODE4_RW)
 		return NFS4ERR_BADIOMODE;
@@ -351,21 +888,35 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	/* s18.43.3: layouts are not kept across a restart. */
 	if (nfsv4_grace_active())
 		return NFS4ERR_GRACE;
-	/* nfl_fh_list<1>, s13.3, in layout_content4 of one layout4. */
-	body = NFS4_DEVICEID4_SIZE + 4 + 4 + 8 + 4 + 4 + roundup(fh.fh_len, 4);
+	if (ff) {
+		/* RFC 8435 s5.1, ff_layout4 of one mirror of one server. */
+		body = 8 + 4 + 4 + NFS4_DEVICEID4_SIZE + 4 + 16 + 4 +
+		    4 + NFSV4_FF_FHMAX + 4 + 12 + 4 + 12 + 4 + 4;
+	} else {
+		/* nfl_fh_list<1>, s13.3, in layout_content4 of one layout4. */
+		body = NFS4_DEVICEID4_SIZE + 4 + 4 + 8 + 4 + 4 +
+		    roundup(fh.fh_len, 4);
+	}
 	need = 4 + 16 + 4 + 8 + 8 + 4 + 4 + 4 + body;
 	if (la->maxcount < need)
 		return NFS4ERR_TOOSMALL;
+	if (ff && (status = ff_attach(vp, &sn)) != NFS4_OK)
+		return status;
 
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
 	sst = kmem_zalloc(sizeof(*sst), KM_SLEEP);
 	sf = kmem_zalloc(sizeof(*sf), KM_SLEEP);
 	mutex_enter(&nfsv4_state_lock);
-	if (!nfsv4_pnfs_on()) {
+	if (!layout_on(la->type)) {
 		status = NFS4ERR_LAYOUTUNAVAILABLE;
 		goto out;
 	}
 	st = layout_find(c->c_client, vp);
+	/* One layout of a file to a client, of one type. */
+	if (st != NULL && st->st_ltype != la->type) {
+		status = NFS4ERR_LAYOUTUNAVAILABLE;
+		goto out;
+	}
 	status = nfsv4_stateid_lookup(c, &la->stateid, &ost);
 	if (status != NFS4_OK)
 		goto out;
@@ -402,38 +953,82 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 			sw->sw_confirmed = true;
 		}
 		st = nfsv4_state_add(&sst, sw, &sf, vp, NFSV4_ST_LAYOUT);
+		st->st_ltype = la->type;
+		held = ff;		/* the reference of ff_attach() */
 		if (st->st_file->f_fh.fh_len == 0)
 			st->st_file->f_fh = fh;
 	} else
 		layout_bump(st);		/* s12.5.3 */
 	st->st_liomode |= 1U << la->iomode;
 	nfsv4_stateid_out(st, &si);
-	ds_devid(id);
+	ds_devid(id, la->type);
 	mutex_exit(&nfsv4_state_lock);
+	if (ff && !held)
+		ff_drop(vp);
 
-	/* s13.3: sparse, so the offsets are the file's own; one stripe. */
-	util = NFSV4_STRIPE_UNIT & NFL4_UFLG_STRIPE_UNIT_SIZE_MASK;
 	if (!nfsv4_xdr_u32(x, 0) ||			/* return_on_close */
 	    !nfsv4_xdr_stateid(x, &si) ||
 	    !nfsv4_xdr_u32(x, 1) ||			/* logr_layout<> */
 	    !xdr_u_int64_t(x, &(uint64_t){ 0 }) ||
 	    !xdr_u_int64_t(x, &(uint64_t){ NFS4_UINT64_MAX }) ||
 	    !nfsv4_xdr_u32(x, la->iomode) ||
-	    !nfsv4_xdr_u32(x, LAYOUT4_NFSV4_1_FILES) ||
-	    !nfsv4_xdr_u32(x, body) ||
+	    !nfsv4_xdr_u32(x, la->type)) {
+		status = NFS4ERR_RESOURCE;
+		goto done;
+	}
+	if (ff) {
+		/*
+		 * RFC 8435 s2.2.2: of a layout for reading, a uid that is
+		 * not the data file's; the gid gives the reading.
+		 */
+		snprintf(user, sizeof(user), "%u",
+		    la->iomode == LAYOUTIOMODE4_RW ? sn.fs_uid : sn.fs_gid);
+		snprintf(group, sizeof(group), "%u", sn.fs_gid);
+		ul = strlen(user);
+		gl = strlen(group);
+		body = 8 + 4 + 4 + NFS4_DEVICEID4_SIZE + 4 + 16 + 4 +
+		    4 + roundup(sn.fs_fh.fh_len, 4) + 4 + roundup(ul, 4) +
+		    4 + roundup(gl, 4) + 4 + 4;
+		/*
+		 * s5.1: one stripe, so a stripe unit of 0; the anonymous
+		 * stateid, loosely coupled; I/O through the metadata
+		 * server only waits for the layouts to come back.
+		 */
+		if (!nfsv4_xdr_u32(x, body) ||
+		    !xdr_u_int64_t(x, &(uint64_t){ 0 }) ||
+		    !nfsv4_xdr_u32(x, 1) ||		/* ffl_mirrors<> */
+		    !nfsv4_xdr_u32(x, 1) ||		/* ffm_data_servers<> */
+		    !XDR_PUTBYTES(x, (char *)id, sizeof(id)) ||
+		    !nfsv4_xdr_u32(x, 1) ||		/* ffds_efficiency */
+		    !nfsv4_xdr_stateid(x,
+		    &(struct nfsv4_stateid){ .si_seqid = 0 }) ||
+		    !nfsv4_xdr_u32(x, 1) || !nfsv4_xdr_fh(x, &sn.fs_fh) ||
+		    !xdr_string(x, &(char *){ user }, sizeof(user)) ||
+		    !xdr_string(x, &(char *){ group }, sizeof(group)) ||
+		    !nfsv4_xdr_u32(x, FF_FLAGS_NO_IO_THRU_MDS) ||
+		    !nfsv4_xdr_u32(x, 0))		/* stats_collect_hint */
+			status = NFS4ERR_RESOURCE;
+		goto given;
+	}
+	/* s13.3: sparse, so the offsets are the file's own; one stripe. */
+	util = NFSV4_STRIPE_UNIT & NFL4_UFLG_STRIPE_UNIT_SIZE_MASK;
+	if (!nfsv4_xdr_u32(x, body) ||
 	    !XDR_PUTBYTES(x, (char *)id, sizeof(id)) ||
 	    !nfsv4_xdr_u32(x, util) ||
 	    !nfsv4_xdr_u32(x, 0) ||			/* first_stripe_index */
 	    !xdr_u_int64_t(x, &(uint64_t){ 0 }) ||	/* pattern_offset */
 	    !nfsv4_xdr_u32(x, 1) || !nfsv4_xdr_fh(x, &fh))
 		status = NFS4ERR_RESOURCE;
-	else {
+given:
+	if (status == NFS4_OK) {
 		c->c_curst = si;		/* s18.43.3 */
 		atomic_inc_uint((volatile u_int *)&nfsv4_layouts_given);
 	}
 	goto done;
 out:
 	mutex_exit(&nfsv4_state_lock);
+	if (ff)
+		ff_drop(vp);
 	/* s18.43.3: the signal for when one is available is not given. */
 	if (status == NFS4ERR_LAYOUTTRYLATER)
 		(void)nfsv4_xdr_u32(x, 0);
@@ -491,7 +1086,7 @@ nfsv4_op_layoutreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 		return status;
 	if (la->rtype != LAYOUT4_RET_REC_ALL && !c->c_cur.cf_set)
 		return NFS4ERR_NOFILEHANDLE;
-	if (la->type != LAYOUT4_NFSV4_1_FILES)
+	if (!layout_known(la->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	if (la->iomode < LAYOUTIOMODE4_READ || la->iomode > LAYOUTIOMODE4_ANY)
 		return NFS4ERR_BADIOMODE;
@@ -513,6 +1108,10 @@ nfsv4_op_layoutreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = layout_lookup(c, &la->stateid, vp, &st);
 		if (status != NFS4_OK)
 			goto out;
+		if (st->st_ltype != la->type) {
+			status = NFS4ERR_BAD_STATEID;	/* of another type */
+			goto out;
+		}
 		/*
 		 * Less than all of it leaves it held, and a recall of it
 		 * waiting; all of it, of a mode, gives that mode back.
@@ -529,6 +1128,7 @@ nfsv4_op_layoutreturn(struct nfsv4_compound *c, union nfsv4_args *a)
 				continue;
 			LIST_FOREACH_SAFE(st, &sw->sw_states, st_olist, nst) {
 				if (st->st_file == NULL ||
+				    st->st_ltype != la->type ||
 				    (la->rtype == LAYOUT4_RET_REC_FSID &&
 				    (vp == NULL ||
 				    st->st_file->f_vp->v_mount != vp->v_mount)))
@@ -575,7 +1175,7 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 		return status;
 	if ((status = nfsv4_file_check(c, &c->c_cur)) != NFS4_OK)
 		return status;
-	if (la->type != LAYOUT4_NFSV4_1_FILES)
+	if (!layout_known(la->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	/* s18.42.3: none was kept across the restart to reclaim. */
 	if (la->reclaim)
@@ -590,6 +1190,8 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (status == NFS4_OK &&
 	    (st->st_liomode & (1U << LAYOUTIOMODE4_RW)) == 0)
 		status = NFS4ERR_BADIOMODE;
+	if (status == NFS4_OK && st->st_ltype != la->type)
+		status = NFS4ERR_BADLAYOUT;	/* s15.1.10.2 */
 	mutex_exit(&nfsv4_state_lock);
 	if (status != NFS4_OK)
 		return status;
@@ -601,7 +1203,10 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_INVAL;
 
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	error = VOP_GETATTR(vp, &va, c->c_cur.cf_cred);
+	/* RFC 8435 s2.1: what was written to the data file, here. */
+	error = la->type == LAYOUT4_FLEX_FILES ? ff_commit(vp) : 0;
+	if (error == 0)
+		error = VOP_GETATTR(vp, &va, c->c_cur.cf_cred);
 	if (error == 0 && la->newoffset && la->lastoffset + 1 > va.va_size) {
 		vattr_null(&va);
 		va.va_size = la->lastoffset + 1;
@@ -637,16 +1242,8 @@ nfsv4_layout_recall_all(void)
 		LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
 			if (sw->sw_type != NFSV4_OWNER_LAYOUT)
 				continue;
-			LIST_FOREACH(st, &sw->sw_states, st_olist) {
-				if (st->st_file == NULL || st->st_lrecall)
-					continue;
-				layout_bump(st);
-				st->st_lrecall = true;
-				st->st_lanswered = false;
-				st->st_lrend = time_uptime + NFSV4_LEASE;
-				if (!nfsv4_cb_layoutrecall(st))
-					st->st_lrecall = false;
-			}
+			LIST_FOREACH(st, &sw->sw_states, st_olist)
+				layout_recall(st);
 		}
 	}
 	mutex_exit(&nfsv4_state_lock);
@@ -676,8 +1273,10 @@ nfsv4_layout_recalled(uint64_t other, int error, uint32_t status,
 
 /*
  * s12.5.5: a recalled layout not returned within its time is let go.
- * The data server is this server, so nothing is to be fenced: I/O goes
- * by the open and lock stateids, which stay good (s13.9.1).
+ * Of the file layout, the data server is this server, so nothing is to
+ * be fenced: I/O goes by the open and lock stateids, which stay good
+ * (s13.9.1).  Of the flexible file layout, the data file is given new
+ * ids, RFC 8435 s2.2, by nfsv4_layout_gone().
  */
 void
 nfsv4_layout_scan(struct nfsv4_reap *reap)
@@ -695,8 +1294,10 @@ nfsv4_layout_scan(struct nfsv4_reap *reap)
 				continue;
 			LIST_FOREACH_SAFE(st, &sw->sw_states, st_olist, nst) {
 				if (st->st_file != NULL && st->st_lrecall &&
-				    time_uptime >= st->st_lrend)
+				    time_uptime >= st->st_lrend) {
+					st->st_lfence = true;
 					layout_end(st, reap);
+				}
 			}
 		}
 	}

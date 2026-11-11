@@ -396,6 +396,23 @@ attr_u32(XDR *x, uint32_t v)
 	return xdr_u_int32_t(x, &v);
 }
 
+/* layouttype4<>, s5.12.1 and s5.12.3: the types that are given. */
+static bool
+attr_layout_types(XDR *x)
+{
+	uint32_t t[2];
+	u_int i, n;
+
+	n = nfsv4_layout_typelist(t);
+	if (!attr_u32(x, n))
+		return false;
+	for (i = 0; i < n; i++) {
+		if (!attr_u32(x, t[i]))
+			return false;
+	}
+	return true;
+}
+
 static bool
 attr_u64(XDR *x, uint64_t v)
 {
@@ -799,8 +816,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			ok = nfsv4_acl_put(&x, acl);
 			break;
 		case FATTR4_FS_LAYOUT_TYPE:		/* s5.12.1 */
-			ok = attr_u32(&x, 1) &&
-			    attr_u32(&x, LAYOUT4_NFSV4_1_FILES);
+			ok = attr_layout_types(&x);
 			break;
 		case FATTR4_DACL:
 			ok = nfsv4_dacl_put(&x, acl, nfsv4_dacl_flags(vp));
@@ -1014,8 +1030,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	    cf->cf_ref == NULL && cf->cf_attr == 0)
 		w2 |= want->bm_w[2] & attr_w2_supported(vp) & W2_PNFS;
 	if (ok && (w2 & (1U << (FATTR4_LAYOUT_TYPE - 64))) != 0)
-		ok = vp->v_type == VREG ? attr_u32(&x, 1) &&
-		    attr_u32(&x, LAYOUT4_NFSV4_1_FILES) : attr_u32(&x, 0);
+		ok = vp->v_type == VREG ? attr_layout_types(&x) :
+		    attr_u32(&x, 0);
 	if (ok && (w2 & (1U << (FATTR4_LAYOUT_BLKSIZE - 64))) != 0)
 		ok = attr_u32(&x, nfsv4_layout_blksize());
 	if (ok && (w2 & (1U << (FATTR4_LAYOUT_ALIGNMENT - 64))) != 0)

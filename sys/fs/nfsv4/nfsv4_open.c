@@ -1183,6 +1183,10 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 		    write ? NFSV4_DC_WRITE : NFSV4_DC_READ);
 		if (status != NFS4_OK)
 			goto out;
+		/* RFC 8435: the data file is the one being written. */
+		status = nfsv4_layout_ff_conflict(vp);
+		if (status != NFS4_OK)
+			goto out;
 	}
 	f = nfsv4_file_find_attr(vp, aname);
 	if (f != NULL) {

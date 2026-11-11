@@ -33,6 +33,10 @@ mkdir /export/ref/there
 mkdir -p /export/mig
 mount_tmpfs -s 8m tmpfs /export/mig
 chmod 1777 /export/mig
+# The data files of the flexible file layout, RFC 8435, to be served by
+# nfsd(8) as its storage device; owned by root, s2.2.
+mkdir -p /export/ffds
+mount_tmpfs -s 256m -m 0755 tmpfs /export/ffds
 mkdir -p /export/acl
 dd if=/dev/zero of=/var/tmp/acl.img bs=1m count=256
 newfs -O 2ea -F -s 256m /var/tmp/acl.img | tail -1
@@ -69,6 +73,7 @@ cat >/etc/exports <<EOF
 /export/acl -maproot=root -noresvport
 /export/ref -maproot=root -noresvport
 /export/mig -maproot=root -noresvport
+/export/ffds -maproot=root -noresvport
 /export/quota -maproot=root -noresvport
 /tank/x -maproot=root -noresvport
 EOF
@@ -80,6 +85,7 @@ sleep 2
 cd "$D"
 cc -g -Wall -o nfsv4d nfsv4d.c
 cc -g -Wall -o lockhold lockhold.c
+cc -g -Wall -o nfs3tcp nfs3tcp.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1

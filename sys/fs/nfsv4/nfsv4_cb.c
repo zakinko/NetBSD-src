@@ -124,6 +124,7 @@ struct cb_notify {
 	struct nfsv4_fh	cn_fh;
 	uint64_t	cn_other;	/* the layout, by st_other */
 	struct nfsv4_stateid cn_stateid;
+	uint32_t	cn_ltype;	/* CB_LAYOUTRECALL, the layout's type */
 	uint32_t	cn_olen;
 	uint8_t		cn_owner[NFS4_OPAQUE_LIMIT];
 };
@@ -345,7 +346,7 @@ cb_notify_encode(XDR *x, void *arg)
 {
 	struct cb_notify *cn = arg;
 	uint32_t op = cn->cn_op, zero = 0;
-	uint32_t type = LAYOUT4_NFSV4_1_FILES, any = LAYOUTIOMODE4_ANY;
+	uint32_t type = cn->cn_ltype, any = LAYOUTIOMODE4_ANY;
 	uint32_t file = LAYOUT4_RET_REC_FILE;
 	uint64_t len = UINT64_MAX;
 
@@ -814,6 +815,7 @@ nfsv4_cb_layoutrecall(struct nfsv4_state *st)
 	cn->cn_clientid = st->st_owner->sw_client->cl_id;
 	cn->cn_fh = st->st_file->f_fh;
 	cn->cn_other = st->st_other;
+	cn->cn_ltype = st->st_ltype;
 	nfsv4_stateid_out(st, &cn->cn_stateid);
 	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
 	cb_nnotifies++;

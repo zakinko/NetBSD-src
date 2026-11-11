@@ -260,6 +260,8 @@ struct nfsv4_state {
 	time_t		st_cbnext;	/* when to call again, if not 0 */
 	/* layout, of nfsv4_layout.c: all of the file, in these modes */
 	uint32_t	st_liomode;	/* bits 1 << LAYOUTIOMODE4_* */
+	uint32_t	st_ltype;	/* LAYOUT4_*, s3.3.13 */
+	bool		st_lfence;	/* not returned in time, RFC 8435 s2.2 */
 	bool		st_lrecall;	/* CB_LAYOUTRECALL sent, s12.5.5.2 */
 	bool		st_lanswered;	/* and the client has answered it */
 	time_t		st_lrend;	/* when it is let go regardless */
@@ -406,6 +408,9 @@ bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 bool	nfsv4_cb_layoutrecall(struct nfsv4_state *);
 void	nfsv4_layout_recalled(uint64_t, int, uint32_t, struct nfsv4_reap *);
 void	nfsv4_layout_scan(struct nfsv4_reap *);
+void	nfsv4_layout_gone(struct nfsv4_state *);
+void	nfsv4_ff_reap(void);
+uint32_t nfsv4_layout_ff_conflict(struct vnode *);
 
 /* These do not. */
 void	nfsv4_layout_recall_all(void);

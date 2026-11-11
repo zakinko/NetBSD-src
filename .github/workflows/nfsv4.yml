@@ -135,12 +135,12 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/nfs3tcp.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
           ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
-              -L 2049:127.0.0.1:2049 \
+              -L 2049:127.0.0.1:2049 -L 2050:127.0.0.1:2050 \
               -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
               -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 \
               -R 40100:127.0.0.1:40100 netbsd
@@ -197,6 +197,13 @@ jobs:
           timeout 300 python3 ./pnfs.py /export/pynfs 2>&1 | tee "$OLDPWD/out/pnfs.txt" || true
           cd "$OLDPWD"
           timeout 300 sh ci/nfsv4/pnfs-linux.sh 2>&1 | tee -a out/pnfs.txt || true
+      - name: pNFS, the flexible file layout, RFC 8435
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsff '))
+        run: |
+          timeout 400 sh ci/nfsv4/pnfs-ff.sh 2>&1 | tee out/pnfs-ff.txt || true
+          ssh netbsd "sysctl -w 'vfs.nfsv4.ff_ds=tcp 127.0.0.1.8.2 /export/ffds'"
+          SUITE=nfs4.1 LIMIT=300 PYNFS_ARGS="--minorversion=1 flex" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-flex || true
+          ssh netbsd "sysctl -w vfs.nfsv4.ff_ds=; ls -l /export/ffds"
       - name: Retention, RFC 8881 s5.13, where extended attributes are
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' retention '))
         run: |
@@ -319,6 +326,7 @@ jobs:
             out/cbgetattr.txt
             out/fault.txt
             out/pnfs.txt
+            out/pnfs-ff.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

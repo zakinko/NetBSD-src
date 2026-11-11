@@ -306,5 +306,18 @@ try:
 except (EOFError, ConnectionError):
     check('bad CRC closes', True)
 
+# Connections that come and go: each one's end must leave the server
+# with as many threads as before.  Twice the eight workers of the server,
+# then a call on a fresh one.
+for i in range(16):
+    q = Peer()
+    q.s.close()
+time.sleep(2)
+try:
+    q = Peer()
+    check('NULL after sixteen connections closed', *null_ok(q, 30))
+except Exception as e:
+    check('NULL after sixteen connections closed', False, repr(e))
+
 print('FAILS:', fails)
 sys.exit(fails != 0)

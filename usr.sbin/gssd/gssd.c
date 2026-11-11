@@ -66,6 +66,7 @@ __RCSID("$NetBSD$");
 
 #ifndef GSS_KRB5_MECHANISM	/* MIT krb5, for the tests of RFC 2623 s4.1 */
 #define	GSS_KRB5_MECHANISM	gss_mech_krb5
+#define	GSSD_MIT
 #endif
 
 #define	GSSD_PATH	"/var/run/gssd.sock"
@@ -236,6 +237,53 @@ map_principal(const char *name, size_t len, uint32_t *uid, uint32_t *gid,
 }
 
 /* The results of RPCSEC_GSS_INIT and CONTINUE_INIT in the kernel's form. */
+/*
+ * The enctype of the session key of an RFC 1964 context.  MIT krb5 puts
+ * ENCTYPE_DES_CBC_RAW (4) in the lucid key of every single-DES context,
+ * which is not an enctype RFC 1964 s1.2 knows and which the kernel
+ * refuses; des-cbc-crc and des-cbc-md5 were both exported as 4.  The
+ * enctype of the key itself comes from GSS_C_INQ_SSPI_SESSION_KEY, whose
+ * second buffer is GSS_KRB5_SESSION_KEY_ENCTYPE_OID with the enctype as
+ * one more arc (MIT krb5 1.17 inq_context.c, gssapiP_krb5.h).  It has to
+ * be asked before the export, which deletes the context.  0 if unknown.
+ */
+#define	GSSD_DES_CBC_RAW	4
+static uint32_t
+session_enctype(gss_ctx_id_t ctx)
+{
+#ifdef GSSD_MIT
+	static gss_OID_desc inq = { 11,
+	    __UNCONST("\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x05\x05") };
+	static const unsigned char pfx[10] =
+	    "\x2a\x86\x48\x86\xf7\x12\x01\x02\x02\x04";
+	gss_buffer_set_t set = GSS_C_NO_BUFFER_SET;
+	OM_uint32 minor;
+	const unsigned char *p;
+	uint32_t et = 0;
+	size_t i;
+
+	if (gss_inquire_sec_context_by_oid(&minor, ctx, &inq, &set) !=
+	    GSS_S_COMPLETE)
+		return 0;
+	if (set->count >= 2 && set->elements[1].length > sizeof(pfx) &&
+	    memcmp(set->elements[1].value, pfx, sizeof(pfx)) == 0) {
+		p = set->elements[1].value;
+		/* the arc, base 128 with the high bit for more, X.690 8.19 */
+		for (i = sizeof(pfx); i < set->elements[1].length && i < 15;
+		    i++) {
+			et = et << 7 | (p[i] & 0x7f);
+			if ((p[i] & 0x80) == 0)
+				break;
+		}
+	}
+	gss_release_buffer_set(&minor, &set);
+	return et;
+#else
+	(void)ctx;
+	return 0;
+#endif
+}
+
 static void
 do_accept(struct buf *a, struct buf *r)
 {
@@ -250,6 +298,7 @@ do_accept(struct buf *a, struct buf *r)
 	const gss_krb5_lucid_key_t *key;
 	struct pending *slot = NULL;
 	uint32_t groups[GSSD_MAXGROUPS], uid = 0, gid = 0, ngroups = 0;
+	uint32_t et, ktype;
 	bool mapped;
 	size_t i;
 
@@ -322,6 +371,7 @@ do_accept(struct buf *a, struct buf *r)
 	}
 
 	major = gss_display_name(&minor, src, &name, NULL);
+	et = session_enctype(ctx);
 	if (major == GSS_S_COMPLETE)
 		major = gss_krb5_export_lucid_sec_context(&minor, &ctx, 1, &lp);
 	gss_release_name(&m, &src);
@@ -344,12 +394,13 @@ do_accept(struct buf *a, struct buf *r)
 		    &lc->cfx_kd.acceptor_subkey : &lc->cfx_kd.ctx_key;
 	} else
 		key = &lc->rfc1964_kd.ctx_key;
+	ktype = key->type == GSSD_DES_CBC_RAW && et != 0 ? et : key->type;
 	mapped = map_principal(name.value, name.length, &uid, &gid, groups,
 	    &ngroups);
 	if (name.length >= GSSD_MAXNAME)
 		mapped = false;
 	syslog(LOG_INFO, "context for %.*s, enctype %u, %s", (int)name.length,
-	    (char *)name.value, key->type, mapped ? "mapped" : "not mapped");
+	    (char *)name.value, ktype, mapped ? "mapped" : "not mapped");
 
 	if (!mapped) {
 		gss_release_buffer(&m, &name);
@@ -369,7 +420,7 @@ do_accept(struct buf *a, struct buf *r)
 	put32(r, 0);
 	putbytes(r, out.value, out.length);
 	gss_release_buffer(&m, &out);
-	put32(r, key->type);
+	put32(r, ktype);
 	putbytes(r, key->data, key->length);
 	put32(r, lc->protocol == 1);
 	put32(r, lc->protocol == 1 && lc->cfx_kd.have_acceptor_subkey);
@@ -403,6 +454,7 @@ do_init(struct buf *a, struct buf *r)
 	struct pending *slot = NULL;
 	gss_krb5_lucid_context_v1_t *lc;
 	const gss_krb5_lucid_key_t *key;
+	uint32_t et, ktype;
 	void *lp = NULL;
 	size_t i;
 
@@ -461,6 +513,7 @@ do_init(struct buf *a, struct buf *r)
 		gss_release_buffer(&m, &out);
 		return;
 	}
+	et = session_enctype(ctx);
 	major = gss_krb5_export_lucid_sec_context(&minor, &ctx, 1, &lp);
 	if (major != GSS_S_COMPLETE) {
 		log_gss("gss_krb5_export_lucid_sec_context", major, minor);
@@ -473,15 +526,16 @@ do_init(struct buf *a, struct buf *r)
 		    &lc->cfx_kd.acceptor_subkey : &lc->cfx_kd.ctx_key;
 	else
 		key = &lc->rfc1964_kd.ctx_key;
+	ktype = key->type == GSSD_DES_CBC_RAW && et != 0 ? et : key->type;
 	syslog(LOG_INFO, "callback context to %.*s, enctype %u", (int)nlen,
-	    (char *)nb.value, key->type);
+	    (char *)nb.value, ktype);
 	put32(r, GSS_S_COMPLETE);
 	put32(r, 0);
 	put32(r, 0);
 	put32(r, 0);
 	putbytes(r, out.value, out.length);
 	gss_release_buffer(&m, &out);
-	put32(r, key->type);
+	put32(r, ktype);
 	putbytes(r, key->data, key->length);
 	put32(r, lc->protocol == 1);
 	put32(r, lc->protocol == 1 && lc->cfx_kd.have_acceptor_subkey);

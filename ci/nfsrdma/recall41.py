@@ -262,8 +262,19 @@ t.start()
 end = time.time() + 20
 while rp.recall is None and time.time() < end:
     time.sleep(0.2)
-check('CB_RECALL came as a reverse Call', rp.recall == dsid, rp.calls)
+check('CB_RECALL came as a reverse Call', rp.recall is not None,
+      (rp.calls, rp.recall and rp.recall.hex(), dsid and dsid.hex()))
 if rp.recall is not None:
+    # As the Linux client does with the file still open: the open is
+    # moved off the delegation first, OPEN with CLAIM_DELEG_CUR_FH (5),
+    # RFC 8881 s18.16.3, and the delegation is then returned.
+    try:
+        a.seqd([u32(OP_PUTFH) + opq(fh),
+                u32(OP_OPEN) + u32(0) + u32(1) + u32(0) + u64(a.clid) +
+                opq(b'o' + name) + u32(0) + u32(5) + dsid])
+        check('OPEN by CLAIM_DELEG_CUR_FH answered', a.last == 0, a.last)
+    except Exception as e:
+        check('OPEN by CLAIM_DELEG_CUR_FH answered', False, repr(e))
     try:
         a.seqd([u32(OP_PUTFH) + opq(fh), u32(OP_DELEGRETURN) + dsid])
         check('DELEGRETURN answered', a.last == 0, a.last)

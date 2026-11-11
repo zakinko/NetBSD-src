@@ -128,6 +128,9 @@ try:
 
     # s18.40, s18.41
     res = s.compound([op.putfh(fh), op.getdevicelist(LAYOUT4_NFSV4_1_FILES,
+        0, 0, b"\0" * 8)])
+    t("s18.41.3 maxdevices 0", res.status, NFS4ERR_INVAL)
+    res = s.compound([op.putfh(fh), op.getdevicelist(LAYOUT4_NFSV4_1_FILES,
         16, 0, b"\0" * 8)])
     t("s18.41 GETDEVICELIST", res.status, NFS4_OK)
     if res.status == NFS4_OK:

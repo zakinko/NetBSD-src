@@ -326,6 +326,34 @@ layout_lookup(const struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 	return NFS4_OK;
 }
 
+/*
+ * s12.9: pNFS MUST NOT remove the open modes.  A layout for writing is
+ * of a client that has the file open for writing, or a write delegation
+ * of it; the synthetic uid of RFC 8435 s2.2 would let it write anyway.
+ */
+static bool
+layout_may_write(const struct nfsv4_client *cl, struct vnode *vp)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if ((f = nfsv4_file_find(vp)) == NULL)
+		return false;
+	LIST_FOREACH(st, &f->f_states, st_flist) {
+		if (st->st_owner->sw_client != cl)
+			continue;
+		if (st->st_type == NFSV4_ST_OPEN &&
+		    (st->st_access & OPEN4_SHARE_ACCESS_WRITE) != 0)
+			return true;
+		if (st->st_type == NFSV4_ST_DELEG &&
+		    st->st_dtype == OPEN_DELEGATE_WRITE)
+			return true;
+	}
+	return false;
+}
+
 /* This client's layout on vp, if it has one. */
 static struct nfsv4_state *
 layout_find(const struct nfsv4_client *cl, struct vnode *vp)
@@ -824,6 +852,8 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	if (c->c_cur.cf_vp == NULL)
 		return NFS4ERR_NOTSUPP;		/* the pseudo file system */
+	if (ga->maxdevices == 0)
+		return NFS4ERR_INVAL;		/* s18.41.3 */
 	mutex_enter(&nfsv4_state_lock);
 	ds_devid(id, ga->type);
 	on = layout_on(ga->type);
@@ -834,7 +864,7 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (ga->cookie != 0 &&
 	    memcmp(&verf, &ga->verf, sizeof(verf)) != 0)
 		return NFS4ERR_NOT_SAME;
-	n = on && ga->cookie == 0 && ga->maxdevices > 0 ? 1 : 0;
+	n = on && ga->cookie == 0 ? 1 : 0;
 	if (ga->cookie > 1)
 		return NFS4ERR_BAD_COOKIE;
 	if (!xdr_u_int64_t(c->c_rx, &(uint64_t){ n }) ||
@@ -937,6 +967,11 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = nfsv4_stateid_check(&la->stateid, ost, vp, 0);
 		if (status != NFS4_OK)
 			goto out;
+	}
+	if (la->iomode == LAYOUTIOMODE4_RW &&
+	    !layout_may_write(c->c_client, vp)) {
+		status = NFS4ERR_OPENMODE;
+		goto out;
 	}
 	/* s12.5.5.2.1.3: a recall of it not yet done. */
 	if (st != NULL && st->st_lrecall) {

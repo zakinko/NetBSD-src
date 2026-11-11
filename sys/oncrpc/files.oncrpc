@@ -3,6 +3,9 @@
 define	xdr
 
 defflag				ONCRPC: xdr, aes, des
+# Out of RFC 5403 on purpose: take SHA-1 for the hash of RPCSEC_GSS
+# channel bindings.  Without it only SHA-256 is.
+defflag	opt_oncrpc.h		ONCRPC_GSS_CB_SHA1
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc

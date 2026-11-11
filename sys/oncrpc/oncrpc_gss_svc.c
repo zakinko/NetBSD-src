@@ -46,14 +46,20 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD$");
 
+#ifdef _KERNEL_OPT
+#include "opt_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/cprng.h>
+#include <sys/endian.h>
 #include <sys/errno.h>
 #include <sys/kauth.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
 #include <sys/mutex.h>
 #include <sys/queue.h>
+#include <sys/sha1.h>
 #include <sys/sha2.h>
 #include <sys/systm.h>
 #include <sys/time.h>
@@ -62,6 +68,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <oncrpc/gss_krb5.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_gssd.h>
+#include <oncrpc/oncrpc_tls.h>
 #include <oncrpc/oncrpc_var.h>
 
 /*
@@ -93,6 +100,8 @@ struct oncrpc_gss_ctx {
 	kauth_cred_t	gx_cred;
 	char		gx_name[ONCRPC_GSSD_MAXNAME];
 	bool		gx_used;	/* gx_initres is not needed any more */
+	bool		gx_bound;	/* RFC 5403 s3.3, to gx_boundconn */
+	uint64_t	gx_boundconn;	/* rq_connid of the TLS connection */
 	void		*gx_initres;	/* for a retransmitted request */
 	size_t		gx_initreslen;
 };
@@ -612,32 +621,225 @@ out:
 }
 
 /*
- * RPCSEC_GSS_BIND_CHANNEL, RFC 5403 s3.3.  ONC RPC over plain TCP and
- * UDP is no secure channel, so there are no channel bindings here to
- * hash, and so nothing for rbcva_chan_mic to be checked against.  The
- * answer is RGSS2_BIND_CHAN_PREF_NOTSUPP with an empty list of prefixes,
- * which binds nothing.  It does not move the window: the request has
- * proved nothing.
+ * RPCSEC_GSS_BIND_CHANNEL, RFC 5403 s3.3, for the one secure channel
+ * here: RPC-with-TLS, whose "tls-exporter" binding RFC 9289 s4.2.1 makes
+ * mandatory.  Over plain TCP and UDP there is no channel and the answer
+ * is RGSS2_BIND_CHAN_PREF_NOTSUPP with no prefixes.
+ *
+ * The client sends no hash, only a MIC over the header and its own hash
+ * of the bindings; the target puts its own hash in place, so bindings
+ * that differ show as a MIC that does not verify.  RFC 5403 has no
+ * status for that, and treats the verifier as the DATA one, whose
+ * failure RFC 2203 s5.3.3.1 and s5.3.3.4.2 answer with MSG_DENIED,
+ * AUTH_ERROR, RPCSEC_GSS_CREDPROBLEM; and s9 SHOULD shortens the
+ * context's life on each such failure.  Halving it is what s9 gives as
+ * an example of a significant fraction.
  */
-static enum oncrpc_gss_verdict
-gss_bind_channel(struct oncrpc_gss_call *gg, struct mbuf **resp)
-{
-	uint32_t in[4], *v = (uint32_t *)gg->gg_verfbody;
-	size_t len;
 
-	in[0] = htonl(gg->gg_cred.gc_seq);
-	in[1] = 0;				/* rbcmr_bind_chan_hash<0> */
-	in[2] = htonl(1);			/* PREF_NOTSUPP */
-	in[3] = 0;				/* rbcr_pref_list<0> */
-	v[0] = in[2];
-	v[1] = in[3];
-	if (gss_krb5_get_mic(gg->gg_ctx->gx_krb, in, sizeof(in), v + 3,
-	    sizeof(gg->gg_verfbody) - 3 * sizeof(*v), &len) != GSS_S_COMPLETE)
+/* RFC 9266 s2, the prefix of RFC 5056 s2.1 without the colon */
+static const char gss_cb_tlsexp[] = "tls-exporter";
+/* RFC 4055 s2.1, id-sha256 2.16.840.1.101.3.4.2.1, DER content octets */
+static const uint8_t gss_oid_sha256[] = {
+	0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01
+};
+#ifdef ONCRPC_GSS_CB_SHA1
+/* RFC 4055 s2.1, id-sha1 1.3.14.3.2.26 */
+static const uint8_t gss_oid_sha1[] = { 0x2b, 0x0e, 0x03, 0x02, 0x1a };
+#endif
+#define	GSS_ASN1_OID	0x06	/* X.690 s8.19, the OBJECT IDENTIFIER tag */
+#define	GSS_CB_MAXPREFIX 64	/* not from the RFC */
+#define	GSS_CB_MAXOID	32	/* not from the RFC */
+
+/*
+ * Whether oid, as the client sent it, names the hash of want.  RFC 5403
+ * s3.3 has it "encoded in ASN.1 as used by GSS-API in the mech_type
+ * argument", which implementations read both as the whole DER encoding
+ * (RFC 2743 s3.1) and as its content octets (the gss_OID of RFC 2744);
+ * either is taken, and *tagged says which, for the answer.
+ */
+static bool
+gss_oid_is(const uint8_t *oid, size_t len, const uint8_t *want, size_t wlen,
+    bool *tagged)
+{
+
+	if (len == wlen && memcmp(oid, want, wlen) == 0) {
+		*tagged = false;
+		return true;
+	}
+	if (len == wlen + 2 && oid[0] == GSS_ASN1_OID && oid[1] == wlen &&
+	    memcmp(oid + 2, want, wlen) == 0) {
+		*tagged = true;
+		return true;
+	}
+	return false;
+}
+
+/* hash(prefix ":" cb), RFC 5403 s3.3 and RFC 5056 s2.1, into out. */
+static size_t
+gss_cb_hash(bool sha1, const uint8_t *cb, size_t cblen, uint8_t *out)
+{
+	SHA256_CTX c;
+#ifdef ONCRPC_GSS_CB_SHA1
+	SHA1_CTX c1;
+
+	if (sha1) {
+		SHA1Init(&c1);
+		SHA1Update(&c1, (const uint8_t *)gss_cb_tlsexp,
+		    sizeof(gss_cb_tlsexp) - 1);
+		SHA1Update(&c1, (const uint8_t *)":", 1);
+		SHA1Update(&c1, cb, cblen);
+		SHA1Final(out, &c1);
+		return SHA1_DIGEST_LENGTH;
+	}
+#endif
+	SHA256_Init(&c);
+	SHA256_Update(&c, (const uint8_t *)gss_cb_tlsexp,
+	    sizeof(gss_cb_tlsexp) - 1);
+	SHA256_Update(&c, (const uint8_t *)":", 1);
+	SHA256_Update(&c, cb, cblen);
+	SHA256_Final(out, &c);
+	return SHA256_DIGEST_LENGTH;
+}
+
+static void
+gss_put_opaque(uint8_t *buf, size_t *off, const void *p, size_t len)
+{
+	uint32_t l = htonl(len);
+
+	memcpy(buf + *off, &l, 4);
+	memcpy(buf + *off + 4, p, len);
+	memset(buf + *off + 4 + len, 0, roundup(len, 4) - len);
+	*off += 4 + roundup(len, 4);
+}
+
+static enum oncrpc_gss_verdict
+gss_bind_channel(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
+    struct oncrpc_req *rq, struct mbuf **resp, uint32_t *whyp)
+{
+	struct oncrpc_gss_ctx *gx = gg->gg_ctx;
+	uint8_t hdr[8 * sizeof(uint32_t) + ONCRPC_MAX_AUTH_BYTES + 4 +
+	    SHA256_DIGEST_LENGTH];
+	uint8_t prefix[GSS_CB_MAXPREFIX], oid[GSS_CB_MAXOID];
+	uint8_t exporter[ONCRPC_TLS_EXPORTERLEN], hash[SHA256_DIGEST_LENGTH];
+	uint8_t res[64], in[4 + 4 + SHA256_DIGEST_LENGTH + 64];
+	uint8_t *v = gg->gg_verfbody, *mic;
+	uint32_t plen, olen, mlen, stat;
+	size_t hlen, hashlen = 0, rlen = 0, ilen = 0, len;
+	bool tls, tagged = true, sha1 = false, ok;
+	XDR xdrs;
+
+	tls = oncrpc_req_tls(rq, exporter);
+
+	/* rgss2_bind_chan_verf_args, in the request's verifier */
+	if (c->c_verf.oa_flavor != RPCSEC_GSS) {
+		*whyp = RPCSEC_GSS_CREDPROBLEM;
+		return ONCRPC_GSS_DENY;
+	}
+	xdrmem_create(&xdrs, __UNCONST(c->c_verf.oa_body), c->c_verf.oa_len,
+	    XDR_DECODE);
+	if (!xdr_u_int32_t(&xdrs, &plen) || plen > sizeof(prefix) ||
+	    !xdr_opaque(&xdrs, (char *)prefix, plen) ||
+	    !xdr_u_int32_t(&xdrs, &olen) || olen > sizeof(oid) ||
+	    !xdr_opaque(&xdrs, (char *)oid, olen) ||
+	    !xdr_u_int32_t(&xdrs, &mlen) ||
+	    mlen > c->c_verf.oa_len - XDR_GETPOS(&xdrs)) {
+		*whyp = ONCRPC_AUTH_BADVERF;
+		return ONCRPC_GSS_DENY;
+	}
+	mic = (uint8_t *)__UNCONST(c->c_verf.oa_body) + XDR_GETPOS(&xdrs);
+
+	if (!tls || plen != sizeof(gss_cb_tlsexp) - 1 ||
+	    memcmp(prefix, gss_cb_tlsexp, plen) != 0) {
+		stat = 1;			/* RGSS2_BIND_CHAN_PREF_NOTSUPP */
+		be32enc(res, stat);
+		rlen = 4;
+		if (tls) {
+			be32enc(res + rlen, 1);		/* rbcr_pref_list<1> */
+			rlen += 4;
+			gss_put_opaque(res, &rlen, gss_cb_tlsexp,
+			    sizeof(gss_cb_tlsexp) - 1);
+		} else {
+			be32enc(res + rlen, 0);
+			rlen += 4;
+		}
+	} else if (gss_oid_is(oid, olen, gss_oid_sha256,
+	    sizeof(gss_oid_sha256), &tagged)
+#ifdef ONCRPC_GSS_CB_SHA1
+	    /*
+	     * Out of the specification on purpose, by option: SHA-1 is
+	     * accepted for the hash.  RFC 5403 leaves the hash to the
+	     * client, and the default here takes SHA-256 alone; without the
+	     * option a SHA-1 request gets HASH_NOTSUPP naming SHA-256.
+	     * Remove "options ONCRPC_GSS_CB_SHA1" to go back.
+	     */
+	    || (sha1 = gss_oid_is(oid, olen, gss_oid_sha1,
+	    sizeof(gss_oid_sha1), &tagged))
+#endif
+	    ) {
+		hashlen = gss_cb_hash(sha1, exporter, sizeof(exporter), hash);
+		/* rbcva_chan_mic: GetMIC(header || rgss2_bind_chan_MIC_in_args) */
+		hlen = gss_header(c, hdr);
+		gss_put_opaque(hdr, &hlen, hash, hashlen);
+		if (gss_krb5_verify_mic(gx->gx_krb, hdr, hlen, mic, mlen) !=
+		    GSS_S_COMPLETE) {
+			/* s9 SHOULD */
+			mutex_enter(&gss_lock);
+			if (gx->gx_expire > time_uptime)
+				gx->gx_expire = time_uptime +
+				    (gx->gx_expire - time_uptime) / 2;
+			mutex_exit(&gss_lock);
+			*whyp = RPCSEC_GSS_CREDPROBLEM;
+			return ONCRPC_GSS_DENY;
+		}
+		/* s3.3: seq_num as for RPCSEC_GSS_DATA, so the window too. */
+		mutex_enter(&gx->gx_lock);
+		ok = oncrpc_gss_seq_accept(&gx->gx_seq, gg->gg_cred.gc_seq);
+		if (ok) {
+			gx->gx_bound = true;
+			gx->gx_boundconn = rq->rq_connid;
+		}
+		mutex_exit(&gx->gx_lock);
+		if (!ok)
+			return ONCRPC_GSS_DROP;
+		stat = 0;			/* RGSS2_BIND_CHAN_OK */
+		be32enc(res, stat);
+		rlen = 4;
+	} else {
+		stat = 2;			/* RGSS2_BIND_CHAN_HASH_NOTSUPP */
+		be32enc(res, stat);
+		rlen = 4;
+		/* rbcr_oid_list<> MUST have one or more elements, s3.3 */
+		be32enc(res + rlen, 1);
+		rlen += 4;
+		if (tagged) {
+			uint8_t t[2 + sizeof(gss_oid_sha256)];
+
+			t[0] = GSS_ASN1_OID;
+			t[1] = sizeof(gss_oid_sha256);
+			memcpy(t + 2, gss_oid_sha256, sizeof(gss_oid_sha256));
+			gss_put_opaque(res, &rlen, t, sizeof(t));
+		} else
+			gss_put_opaque(res, &rlen, gss_oid_sha256,
+			    sizeof(gss_oid_sha256));
+		/* s3.3: rbcmr_bind_chan_hash by rbcr_oid_list[0] */
+		hashlen = gss_cb_hash(false, exporter, sizeof(exporter), hash);
+	}
+
+	/* rbcvr_mic: GetMIC(rgss2_bind_chan_MIC_in_res) */
+	be32enc(in, gg->gg_cred.gc_seq);
+	ilen = 4;
+	gss_put_opaque(in, &ilen, hash, hashlen);
+	memcpy(in + ilen, res, rlen);
+	ilen += rlen;
+	memcpy(v, res, rlen);
+	if (gss_krb5_get_mic(gx->gx_krb, in, ilen, v + rlen + 4,
+	    sizeof(gg->gg_verfbody) - rlen - 4, &len) != GSS_S_COMPLETE)
 		return ONCRPC_GSS_DROP;
-	v[2] = htonl(len);
-	memset((char *)(v + 3) + len, 0, roundup(len, 4) - len);
+	be32enc(v + rlen, len);
+	memset(v + rlen + 4 + len, 0, roundup(len, 4) - len);
 	gg->gg_verf = RPCSEC_GSS;
-	gg->gg_verflen = 3 * sizeof(*v) + roundup(len, 4);
+	gg->gg_verflen = rlen + 4 + roundup(len, 4);
+	explicit_memset(exporter, 0, sizeof(exporter));
 	*resp = NULL;
 	return ONCRPC_GSS_REPLY;
 }
@@ -685,13 +887,24 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 	/* s5.4 and RFC 5403 s3.3: only NULLPROC carries a control message. */
 	if (gc->gc_proc != RPCSEC_GSS_DATA && c->c_proc != 0)
 		return ONCRPC_GSS_DENY;
-	/*
-	 * rpc_gss_svc_channel_prot needs a channel bound with
-	 * RPCSEC_GSS_BIND_CHANNEL, RFC 5403 s3.4, and none ever is.
-	 */
 	if (gc->gc_service < RPCSEC_GSS_SVC_NONE ||
-	    gc->gc_service > RPCSEC_GSS_SVC_PRIVACY)
+	    gc->gc_service > RPCSEC_GSS_SVC_CHANNEL)
 		return ONCRPC_GSS_DENY;
+	/*
+	 * rpc_gss_svc_channel_prot, RFC 5403 s3.4: valid only for version 2,
+	 * after a BIND_CHANNEL that succeeded, and while that channel still
+	 * exists, which here is while the call comes over the same TLS
+	 * connection.
+	 */
+	if (gc->gc_service == RPCSEC_GSS_SVC_CHANNEL &&
+	    gc->gc_proc == RPCSEC_GSS_DATA) {
+		mutex_enter(&gx->gx_lock);
+		ok = gx->gx_vers == RPCSEC_GSS_VERS_2 && gx->gx_bound &&
+		    gx->gx_boundconn == rq->rq_connid;
+		mutex_exit(&gx->gx_lock);
+		if (!ok || !oncrpc_req_tls(rq, NULL))
+			return ONCRPC_GSS_DENY;
+	}
 
 	/* s5.3.3.3 */
 	if (gc->gc_seq >= RPCSEC_GSS_MAXSEQ ||
@@ -701,7 +914,28 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 	}
 
 	if (gc->gc_proc == RPCSEC_GSS_BIND_CHANNEL)
-		return gss_bind_channel(gg, resp);
+		return gss_bind_channel(gg, c, rq, resp, whyp);
+
+	if (gc->gc_service == RPCSEC_GSS_SVC_CHANNEL) {
+		/*
+		 * s3.4: the verifiers both ways are AUTH_NONE of length zero;
+		 * the TLS record layer is what protects the call.  The window
+		 * still holds: s3.4 makes the call that of rpc_gss_svc_none
+		 * but for the verifiers.
+		 */
+		if (c->c_verf.oa_flavor != ONCRPC_AUTH_NONE ||
+		    c->c_verf.oa_len != 0) {
+			*whyp = ONCRPC_AUTH_BADVERF;
+			return ONCRPC_GSS_DENY;
+		}
+		mutex_enter(&gx->gx_lock);
+		ok = oncrpc_gss_seq_accept(&gx->gx_seq, gc->gc_seq);
+		mutex_exit(&gx->gx_lock);
+		if (!ok)
+			return ONCRPC_GSS_DROP;
+		gx->gx_used = true;
+		goto dispatch;
+	}
 
 	if (c->c_verf.oa_flavor != RPCSEC_GSS) {
 		*whyp = RPCSEC_GSS_CREDPROBLEM;
@@ -747,9 +981,17 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 		break;
 	}
 
+dispatch:
 	/* Each request its own, as a program may change it. */
 	rq->rq_cred = kauth_cred_dup(gx->gx_cred);
 	rq->rq_principal = gx->gx_name;
+	/*
+	 * Under rpc_gss_svc_channel_prot the TLS channel gives the call
+	 * integrity and confidentiality; RFC 9289 s4.2.1 has the channel
+	 * binding decide whether the transport is confidential enough, and
+	 * RFC 5403 s7 lets a client map rpc_gss_svc_privacy to channel_prot.
+	 * So it counts as krb5p against an export's flavors.
+	 */
 	rq->rq_secflavor = gc->gc_service == RPCSEC_GSS_SVC_NONE ?
 	    RPCSEC_GSS_KRB5 : gc->gc_service == RPCSEC_GSS_SVC_INTEGRITY ?
 	    RPCSEC_GSS_KRB5I : RPCSEC_GSS_KRB5P;
@@ -765,6 +1007,10 @@ oncrpc_gss_verifier(struct oncrpc_gss_call *gg)
 {
 
 	if (gg->gg_verf == RPCSEC_GSS || gg->gg_ctx == NULL)
+		return true;
+	/* RFC 5403 s3.4: AUTH_NONE, of length zero. */
+	if (gg->gg_cred.gc_service == RPCSEC_GSS_SVC_CHANNEL &&
+	    gg->gg_cred.gc_proc == RPCSEC_GSS_DATA)
 		return true;
 	return gss_mic_of32(gg, gg->gg_ctx->gx_krb, gg->gg_cred.gc_seq);
 }
@@ -788,7 +1034,8 @@ oncrpc_gss_wrap_results(struct oncrpc_gss_call *gg, struct mbuf **resp)
 
 	if (gg->gg_ctx == NULL ||
 	    gg->gg_cred.gc_proc != RPCSEC_GSS_DATA ||
-	    gg->gg_cred.gc_service == RPCSEC_GSS_SVC_NONE)
+	    gg->gg_cred.gc_service == RPCSEC_GSS_SVC_NONE ||
+	    gg->gg_cred.gc_service == RPCSEC_GSS_SVC_CHANNEL)	/* RFC 5403 s3.4 */
 		return true;
 	krb = gg->gg_ctx->gx_krb;
 

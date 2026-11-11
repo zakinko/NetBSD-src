@@ -556,8 +556,12 @@ oncrpc_svc_call(struct oncrpc_svc *svc, uint64_t id,
 	mutex_exit(&svc->svc_lock);
 
 	if (bc.bc_reply != NULL) {
+		struct oncrpc_opaque_auth *oa;
+
+		oa = kmem_alloc(sizeof(*oa), KM_SLEEP);
 		oncrpc_xdrmbuf_create(&rx, bc.bc_reply, 0, XDR_DECODE);
-		error = oncrpc_msg_decode_reply(&rx.xm_xdr, bc.bc_xid);
+		error = oncrpc_msg_decode_reply(&rx.xm_xdr, bc.bc_xid, oa);
+		kmem_free(oa, sizeof(*oa));
 		if (error == 0 && cc->cc_decode != NULL &&
 		    !(*cc->cc_decode)(&rx.xm_xdr, cc->cc_res))
 			error = EBADRPC;

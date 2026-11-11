@@ -199,6 +199,8 @@ msgcb(int w, int version, int type, const void *buf, size_t len, SSL *ssl,
 		rx_keyupdate++;
 	else if (type == TLS13_CT_ACK && !w)
 		rx_ack++;
+	if (verbose && type == SSL3_RT_HEADER && !w && len >= 1)
+		printf("  # recv record b0 %02x\n", p[0]);
 	if (verbose && type != SSL3_RT_HEADER && type != 257)
 		printf("  # %s type %d len %zu first %02x\n", w ? "sent" : "recv",
 		    type, len, len > 0 ? p[0] : 0);

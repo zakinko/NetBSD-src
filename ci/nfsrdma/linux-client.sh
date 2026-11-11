@@ -122,6 +122,13 @@ time.sleep(20)" &
 			fi
 			t ssh netbsd '/var/tmp/try /export/x/d3/a 1'
 			kill $h; wait $h 2>/dev/null
+			# Whether the grant came by NLM_GRANTED or by the client
+			# asking again: run 43065072777 waited 30 s for a lock
+			# held 8.
+			sudo timeout 60 tcpdump -i nb0 -n -s 0 -w "$OUT/nlm.pcap" \
+			    not icmp and not icmp6 >/dev/null 2>&1 &
+			nd=$!
+			sleep 1
 			ssh netbsd '/var/tmp/try -h 8 /export/x/d3/a 5' &
 			h=$!
 			sleep 3
@@ -133,6 +140,10 @@ fcntl.lockf(f, fcntl.LOCK_EX, 1, 5)
 fcntl.lockf(f, fcntl.LOCK_UN, 1, 5)"
 			echo "waited $(( $(date +%s) - s0 ))s for the grant"
 			wait $h
+			sleep 2
+			sudo kill -INT $nd 2>/dev/null; wait $nd 2>/dev/null
+			sleep 1
+			tcpdump -n -r "$OUT/nlm.pcap" -tt 2>/dev/null | head -60
 			ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"'
 		fi
 		# A delegation recalled by a second client on TCP, which the

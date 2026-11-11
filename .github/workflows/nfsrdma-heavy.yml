@@ -67,7 +67,7 @@ jobs:
         timeout-minutes: 10
         run: |
           sudo apt-get update -q >/dev/null
-          sudo apt-get install -y -q rdma-core nfs-common rpcbind tcpdump >/dev/null
+          sudo apt-get install -y -q rdma-core nfs-common rpcbind tcpdump strace >/dev/null
           mkdir -p out
           LIMIT=1 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs-fetch >out/pynfs-fetch.log 2>&1 || :
           ls -d "$HOME/pynfs/nfs4.1"
@@ -134,4 +134,5 @@ jobs:
             out/summary.txt
             out/nlm-up.txt
             out/tun.err
+            out/nlm.pcap
           retention-days: 14

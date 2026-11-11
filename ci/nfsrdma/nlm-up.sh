@@ -44,6 +44,10 @@ cat "$OUT/nb0.txt" "$OUT/tun0.txt"
 sudo timeout 25 tcpdump -n -i nb0 -c 40 -v >"$OUT/nb0-rpc.txt" 2>&1 &
 sleep 2
 timeout -s KILL 10 rpcinfo -T tcp 10.77.0.2 100000 2 || echo 'rpcinfo -T tcp: no answer'
+# Run 43065072777: rpcbind answered within 2ms and rpcinfo closed the
+# connection, then waited on.  What it waits on, after the answer:
+sudo timeout -s KILL 10 strace -f -tt -e trace=network,poll,ppoll,select,connect,sendto,recvfrom,openat \
+    rpcinfo -T tcp 10.77.0.2 100000 2 2>&1 | tail -25
 timeout -s KILL 10 rpcinfo -T udp 10.77.0.2 100000 2 || echo 'rpcinfo -T udp: no answer'
 timeout -s KILL 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
 sleep 3

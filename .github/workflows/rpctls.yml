@@ -191,7 +191,7 @@ jobs:
       - name: What the kernel said
         if: always()
         run: |
-          ssh -o ConnectTimeout=20 netbsd "uname -a; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+          ssh -o ConnectTimeout=20 netbsd "uname -a; uptime; modstat | grep -E 'xdr|oncrpc|nfsv4'; dmesg | tail -40; ls -l /var/crash; for c in /var/crash/netbsd.*.core; do [ -f \$c ] || continue; n=\${c%.core}; dmesg -M \$c -N \$n | tail -80; echo bt | crash -M \$c -N \$n 2>&1 | tail -60; done" | tee out/kernel.txt || echo no answer
       - name: Summarise
         if: always()
         run: |

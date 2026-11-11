@@ -84,6 +84,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/oncrpc.h>
 #include <oncrpc/oncrpc_gss.h>
+#include <oncrpc/oncrpc_tls.h>
 
 /* RFC 1094 s2.2.9, writeargs up to the data: the handle and four words. */
 #define	NFSX_V2WRITEHDR	(NFSX_V2FH + 4 * NFSX_UNSIGNED)
@@ -481,17 +482,47 @@ nfs_oncrpc_tls(int flag, void *argp)
 	struct nfsd_tlsarg nt;
 	int error;
 
+	struct oncrpc_tls_params tp;
+	struct oncrpc_tls_event ev;
+	uint64_t cookie;
+	int verdict;
+
+	CTASSERT(sizeof(tp.tp_csecret) == sizeof(nt.nt_csecret));
+	CTASSERT(sizeof(tp.tp_exporter) == sizeof(nt.nt_exporter));
+
 	error = copyin(argp, &nt, sizeof(nt));
 	if (error != 0)
 		return error;
-	if ((flag & NFSSVC_TLSDONE) != 0)
-		return oncrpc_tls_done(nt.nt_cookie, nt.nt_error);
-	error = oncrpc_tls_wait(&nt.nt_cookie, &nt.nt_fd);
+	if ((flag & NFSSVC_TLSDONE) != 0) {
+		memset(&tp, 0, sizeof(tp));
+		tp.tp_suite = nt.nt_suite;
+		tp.tp_flags = (nt.nt_flags & NFSD_TLS_PEERCERT) != 0 ?
+		    ONCRPC_TLS_PEERCERT : 0;
+		tp.tp_secretlen = MIN(nt.nt_secretlen, sizeof(tp.tp_csecret));
+		memcpy(tp.tp_csecret, nt.nt_csecret, sizeof(tp.tp_csecret));
+		memcpy(tp.tp_ssecret, nt.nt_ssecret, sizeof(tp.tp_ssecret));
+		memcpy(tp.tp_exporter, nt.nt_exporter, sizeof(tp.tp_exporter));
+		cookie = nt.nt_cookie;
+		verdict = nt.nt_error;
+		explicit_memset(&nt, 0, sizeof(nt));
+		error = oncrpc_tls_done(cookie, verdict, &tp);
+		explicit_memset(&tp, 0, sizeof(tp));
+		return error;
+	}
+	memset(&nt, 0, sizeof(nt));
+	error = oncrpc_tls_wait(&nt.nt_cookie, &nt.nt_fd, &ev);
 	if (error != 0)
 		return error;
+	if (nt.nt_fd == -1) {
+		nt.nt_flags = NFSD_TLS_EVENT |
+		    (ev.te_sent ? NFSD_TLS_ALERTSENT : 0);
+		nt.nt_alertlevel = ev.te_level;
+		nt.nt_alertdesc = ev.te_desc;
+		return copyout(&nt, argp, sizeof(nt));
+	}
 	error = copyout(&nt, argp, sizeof(nt));
 	if (error != 0)
-		(void)oncrpc_tls_done(nt.nt_cookie, error);
+		(void)oncrpc_tls_done(nt.nt_cookie, error, NULL);
 	return error;
 }
 

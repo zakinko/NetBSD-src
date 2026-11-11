@@ -32,6 +32,8 @@ main(int argc, char **argv)
 		memset(&nt, 0, sizeof(nt));
 		if (nfssvc(NFSSVC_TLSWAIT, &nt) == -1)
 			err(1, "NFSSVC_TLSWAIT");
+		if (nt.nt_fd == -1)	/* an alert, not a connection */
+			continue;
 		pfd.fd = nt.nt_fd;
 		pfd.events = POLLIN;
 		n = poll(&pfd, 1, 10000) == 1 ? recv(nt.nt_fd, b, sizeof(b),

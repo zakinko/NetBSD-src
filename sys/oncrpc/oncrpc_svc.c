@@ -73,6 +73,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <oncrpc/gss_krb5.h>
 #include <oncrpc/oncrpc_gss.h>
+#include <oncrpc/oncrpc_tls.h>
 #include <oncrpc/oncrpc_var.h>
 #include <oncrpc/tls13_crypto.h>
 
@@ -141,6 +142,19 @@ struct oncrpc_svc {
 #define	XT_PROBED	1	/* STARTTLS being sent */
 #define	XT_QUEUED	2	/* on oncrpc_tls_queue */
 #define	XT_HANDSHAKE	3	/* the daemon has it, on oncrpc_tls_busy */
+#define	XT_TLS		4	/* RPC again, in TLS records, xp_tc */
+#define	XT_HANDEDOFF(xp) ((xp)->xp_tls == XT_QUEUED || \
+			  (xp)->xp_tls == XT_HANDSHAKE)
+#define	XT_NOTRPC(xp)	((xp)->xp_tls != XT_NONE && (xp)->xp_tls != XT_TLS)
+
+/*
+ * xp_tlsctl: records the record layer owes the peer, sent by whoever
+ * holds XP_SENDING.  Under svc_lock.
+ */
+#define	XC_KEYUPDATE	0x01	/* our KeyUpdate, RFC 8446 s4.6.3 */
+#define	XC_ALERT	0x02	/* the alert in xp_tlsalert */
+#define	XC_CLOSE	0x04	/* then shut the connection */
+#define	XC_ALERTSENT	0x08	/* no close_notify after an error alert */
 
 struct oncrpc_xprt {
 	struct oncrpc_svc	*xp_svc;
@@ -157,6 +171,9 @@ struct oncrpc_xprt {
 	u_int			 xp_nreqs;	/* calls in progress */
 	uint64_t		 xp_id;		/* rq_connid */
 	u_int			 xp_tls;	/* XT_*, under svc_lock */
+	u_int			 xp_tlsctl;	/* XC_*, under svc_lock */
+	uint8_t			 xp_tlsalert;
+	struct oncrpc_tlsconn	*xp_tc;		/* XT_TLS */
 	TAILQ_ENTRY(oncrpc_xprt) xp_tlsq;	/* under oncrpc_tls_lock */
 	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
 	LIST_ENTRY(oncrpc_xprt)	 xp_list;
@@ -196,7 +213,14 @@ static volatile u_int oncrpc_tls_seen;	/* time_uptime a daemon last left it */
  */
 #define	ONCRPC_TLS_GRACE	2
 
+/* Not from the RFC: alerts kept for rpc.tlsservd until it reads them. */
+#define	ONCRPC_TLS_NEVENTS	64
+static struct oncrpc_tls_event oncrpc_tls_ev[ONCRPC_TLS_NEVENTS];
+static u_int oncrpc_tls_evhead, oncrpc_tls_evcount;
+
 static void svc_tls_purge(struct oncrpc_svc *);
+static void xprt_zap(struct oncrpc_xprt *);
+static void xprt_tls_ctl(struct oncrpc_xprt *, u_int, uint8_t);
 static kmutex_t oncrpc_named_lock;
 static LIST_HEAD(, oncrpc_svc) oncrpc_named =
     LIST_HEAD_INITIALIZER(oncrpc_named);
@@ -209,7 +233,7 @@ xprt_queue(struct oncrpc_xprt *xp)
 	KASSERT(mutex_owned(&svc->svc_lock));
 
 	if ((xp->xp_flags & (XP_QUEUED | XP_RECEIVING | XP_DEAD)) != 0 ||
-	    xp->xp_tls != XT_NONE ||
+	    XT_NOTRPC(xp) ||
 	    xp->xp_nreqs >= ONCRPC_XPRT_MAXREQS)
 		return;
 	xp->xp_flags |= XP_QUEUED;
@@ -251,9 +275,148 @@ xprt_rele(struct oncrpc_xprt *xp)
 	if (xp->xp_ctx != NULL)
 		(*xp->xp_ctxdtor)(xp->xp_ctx);
 	oncrpc_rm_fini(&xp->xp_rm);
+	oncrpc_tlsconn_destroy(xp->xp_tc);
 	m_freem(xp->xp_nam);
 	closef(xp->xp_fp);
 	kmem_free(xp, sizeof(*xp));
+}
+
+/* Send a chain whole, in pieces the socket buffer takes. */
+static int
+xprt_sosend(struct socket *so, struct mbuf *m)
+{
+	struct mbuf *n;
+	int error;
+
+	do {
+		n = NULL;
+		if (m->m_pkthdr.len > ONCRPC_SOCKBUF &&
+		    (n = m_split(m, ONCRPC_SOCKBUF, M_WAIT)) == NULL) {
+			m_freem(m);
+			return ENOBUFS;
+		}
+		error = (*so->so_send)(so, NULL, NULL, m, NULL, 0, curlwp);
+		m = n;
+	} while (error == 0 && m != NULL);
+	m_freem(m);
+	return error;
+}
+
+/* An alert sent or received, for rpc.tlsservd; the oldest goes first. */
+static void
+tls_event(uint64_t cookie, bool sent, uint8_t level, uint8_t desc)
+{
+	struct oncrpc_tls_event *ev;
+
+	mutex_enter(&oncrpc_tls_lock);
+	if (oncrpc_tls_evcount == ONCRPC_TLS_NEVENTS) {
+		oncrpc_tls_evhead = (oncrpc_tls_evhead + 1) % ONCRPC_TLS_NEVENTS;
+		oncrpc_tls_evcount--;
+	}
+	ev = &oncrpc_tls_ev[(oncrpc_tls_evhead + oncrpc_tls_evcount) %
+	    ONCRPC_TLS_NEVENTS];
+	ev->te_cookie = cookie;
+	ev->te_sent = sent;
+	ev->te_level = level;
+	ev->te_desc = desc;
+	oncrpc_tls_evcount++;
+	cv_broadcast(&oncrpc_tls_cv);
+	mutex_exit(&oncrpc_tls_lock);
+}
+
+/*
+ * Send the records owed the peer, xp_tlsctl, with XP_SENDING held.
+ * Returns whether the connection is to be shut after.
+ */
+static bool
+xprt_tls_flush(struct oncrpc_xprt *xp)
+{
+	struct oncrpc_svc *svc = xp->xp_svc;
+	struct mbuf *m;
+	uint8_t desc, level;
+	u_int ctl;
+	bool close;
+	int error;
+
+	for (;;) {
+		mutex_enter(&svc->svc_lock);
+		ctl = xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT);
+		desc = xp->xp_tlsalert;
+		xp->xp_tlsctl &= ~(XC_KEYUPDATE | XC_ALERT);
+		if ((ctl & XC_ALERT) != 0) {
+			/* Nothing after an alert; s6.1 and s6.2. */
+			if ((xp->xp_tlsctl & XC_ALERTSENT) != 0)
+				ctl = 0;
+			xp->xp_tlsctl |= XC_ALERTSENT;
+		}
+		close = (xp->xp_tlsctl & XC_CLOSE) != 0;
+		mutex_exit(&svc->svc_lock);
+		if (ctl == 0)
+			return close;
+
+		if ((ctl & XC_ALERT) != 0) {
+			/*
+			 * s6: the level of a TLS 1.3 alert is implicit in
+			 * its type; close_notify goes as warning, as in the
+			 * traces of RFC 8448 s3.
+			 */
+			level = desc == ONCRPC_TLS_CLOSE_NOTIFY ?
+			    ONCRPC_TLS_WARNING : ONCRPC_TLS_FATAL;
+			error = oncrpc_tlsconn_alert(xp->xp_tc, level, desc, &m);
+			if (error == 0)
+				(void)xprt_sosend(xp->xp_so, m);
+			tls_event(xp->xp_id, true, level, desc);
+			continue;
+		}
+		/* s4.6.3: before the next application data. */
+		error = oncrpc_tlsconn_keyupdate(xp->xp_tc, &m);
+		if (error == 0)
+			error = xprt_sosend(xp->xp_so, m);
+		if (error != 0) {
+			mutex_enter(&svc->svc_lock);
+			xp->xp_tlsctl |= XC_CLOSE;
+			mutex_exit(&svc->svc_lock);
+		}
+	}
+}
+
+/*
+ * Owe the peer the records in ctl, and send them now unless a sender is
+ * at work, which sends them before it stops.
+ */
+static void
+xprt_tls_ctl(struct oncrpc_xprt *xp, u_int ctl, uint8_t desc)
+{
+	struct oncrpc_svc *svc = xp->xp_svc;
+	bool close = false;
+
+	mutex_enter(&svc->svc_lock);
+	if ((xp->xp_flags & XP_DEAD) != 0 || xp->xp_tc == NULL) {
+		mutex_exit(&svc->svc_lock);
+		if ((ctl & XC_CLOSE) != 0)
+			xprt_zap(xp);
+		return;
+	}
+	xp->xp_tlsctl |= ctl;
+	if ((ctl & XC_ALERT) != 0 && (xp->xp_tlsctl & XC_ALERTSENT) == 0)
+		xp->xp_tlsalert = desc;
+	if ((xp->xp_flags & XP_SENDING) != 0) {
+		mutex_exit(&svc->svc_lock);
+		return;
+	}
+	xp->xp_flags |= XP_SENDING;
+	xp->xp_refs++;
+	while ((xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT)) != 0) {
+		mutex_exit(&svc->svc_lock);
+		close |= xprt_tls_flush(xp);
+		mutex_enter(&svc->svc_lock);
+	}
+	close |= (xp->xp_tlsctl & XC_CLOSE) != 0;
+	xp->xp_flags &= ~XP_SENDING;
+	mutex_exit(&svc->svc_lock);
+	if (close)
+		xprt_zap(xp);
+	xprt_rele(xp);
 }
 
 /*
@@ -266,6 +429,28 @@ xprt_zap(struct oncrpc_xprt *xp)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct socket *so = xp->xp_so;
+	bool notify = false;
+
+	/*
+	 * RFC 8446 s6.1: close_notify MUST go before the write side closes,
+	 * unless an error alert went.  A sender at work would have to be
+	 * waited for; then the connection closes without it.
+	 */
+	mutex_enter(&svc->svc_lock);
+	if ((xp->xp_flags & (XP_DEAD | XP_SENDING)) == 0 &&
+	    xp->xp_tc != NULL && (xp->xp_tlsctl & XC_ALERTSENT) == 0) {
+		xp->xp_flags |= XP_SENDING;
+		xp->xp_tlsctl |= XC_ALERT;
+		xp->xp_tlsalert = ONCRPC_TLS_CLOSE_NOTIFY;
+		notify = true;
+	}
+	mutex_exit(&svc->svc_lock);
+	if (notify) {
+		(void)xprt_tls_flush(xp);
+		mutex_enter(&svc->svc_lock);
+		xp->xp_flags &= ~XP_SENDING;
+		mutex_exit(&svc->svc_lock);
+	}
 
 	mutex_enter(&svc->svc_lock);
 	if ((xp->xp_flags & XP_DEAD) != 0) {
@@ -289,6 +474,36 @@ xprt_zap(struct oncrpc_xprt *xp)
 	sounlock(so);
 
 	xprt_rele(xp);
+}
+
+/*
+ * Bytes off a TLS connection, consumed: the application data in them, or
+ * NULL.  What the record layer owes the peer is queued for the sender;
+ * an error ends the connection, after the alert the RFC asks for.
+ */
+static struct mbuf *
+xprt_tls_input(struct oncrpc_xprt *xp, struct mbuf *m)
+{
+	struct oncrpc_tls_in in;
+	int error;
+
+	error = oncrpc_tlsconn_input(xp->xp_tc, m, &in);
+	if (in.ti_ralert)
+		tls_event(xp->xp_id, false, in.ti_rlevel, in.ti_rdesc);
+	if (error != 0) {
+		m_freem(in.ti_data);
+		if (error == ECONNRESET)	/* RFC 8446 s6.1 */
+			xprt_tls_ctl(xp, XC_ALERT | XC_CLOSE,
+			    ONCRPC_TLS_CLOSE_NOTIFY);
+		else if (in.ti_alert != ONCRPC_TLS_NOALERT)
+			xprt_tls_ctl(xp, XC_ALERT | XC_CLOSE, in.ti_alert);
+		else
+			xprt_tls_ctl(xp, XC_CLOSE, 0);
+		return NULL;
+	}
+	if (in.ti_keyupdate)
+		xprt_tls_ctl(xp, XC_KEYUPDATE, 0);
+	return in.ti_data;
 }
 
 /*
@@ -323,6 +538,12 @@ xprt_getmsg_stream(struct oncrpc_xprt *xp)
 			goto bad;	/* an error, or the end of the stream */
 		}
 		cc = ONCRPC_RCVALL - auio.uio_resid;
+		if (xp->xp_tc != NULL) {
+			m = xprt_tls_input(xp, m);
+			if (m == NULL)
+				continue;
+			cc = m->m_pkthdr.len;
+		}
 		oncrpc_rm_input(&xp->xp_rm, m, cc);
 	}
 bad:
@@ -489,7 +710,7 @@ xprt_send(struct oncrpc_ireq *ir)
 	int error;
 
 	mutex_enter(&svc->svc_lock);
-	if (xp->xp_tls >= XT_QUEUED) {
+	if (XT_HANDEDOFF(xp)) {
 		/* No longer RPC; see xp_tls. */
 		mutex_exit(&svc->svc_lock);
 		req_free(ir);
@@ -528,6 +749,18 @@ xprt_send(struct oncrpc_ireq *ir)
 		    (so->so_state & SS_ISCONNECTED) == 0)
 			to = mtod(ir->ir_nam, struct sockaddr *);
 
+		if (xp->xp_tc != NULL) {
+			/* A KeyUpdate owed goes first, RFC 8446 s4.6.3. */
+			if (xprt_tls_flush(xp) ||
+			    oncrpc_tlsconn_output(xp->xp_tc, m, &m) != 0) {
+				if (m != NULL)
+					m_freem(m);
+				zap = true;
+				req_free(ir);
+				goto next;
+			}
+		}
+
 		/*
 		 * sosend() takes a chain whole or refuses it with EMSGSIZE,
 		 * and a reply may be larger than the buffer.
@@ -563,6 +796,16 @@ next:
 			break;
 		SIMPLEQ_REMOVE_HEAD(&xp->xp_sendq, ir_sendq);
 		mutex_exit(&svc->svc_lock);
+	}
+	/* What the receiver left for a sender at work; see xprt_tls_ctl(). */
+	while (xp->xp_tc != NULL &&
+	    (xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT | XC_CLOSE)) != 0) {
+		mutex_exit(&svc->svc_lock);
+		if (xprt_tls_flush(xp))
+			zap = true;
+		mutex_enter(&svc->svc_lock);
+		if ((xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT)) == 0)
+			break;
 	}
 	xp->xp_flags &= ~XP_SENDING;
 	mutex_exit(&svc->svc_lock);
@@ -952,7 +1195,7 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 			ir = kmem_zalloc(sizeof(*ir), KM_SLEEP);
 
 		mutex_enter(&svc->svc_lock);
-		if (xp->xp_tls != XT_NONE) {
+		if (XT_NOTRPC(xp)) {
 			/*
 			 * A probe answered while this was being read: what
 			 * came after it is no call, RFC 9289 s5.1.1.  Still
@@ -1429,10 +1672,11 @@ oncrpc_svc_nxprt(struct oncrpc_svc *svc)
 /*
  * For the TLS handshake daemon: wait for a connection whose STARTTLS
  * reply is out and take it as a new descriptor of the calling process,
- * with the cookie oncrpc_tls_done() is to name it by.
+ * with the cookie oncrpc_tls_done() is to name it by.  An alert sent or
+ * received on a connection comes out instead, with *fdp -1.
  */
 int
-oncrpc_tls_wait(uint64_t *cookiep, int *fdp)
+oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp)
 {
 	struct oncrpc_xprt *xp;
 	struct oncrpc_svc *svc;
@@ -1444,6 +1688,19 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp)
 	oncrpc_tls_ndaemon++;
 	for (;;) {
 		while ((xp = TAILQ_FIRST(&oncrpc_tls_queue)) == NULL) {
+			if (oncrpc_tls_evcount != 0) {
+				*evp = oncrpc_tls_ev[oncrpc_tls_evhead];
+				oncrpc_tls_evhead = (oncrpc_tls_evhead + 1) %
+				    ONCRPC_TLS_NEVENTS;
+				oncrpc_tls_evcount--;
+				oncrpc_tls_ndaemon--;
+				atomic_store_relaxed(&oncrpc_tls_seen,
+				    (u_int)time_uptime);
+				mutex_exit(&oncrpc_tls_lock);
+				*cookiep = evp->te_cookie;
+				*fdp = -1;
+				return 0;
+			}
 			error = cv_wait_sig(&oncrpc_tls_cv, &oncrpc_tls_lock);
 			if (error != 0) {
 				oncrpc_tls_ndaemon--;
@@ -1473,7 +1730,7 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp)
 	fp = xp->xp_fp;
 	error = fd_alloc(curproc, 0, &fd);
 	if (error != 0) {
-		(void)oncrpc_tls_done(*cookiep, error);
+		(void)oncrpc_tls_done(*cookiep, error, NULL);
 		return error;
 	}
 	mutex_enter(&fp->f_lock);
@@ -1486,13 +1743,17 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp)
 
 /*
  * The daemon's verdict on the connection named by cookie: error is 0
- * when the handshake succeeded.  There is no record layer yet, so every
- * connection ends here, and a success is answered with EOPNOTSUPP.
+ * when the handshake succeeded, and then tp has what the record layer
+ * needs.  The connection goes back to serving RPC, in TLS records.
  */
 int
-oncrpc_tls_done(uint64_t cookie, int error)
+oncrpc_tls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
 {
+	struct oncrpc_tlsconn *tc = NULL;
 	struct oncrpc_xprt *xp;
+	struct oncrpc_svc *svc;
+	struct socket *so;
+	int rv = 0;
 
 	mutex_enter(&oncrpc_tls_lock);
 	TAILQ_FOREACH(xp, &oncrpc_tls_busy, xp_tlsq) {
@@ -1506,13 +1767,59 @@ oncrpc_tls_done(uint64_t cookie, int error)
 	TAILQ_REMOVE(&oncrpc_tls_busy, xp, xp_tlsq);
 	mutex_exit(&oncrpc_tls_lock);
 
-	xprt_zap(xp);
-	xprt_rele(xp);
+	if (error == 0) {
+		tc = oncrpc_tlsconn_create(tp, &rv);
+		error = rv;
+	}
+	svc = xp->xp_svc;
+	so = xp->xp_so;
+	if (error == 0) {
+		solock(so);
+		mutex_enter(&svc->svc_lock);
+		if ((xp->xp_flags & XP_DEAD) != 0)
+			error = rv = ECONNRESET;
+		else {
+			xp->xp_tc = tc;
+			tc = NULL;
+			xp->xp_tls = XT_TLS;
+			xp->xp_flags |= XP_READABLE;
+			so->so_upcallarg = xp;
+			so->so_upcall = xprt_upcall;
+			so->so_rcv.sb_flags |= SB_UPCALL;
+			/* Records may have come while no upcall was there. */
+			xprt_queue(xp);
+		}
+		mutex_exit(&svc->svc_lock);
+		sounlock(so);
+	}
+	oncrpc_tlsconn_destroy(tc);
+	if (error != 0)
+		xprt_zap(xp);
+	xprt_rele(xp);		/* the daemon's; svc_xprts holds its own */
 	/* For svc_tls_purge(). */
 	mutex_enter(&oncrpc_tls_lock);
 	cv_broadcast(&oncrpc_tls_cv);
 	mutex_exit(&oncrpc_tls_lock);
-	return error == 0 ? EOPNOTSUPP : 0;
+	return rv;
+}
+
+/*
+ * Whether rq came over TLS, and the "tls-exporter" channel binding of
+ * its connection, RFC 9266 s2, when exporter is not NULL.
+ */
+bool
+oncrpc_req_tls(struct oncrpc_req *rq, uint8_t *exporter)
+{
+	struct oncrpc_xprt *xp = ((struct oncrpc_ireq *)rq)->ir_xprt;
+	struct oncrpc_svc *svc = xp->xp_svc;
+	struct oncrpc_tlsconn *tc;
+
+	mutex_enter(&svc->svc_lock);
+	tc = xp->xp_tls == XT_TLS ? xp->xp_tc : NULL;
+	mutex_exit(&svc->svc_lock);
+	if (tc != NULL && exporter != NULL)
+		oncrpc_tlsconn_exporter(tc, exporter);
+	return tc != NULL;
 }
 
 /*

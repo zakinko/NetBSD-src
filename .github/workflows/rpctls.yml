@@ -19,6 +19,7 @@ on:
       - 'ci/rpctls/**'
       - 'usr.sbin/gssd/**'
       - 'usr.sbin/mountd/**'
+      - 'usr.sbin/rpc.tlsservd/**'
       - '.github/workflows/rpctls.yml'
   workflow_dispatch:
 concurrency:
@@ -90,6 +91,7 @@ jobs:
             ci/rpctls
             ci/oncrpc/swap.sh
             sys/nfs
+            usr.sbin/rpc.tlsservd
       - uses: actions/download-artifact@v4
         with:
           name: out
@@ -102,6 +104,11 @@ jobs:
           sync: rsync
           copyback: false
           run: uname -a
+      - name: The ZFS userland, on the stock kernel, for in-vm.sh
+        run: |
+          ssh netbsd 'mkdir -p /var/tmp/nfsv4'
+          scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
+          ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
@@ -114,6 +121,10 @@ jobs:
               -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
               -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 netbsd
           sleep 2
+      - name: Certificates
+        run: |
+          sh ci/rpctls/mkcerts.sh "$PWD/certs"
+          tar -C "$PWD" -cf - certs | ssh netbsd 'tar -C /var/tmp/nfsv4 -xf -'
       - name: The AUTH_TLS probe with no daemon
         run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 nodaemon 2>&1 | tee out/probe1-nodaemon.txt; exit ${PIPESTATUS[0]}
         shell: bash
@@ -126,10 +137,38 @@ jobs:
         run: python3 ci/rpctls/probe1.py 127.0.0.1 2049 daemon 2>&1 | tee out/probe1-daemon.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: Linux with xprtsec=tls against the stand-in
-        run: sh ci/rpctls/linux-tls.sh "$PWD/out"
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls && mv out/linux-tls.txt out/linux-tls-stub.txt && mv out/tlshd-tls.log out/tlshd-stub.log
       - name: What the stand-in saw
         if: always()
-        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsstub.pid); cat tlsstub.log' | tee out/tlsstub.txt
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsstub.pid); sleep 1; cat tlsstub.log' | tee out/tlsstub.txt
+      - name: rpc.tlsservd
+        run: |
+          tar -cf - usr.sbin/rpc.tlsservd | ssh netbsd 'tar -C /var/tmp/nfsv4/src -xf -'
+          ssh netbsd 'cd /var/tmp/nfsv4/src/usr.sbin/rpc.tlsservd && cc -Wall -Werror -I/var/tmp/nfsv4/src/sys -o /var/tmp/nfsv4/rpc.tlsservd rpc.tlsservd.c -lssl -lcrypto'
+          ssh netbsd 'cd /var/tmp/nfsv4 && (./rpc.tlsservd -d -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-anon.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The handshake, anonymous clients allowed
+        run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" anon 2>&1 | tee out/probe2-anon.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: RPC over the kernel's record layer
+        run: |
+          sudo apt-get install -y -q libssl-dev >/dev/null
+          cc -Wall -o probe3 ci/rpctls/probe3.c -lssl -lcrypto
+          ./probe3 127.0.0.1 2049 "$PWD/certs" 2>&1 | tee out/probe3.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Linux with xprtsec=tls against rpc.tlsservd
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" tls
+      - name: rpc.tlsservd -m
+        if: always()
+        run: |
+          ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; (./rpc.tlsservd -d -m -c certs/server.pem -k certs/server.key -A certs/ca.pem </dev/null >tlsservd-mutual.log 2>&1 & echo $! >tlsservd.pid); sleep 1'
+      - name: The handshake, mutual authentication
+        run: python3 ci/rpctls/probe2.py 127.0.0.1 2049 "$PWD/certs" mutual 2>&1 | tee out/probe2-mutual.txt; exit ${PIPESTATUS[0]}
+        shell: bash
+      - name: Linux with xprtsec=mtls against rpc.tlsservd -m
+        run: sh ci/rpctls/linux-tls.sh "$PWD/out" "$PWD/certs" mtls
+      - name: What rpc.tlsservd said
+        if: always()
+        run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log' | tee out/tlsservd.txt
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the kernel said
         if: always()
@@ -139,7 +178,7 @@ jobs:
         if: always()
         run: |
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
-          grep -h -E '^(ok|FAIL)|failures' out/probe1-*.txt out/linux-tls.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
+          grep -h -E '^(ok|FAIL)|failures|mount exit|io ok' out/probe*.txt out/linux-*.txt 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -147,9 +186,11 @@ jobs:
           path: |
             out/pynfs*
             out/probe1-*.txt
+            out/probe2-*.txt
             out/tlsstub.txt
-            out/linux-tls.txt
-            out/tlshd.log
+            out/tlsservd.txt
+            out/linux-*.txt
+            out/tlshd-*.log
             out/kernel.txt
             out/summary.txt
           retention-days: 30

@@ -215,13 +215,31 @@ struct nfsd_args {
 /*
  * For NFSSVC_TLSWAIT and NFSSVC_TLSDONE.  TLSWAIT fills in nt_cookie and
  * nt_fd, a new descriptor of the connection; TLSDONE names the connection
- * by nt_cookie and gives nt_error, 0 when the handshake succeeded.
+ * by nt_cookie and gives nt_error, 0 when the handshake succeeded, and
+ * then what the record layer and channel bindings need of it.
  */
+#define	NFSD_TLS_SECRETMAX	48	/* SHA-384, RFC 8446 s7.1 */
+#define	NFSD_TLS_EXPORTERLEN	32	/* "tls-exporter", RFC 9266 s2 */
+
 struct nfsd_tlsarg {
 	uint64_t nt_cookie;
 	int	nt_fd;
 	int	nt_error;
+	uint16_t nt_suite;		/* cipher suite, RFC 8446 App. B.4 */
+	uint8_t	nt_flags;
+	uint8_t	nt_secretlen;
+	/* [sender]_application_traffic_secret_0, RFC 8446 s7.1 */
+	uint8_t	nt_csecret[NFSD_TLS_SECRETMAX];
+	uint8_t	nt_ssecret[NFSD_TLS_SECRETMAX];
+	uint8_t	nt_exporter[NFSD_TLS_EXPORTERLEN];
+	uint8_t	nt_alertlevel;		/* NFSD_TLS_EVENT, RFC 8446 s6 */
+	uint8_t	nt_alertdesc;
 };
+
+/* nt_flags */
+#define	NFSD_TLS_PEERCERT	0x01	/* the client's certificate verified */
+#define	NFSD_TLS_EVENT		0x02	/* TLSWAIT: an alert, nt_fd is -1 */
+#define	NFSD_TLS_ALERTSENT	0x04	/* the alert was ours */
 
 struct nfsd_srvargs {
 	struct nfsd	*nsd_nfsd;	/* Pointer to in kernel nfsd struct */

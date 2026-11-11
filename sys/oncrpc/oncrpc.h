@@ -194,7 +194,10 @@ void	*oncrpc_req_ctx(struct oncrpc_req *, void *(*)(struct socket *),
 void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
 
 /* RPC-over-TLS, RFC 9289: the connections handed to the handshake daemon. */
-int	oncrpc_tls_wait(uint64_t *, int *);
-int	oncrpc_tls_done(uint64_t, int);
+struct oncrpc_tls_event;
+struct oncrpc_tls_params;
+int	oncrpc_tls_wait(uint64_t *, int *, struct oncrpc_tls_event *);
+int	oncrpc_tls_done(uint64_t, int, const struct oncrpc_tls_params *);
+bool	oncrpc_req_tls(struct oncrpc_req *, uint8_t *);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

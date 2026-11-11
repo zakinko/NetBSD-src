@@ -1,0 +1,54 @@
+.\"	$NetBSD$
+.\"
+.Dd November 11, 2026
+.Dt RPC.TLSSERVD 8
+.Os
+.Sh NAME
+.Nm rpc.tlsservd
+.Nd TLS handshake daemon for RPC-with-TLS
+.Sh SYNOPSIS
+.Nm
+.Op Fl dm
+.Op Fl A Ar cafile
+.Fl c Ar cert
+.Fl k Ar key
+.Sh DESCRIPTION
+.Nm
+performs the server side of the TLS 1.3 handshake of RPC-with-TLS
+(RFC 9289) for the in-kernel ONC RPC server.
+The kernel answers the
+.Dv AUTH_TLS
+probe itself and offers
+.Dq STARTTLS
+only while
+.Nm
+is running.
+Each connection is taken with
+.Xr nfssvc 2
+.Dv NFSSVC_TLSWAIT
+and handed back with
+.Dv NFSSVC_TLSDONE ,
+carrying the traffic secrets for the kernel's record layer and the
+.Dq tls-exporter
+channel binding (RFC 9266).
+.Pp
+The options are:
+.Bl -tag -width indent
+.It Fl A Ar cafile
+Verify client certificates against the certificates in
+.Ar cafile .
+.It Fl c Ar cert
+The server's certificate chain, PEM.
+.It Fl d
+Stay in the foreground and log to standard error as well.
+.It Fl k Ar key
+The server's private key, PEM.
+.It Fl m
+Require a verified client certificate: mutual host authentication.
+Without it clients may be anonymous, as RFC 9289 s4.2 allows.
+.El
+.Sh SEE ALSO
+.Xr nfssvc 2 ,
+.Xr nfsd 8
+.Sh STANDARDS
+RFC 9289, RFC 9266, RFC 8446.

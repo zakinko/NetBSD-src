@@ -18,7 +18,7 @@ def starttls():
     m = struct.pack(">IIIIIIIIII", 0x7100, 0, 2, 100003, 4, 0, 7, 0, 0, 0)
     s.sendall(struct.pack(">I", 0x80000000 | len(m)) + m)
     r = s.recv(64)
-    assert r[28:36] == b"STARTTLS", r
+    assert r[24:32] == b"STARTTLS", r  # mark, xid, mtype, stat, flavor, len
     return s
 
 def ctx(minv=ssl.TLSVersion.TLSv1_3, maxv=ssl.TLSVersion.TLSv1_3, alpn=("sunrpc",), cert=None):

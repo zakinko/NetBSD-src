@@ -126,7 +126,7 @@ connect_starttls(void)
 		err(1, "connect");
 	n = mkcall(b, 0, 7, NULL, 0);		/* AUTH_TLS, RFC 9289 s7.1 */
 	write(s, b, n);
-	if (read(s, b, sizeof(b)) < 36 || memcmp(b + 28, "STARTTLS", 8) != 0)
+	if (read(s, b, sizeof(b)) < 32 || memcmp(b + 24, "STARTTLS", 8) != 0)
 		errx(1, "no STARTTLS");
 	return s;
 }

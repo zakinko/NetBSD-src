@@ -26,9 +26,12 @@ sudo modprobe nfs || {
 }
 sudo modprobe nfsv4
 cat /etc/tlshd.conf
+# ktls-utils 0.9 has no x509.truststore; it trusts the system's store.
+sudo cp "$CERTS/ca.pem" /usr/local/share/ca-certificates/rpctls-ca.crt
+sudo update-ca-certificates
 {
-	printf '[debug]\nloglevel=7\ntls=7\nnl=1\n'
-	printf '[authenticate.client]\nx509.truststore=%s/ca.pem\n' "$CERTS"
+	printf '[main]\ndebug=3\ntlsdebug=3\nnl_debug=0\n'
+	printf '[authenticate.client]\n'
 	[ "$MODE" = mtls ] &&
 	    printf 'x509.certificate=%s/client.pem\nx509.private_key=%s/client.key\n' \
 	    "$CERTS" "$CERTS"

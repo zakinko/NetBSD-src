@@ -38,9 +38,13 @@
 #include <sys/cdefs.h>
 __RCSID("$NetBSD$");
 
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/ucred.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 
+#include <nfs/rpcv2.h>
+#include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
 
 #include <openssl/err.h>

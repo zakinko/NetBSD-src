@@ -479,6 +479,44 @@ test_demux(void)
 	check(bad == 0, "s4.1 demultiplexing of all 256 first bytes");
 }
 
+/* RFC 9147 s5.2 and s7, by hand. */
+static void
+test_hs_ack(void)
+{
+	static const uint8_t ku[] = {	/* KeyUpdate, seq 5, update_requested */
+	    24, 0, 0, 1, 0, 5, 0, 0, 0, 0, 0, 1, 1 };
+	uint8_t buf[64], type;
+	const uint8_t *body;
+	uint64_t rn[4] = { 3, 7, 3, 9 };
+	uint16_t seq;
+	size_t blen, used, n;
+	uint8_t one = 1;
+
+	check(dtls13_hs_parse(ku, sizeof(ku), &type, &seq, &body, &blen,
+	    &used) == 0 && type == DTLS13_HS_KEY_UPDATE && seq == 5 &&
+	    blen == 1 && body[0] == 1 && used == sizeof(ku),
+	    "s5.2, a KeyUpdate parsed");
+	n = dtls13_hs_build(buf, DTLS13_HS_KEY_UPDATE, 5, &one, 1);
+	check(n == sizeof(ku) && memcmp(buf, ku, n) == 0,
+	    "s5.2, a KeyUpdate built");
+	memcpy(buf, ku, sizeof(ku));
+	buf[11] = 0;			/* fragment_length 0 of 1 */
+	check(dtls13_hs_parse(buf, sizeof(ku), &type, &seq, &body, &blen,
+	    &used) == EINPROGRESS, "s5.2, a fragment");
+	check(dtls13_hs_parse(ku, sizeof(ku) - 1, &type, &seq, &body, &blen,
+	    &used) == EBADMSG, "s5.2, short");
+
+	n = dtls13_ack_build(buf, sizeof(buf), rn, 2);
+	check(n == 2 + 32 && buf[0] == 0 && buf[1] == 32 && buf[9] == 3 &&
+	    buf[17] == 7 && buf[33] == 9, "s7, an ACK of two built");
+	check(dtls13_ack_has(buf, n, 3, 9) == 1 &&
+	    dtls13_ack_has(buf, n, 3, 8) == 0 &&
+	    dtls13_ack_has(buf, n, 4, 7) == 0, "s7, an ACK read");
+	check(dtls13_ack_has(buf, n - 1, 3, 9) == -1, "s7, malformed");
+	check(dtls13_ack_build(buf, 2 + 16, rn, 2) == 2 + 16,
+	    "s7, only what fits");
+}
+
 int
 main(void)
 {
@@ -494,6 +532,7 @@ main(void)
 	test_keyupdate();
 	test_dtls();
 	test_demux();
+	test_hs_ack();
 	check(tls13_selftest() == 0, "tls13_selftest");
 	printf("%d passed, %d failed\n", passed, failed);
 	return failed != 0;

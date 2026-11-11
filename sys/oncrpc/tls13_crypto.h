@@ -101,6 +101,7 @@ struct dtls13_dir {
 	uint64_t	dd_seq;		/* the next to send */
 	uint64_t	dd_top;		/* the highest received */
 	uint64_t	dd_window;	/* bit i: dd_top - i received */
+	uint64_t	dd_last;	/* of the record last opened */
 	bool		dd_any;
 };
 
@@ -119,5 +120,19 @@ int	dtls13_open(struct dtls13_dir *, size_t, uint8_t *, size_t, size_t *,
 #define	DTLS13_CIPHERTEXT	2
 #define	DTLS13_REJECT		3
 int	dtls13_demux(uint8_t);
+
+/* RFC 9147 s5.2, DTLSHandshake, and the types used after the handshake */
+#define	DTLS13_HS_HDRLEN	12
+#define	DTLS13_HS_REQUEST_CID	9
+#define	DTLS13_HS_NEW_CID	10
+#define	DTLS13_HS_KEY_UPDATE	24
+/* RFC 9147 s4, RecordNumber, in an ACK, s7 */
+#define	DTLS13_RECNUMLEN	16
+
+int	dtls13_hs_parse(const uint8_t *, size_t, uint8_t *, uint16_t *,
+	    const uint8_t **, size_t *, size_t *);
+size_t	dtls13_hs_build(uint8_t *, uint8_t, uint16_t, const uint8_t *, size_t);
+size_t	dtls13_ack_build(uint8_t *, size_t, const uint64_t *, size_t);
+int	dtls13_ack_has(const uint8_t *, size_t, uint64_t, uint64_t);
 
 #endif /* !_ONCRPC_TLS13_CRYPTO_H_ */

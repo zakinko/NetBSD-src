@@ -779,6 +779,7 @@ dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
 	if (dtls_replayed(d, seq))
 		return EALREADY;
 	dtls_seen(d, seq);
+	d->dd_last = seq;
 	/* RFC 8446 s5.4, as in DTLSInnerPlaintext */
 	for (n = clen; n > 0 && ct[n - 1] == 0; n--)
 		continue;
@@ -788,5 +789,111 @@ dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
 	*contentp = ct;
 	*clenp = n - 1;
 	*usedp = hlen + clen + TLS13_TAGLEN;
+	return 0;
+}
+
+static uint32_t
+get24(const uint8_t *p)
+{
+
+	return (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2];
+}
+
+static void
+put24(uint8_t *p, uint32_t v)
+{
+
+	p[0] = (uint8_t)(v >> 16);
+	p[1] = (uint8_t)(v >> 8);
+	p[2] = (uint8_t)v;
+}
+
+/*
+ * RFC 9147 s5.2: the DTLSHandshake message at the start of the len bytes
+ * at p, of *usedp bytes.  Only whole messages: a fragment is EINPROGRESS,
+ * which a message after the handshake, all of them short, never needs.
+ */
+int
+dtls13_hs_parse(const uint8_t *p, size_t len, uint8_t *typep, uint16_t *seqp,
+    const uint8_t **bodyp, size_t *blenp, size_t *usedp)
+{
+	uint32_t mlen, off, flen;
+
+	if (len < DTLS13_HS_HDRLEN)
+		return EBADMSG;
+	mlen = get24(p + 1);
+	off = get24(p + 6);
+	flen = get24(p + 9);
+	if (flen > len - DTLS13_HS_HDRLEN || (uint64_t)off + flen > mlen)
+		return EBADMSG;
+	if (off != 0 || flen != mlen)
+		return EINPROGRESS;
+	*typep = p[0];
+	*seqp = (uint16_t)(p[4] << 8 | p[5]);
+	*bodyp = p + DTLS13_HS_HDRLEN;
+	*blenp = mlen;
+	*usedp = DTLS13_HS_HDRLEN + mlen;
+	return 0;
+}
+
+/* The same, built whole into out; its length is returned. */
+size_t
+dtls13_hs_build(uint8_t *out, uint8_t type, uint16_t seq, const uint8_t *body,
+    size_t blen)
+{
+
+	out[0] = type;
+	put24(out + 1, (uint32_t)blen);
+	out[4] = (uint8_t)(seq >> 8);
+	out[5] = (uint8_t)seq;
+	put24(out + 6, 0);
+	put24(out + 9, (uint32_t)blen);
+	memcpy(out + DTLS13_HS_HDRLEN, body, blen);
+	return DTLS13_HS_HDRLEN + blen;
+}
+
+/*
+ * RFC 9147 s7: an ACK of the n RecordNumbers at rn, each an epoch and a
+ * sequence number, s4, in numerically increasing order as the caller
+ * gives them; as many as fit in size bytes.
+ */
+size_t
+dtls13_ack_build(uint8_t *out, size_t size, const uint64_t *rn, size_t n)
+{
+	size_t i, k, len;
+
+	if (size < 2)
+		return 0;
+	n = MIN(n, (size - 2) / DTLS13_RECNUMLEN);
+	len = n * DTLS13_RECNUMLEN;
+	out[0] = (uint8_t)(len >> 8);
+	out[1] = (uint8_t)len;
+	for (i = 0; i < 2 * n; i++)
+		for (k = 0; k < 8; k++)
+			out[2 + 8 * i + k] = (uint8_t)(rn[i] >> (56 - 8 * k));
+	return 2 + len;
+}
+
+/* Whether the ACK in p covers the record (epoch, seq); -1 if malformed. */
+int
+dtls13_ack_has(const uint8_t *p, size_t len, uint64_t epoch, uint64_t seq)
+{
+	size_t vlen, i, k;
+	uint64_t e, s;
+
+	if (len < 2)
+		return -1;
+	vlen = (size_t)p[0] << 8 | p[1];
+	if (vlen != len - 2 || vlen % DTLS13_RECNUMLEN != 0)
+		return -1;
+	for (i = 2; i < len; i += DTLS13_RECNUMLEN) {
+		e = s = 0;
+		for (k = 0; k < 8; k++) {
+			e = e << 8 | p[i + k];
+			s = s << 8 | p[i + 8 + k];
+		}
+		if (e == epoch && s == seq)
+			return 1;
+	}
 	return 0;
 }

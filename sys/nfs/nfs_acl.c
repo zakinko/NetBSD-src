@@ -39,16 +39,17 @@
  *	[LC]	Linux fs/nfs_common/nfsacl.c
  *	[LP]	Linux fs/posix_acl.c
  *	[LV]	Linux fs/nfsd/vfs.c
+ *	[L2]	Linux fs/nfsd/nfs2acl.c
  *
  * illumos at 586678ac1bc, Linux at ef33735edec (v6.18 based).
  *
- * Only version 3 is served: Linux clients speak nothing else
- * (fs/nfs/nfs3client.c:13-14), and a call for version 2 gets
- * PROG_MISMATCH 3..3 from the layer, as from a Linux server built
- * without NFSD_V2_ACL.  Procedure 3, GETXATTRDIR, is illumos' own [X
- * 368-369]; Linux does not have it [L3 259-295], so it is PROC_UNAVAIL,
- * which an illumos client takes as "no extended attributes" and keeps
- * the ACLs [IN 1707-1732].
+ * Versions 2 and 3.  Version 2 has GETATTR and ACCESS besides, as
+ * illumos [IS 248-375] and Linux (fs/nfsd/nfs2acl.c [L2]) have them;
+ * Linux clients speak only version 3 (fs/nfs/nfs3client.c:13-14).
+ * GETXATTRDIR, version 2 procedure 5 and version 3 procedure 3, is
+ * illumos' own [X 358-369]; Linux does not have it [L3 259-295], so it is
+ * PROC_UNAVAIL, which an illumos client takes as "no extended
+ * attributes" and keeps the ACLs [IN 1707-1732].
  *
  * A file system answers _PC_ACL_EXTENDED if it keeps POSIX.1e ACLs.
  * For one that does not -- tmpfs, ZFS and FFS with NFSv4 ACLs -- GETACL
@@ -88,13 +89,39 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 /* [X 346], IANA. */
 #define	NFS_ACL_PROGRAM		100227
-/* [X 361]. */
+/* [X 347, 361]. */
+#define	NFS_ACL_V2		2
 #define	NFS_ACL_V3		3
-/* [X 362-367]: 3 is GETXATTRDIR, not served. */
+/* [X 348-359]: 5 is GETXATTRDIR, not served. */
+#define	ACLPROC2_NULL		0
+#define	ACLPROC2_GETACL		1
+#define	ACLPROC2_SETACL		2
+#define	ACLPROC2_GETATTR	3
+#define	ACLPROC2_ACCESS		4
+/* [X 362-369]: 3 is GETXATTRDIR, not served. */
 #define	ACLPROC3_NULL		0
 #define	ACLPROC3_GETACL		1
 #define	ACLPROC3_SETACL		2
-#define	ACLPROC3_NPROCS		3
+
+/* ACCESS2args.access, [X 164-170]. */
+#define	ACCESS2_READ		0x1
+#define	ACCESS2_LOOKUP		0x2
+#define	ACCESS2_MODIFY		0x4
+#define	ACCESS2_EXTEND		0x8
+#define	ACCESS2_DELETE		0x10
+#define	ACCESS2_EXECUTE		0x20
+
+/*
+ * NFSERR_OPNOTSUPP of illumos' nfs.h, a version 2 status that RFC 1094
+ * does not have.  illumos' puterrno() gives it for EOPNOTSUPP and ENOSYS
+ * [IN 3629-3646], which is how SETACL on ZFS answers there; Linux sends
+ * NFS3ERR_NOTSUPP, 10004, in version 2 as well (nfserrno() [LV 99] and
+ * nfsacld_map_status() in fs/nfsd/nfs2acl.c leave it).  A client of
+ * version 2 of this program is Solaris' or illumos', whose geterrno()
+ * reads 45 as EOPNOTSUPP [IN 3656-3661]; 10004 it would take as an errno of
+ * that number.  So this is illumos'.
+ */
+#define	NFSERR_V2_OPNOTSUPP	45
 
 /* [X 28]. */
 #define	NFS_ACL_MAX_ENTRIES	1024
@@ -244,12 +271,47 @@ nfsacl_errno(int error)
 	}
 }
 
-/* nfs_fh3, RFC 1813 s2.5, with the bounds of nfsm_srvmtofh(). */
+/*
+ * Version 2: a handle that is not good is NFSERR_STALE, as
+ * nfsacld_map_status() [L2] and illumos [IS 87-90].  The statuses that
+ * version 2 does not have go as illumos' puterrno() sends them, the
+ * errno itself [IN 3649-3650].
+ */
+static uint32_t
+nfsacl_errno2(int error)
+{
+	uint32_t st;
+
+	st = nfsacl_errno(error);
+	switch (st) {
+	case NFSERR_BADHANDLE:
+		return NFSERR_STALE;
+	case NFSERR_NOTSUPP:
+		return NFSERR_V2_OPNOTSUPP;
+	case NFSERR_JUKEBOX:
+		/*
+		 * A choice: illumos would send the errno, whose number is
+		 * not the client's, and Linux 10008, which version 2 lacks.
+		 */
+		return NFSERR_IO;
+	default:
+		return st;
+	}
+}
+
+/*
+ * nfs_fh3, RFC 1813 s2.5, with the bounds of nfsm_srvmtofh(); or for
+ * version 2 the fhandle of RFC 1094 s2.3.3, NFSX_V2FH bytes.
+ */
 static bool
-nfsacl_get_fh(XDR *x, nfsrvfh_t *nsfh)
+nfsacl_get_fh(XDR *x, nfsrvfh_t *nsfh, bool v3)
 {
 	uint32_t len;
 
+	if (!v3) {
+		nsfh->nsfh_size = NFSX_V2FH;
+		return xdr_opaque(x, (char *)NFSRVFH_DATA(nsfh), NFSX_V2FH);
+	}
 	if (!xdr_u_int32_t(x, &len))
 		return false;
 	if (len > NFSX_V3FHMAX || (len > 0 && len < FHANDLE_SIZE_MIN))
@@ -279,6 +341,20 @@ nfsacl_put_attr(XDR *x, struct vnode *vp, kauth_cred_t cred)
 	nfsm_srvfattr(&nd, &va, &fa);
 	CTASSERT(sizeof(fa) >= NFSX_V3FATTR);
 	return xdr_opaque(x, (char *)&fa, NFSX_V3FATTR);
+}
+
+/* fattr, RFC 1094 s2.3.5, of a locked vnode. */
+static bool
+nfsacl_put_fattr2(XDR *x, const struct vattr *va)
+{
+	struct nfsrv_descript nd;
+	struct nfs_fattr fa;
+
+	memset(&nd, 0, sizeof(nd));
+	memset(&fa, 0, sizeof(fa));
+	nfsm_srvfattr(&nd, __UNCONST(va), &fa);
+	CTASSERT(sizeof(fa) >= NFSX_V2FATTR);
+	return xdr_opaque(x, (char *)&fa, NFSX_V2FATTR);
 }
 
 /*
@@ -550,7 +626,9 @@ nfsacl_getacl(struct oncrpc_req *rq)
 	int error, rdonly;
 	bool ok;
 
-	if (!nfsacl_get_fh(ax, &nsfh) || !xdr_u_int32_t(ax, &mask))
+	bool v3 = rq->rq_vers == NFS_ACL_V3;
+
+	if (!nfsacl_get_fh(ax, &nsfh, v3) || !xdr_u_int32_t(ax, &mask))
 		return ONCRPC_ERR_ARGS;
 
 	cred = nfsacl_takecred(rq);
@@ -558,8 +636,9 @@ nfsacl_getacl(struct oncrpc_req *rq)
 	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
 	if (error != 0)
 		goto out;
+	/* Version 2 has no NFSERR_INVAL: Linux sends NFSERR_IO [L2]. */
 	if (mask & ~NA_MASK) {
-		error = EINVAL;
+		error = v3 ? EINVAL : EIO;
 		goto out;
 	}
 	error = VOP_GETATTR(vp, &va, cred);
@@ -584,9 +663,20 @@ nfsacl_getacl(struct oncrpc_req *rq)
 		}
 	}
 out:
-	status = nfsacl_errno(error);
-	ok = xdr_u_int32_t(rx, &status) &&
-	    nfsacl_put_attr(rx, vp, cred);
+	/*
+	 * GETACL2res [X 97-107]: the attributes only with NFS_OK, those
+	 * that were read before the ACL, as Linux [L2] and illumos [IS
+	 * 124-128] send them.  GETACL3res has post_op_attr either way.
+	 */
+	if (v3) {
+		status = nfsacl_errno(error);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    nfsacl_put_attr(rx, vp, cred);
+	} else {
+		status = nfsacl_errno2(error);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    (status != NFS_OK || nfsacl_put_fattr2(rx, &va));
+	}
 	if (ok && status == NFS_OK) {
 		ok = xdr_u_int32_t(rx, &mask) &&
 		    nfsacl_put_list(rx, acl, (mask & NA_ACL) != 0, 0,
@@ -658,10 +748,13 @@ nfsacl_setacl(struct oncrpc_req *rq)
 	int error, rdonly;
 	bool ok;
 
+	struct vattr va;
+	bool v3 = rq->rq_vers == NFS_ACL_V3;
+
 	memset(&al, 0, sizeof(al));
 	memset(&dl, 0, sizeof(dl));
-	/* [L3 168-181]: a mask over the four is GARBAGE_ARGS here. */
-	if (!nfsacl_get_fh(ax, &nsfh) || !xdr_u_int32_t(ax, &mask) ||
+	/* [L3 168-181], [L2]: a mask over the four is GARBAGE_ARGS. */
+	if (!nfsacl_get_fh(ax, &nsfh, v3) || !xdr_u_int32_t(ax, &mask) ||
 	    (mask & ~NA_MASK) != 0 ||
 	    !nfsacl_get_list(ax, &al, (mask & NA_ACL) != 0) ||
 	    !nfsacl_get_list(ax, &dl, (mask & NA_DFACL) != 0)) {
@@ -701,9 +794,18 @@ nfsacl_setacl(struct oncrpc_req *rq)
 			error = nfsacl_set_default(vp, acl, cred);
 	}
 out:
-	status = nfsacl_errno(error);
-	ok = xdr_u_int32_t(rx, &status) &&
-	    nfsacl_put_attr(rx, vp, cred);
+	if (v3) {
+		status = nfsacl_errno(error);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    nfsacl_put_attr(rx, vp, cred);
+	} else {
+		/* SETACL2res [X 118-127]: attrstat, as fh_getattr() [L2]. */
+		if (error == 0)
+			error = VOP_GETATTR(vp, &va, cred);
+		status = nfsacl_errno2(error);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    (status != NFS_OK || nfsacl_put_fattr2(rx, &va));
+	}
 	if (vp != NULL)
 		vput(vp);
 	if (acl != NULL)
@@ -715,8 +817,93 @@ out:
 }
 
 /*
- * No reply cache: Linux has RC_NOCACHE for all three [L3 267-292].
- * GETACL changes nothing, and SETACL done twice sets the same lists.
+ * Version 2 GETATTR [X 137-150]: attrstat, as acl2_getattr() [IS
+ * 248-276] and nfsacld_proc_getattr() [L2].
+ */
+static enum oncrpc_dispatch
+nfsacl_getattr2(struct oncrpc_req *rq)
+{
+	XDR *ax = rq->rq_args, *rx = rq->rq_res;
+	struct vnode *vp = NULL;
+	struct vattr va;
+	kauth_cred_t cred;
+	nfsrvfh_t nsfh;
+	uint32_t status;
+	int error, rdonly;
+	bool ok;
+
+	if (!nfsacl_get_fh(ax, &nsfh, false))
+		return ONCRPC_ERR_ARGS;
+	cred = nfsacl_takecred(rq);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	if (error == 0)
+		error = VOP_GETATTR(vp, &va, cred);
+	status = nfsacl_errno2(error);
+	ok = xdr_u_int32_t(rx, &status) &&
+	    (status != NFS_OK || nfsacl_put_fattr2(rx, &va));
+	if (vp != NULL)
+		vput(vp);
+	nfsacl_freecred(cred);
+	return ok ? ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+}
+
+/*
+ * Version 2 ACCESS [X 156-182], as acl2_access() [IS 287-372]: each bit
+ * asked for is VOP_ACCESS of the mode it needs, LOOKUP and DELETE only
+ * on a directory, and on an export that is read only no MODIFY, EXTEND
+ * or DELETE for a file or directory; a special file is left to the
+ * client.  Linux's map [L2] asks the same of each bit.  Then the
+ * attributes, read after the checks.
+ */
+static enum oncrpc_dispatch
+nfsacl_access2(struct oncrpc_req *rq)
+{
+	XDR *ax = rq->rq_args, *rx = rq->rq_res;
+	struct vnode *vp = NULL;
+	struct vattr va;
+	kauth_cred_t cred;
+	nfsrvfh_t nsfh;
+	uint32_t want, got = 0, status;
+	int error, rdonly;
+	bool ok, wperm;
+
+	if (!nfsacl_get_fh(ax, &nsfh, false) || !xdr_u_int32_t(ax, &want))
+		return ONCRPC_ERR_ARGS;
+	cred = nfsacl_takecred(rq);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	if (error != 0)
+		goto out;
+	wperm = !((rdonly || (vp->v_mount->mnt_flag & MNT_RDONLY)) &&
+	    (vp->v_type == VREG || vp->v_type == VDIR));
+	if ((want & ACCESS2_READ) && VOP_ACCESS(vp, VREAD, cred) == 0)
+		got |= ACCESS2_READ;
+	if ((want & ACCESS2_LOOKUP) && vp->v_type == VDIR &&
+	    VOP_ACCESS(vp, VEXEC, cred) == 0)
+		got |= ACCESS2_LOOKUP;
+	if (wperm && (want & (ACCESS2_MODIFY | ACCESS2_EXTEND)) &&
+	    VOP_ACCESS(vp, VWRITE, cred) == 0)
+		got |= want & (ACCESS2_MODIFY | ACCESS2_EXTEND);
+	if (wperm && (want & ACCESS2_DELETE) && vp->v_type == VDIR &&
+	    VOP_ACCESS(vp, VWRITE, cred) == 0)
+		got |= ACCESS2_DELETE;
+	if ((want & ACCESS2_EXECUTE) && VOP_ACCESS(vp, VEXEC, cred) == 0)
+		got |= ACCESS2_EXECUTE;
+	error = VOP_GETATTR(vp, &va, cred);
+out:
+	status = nfsacl_errno2(error);
+	ok = xdr_u_int32_t(rx, &status) &&
+	    (status != NFS_OK ||
+	     (nfsacl_put_fattr2(rx, &va) && xdr_u_int32_t(rx, &got)));
+	if (vp != NULL)
+		vput(vp);
+	nfsacl_freecred(cred);
+	return ok ? ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+}
+
+/*
+ * No reply cache: Linux has RC_NOCACHE for all of them [L3 267-292,
+ * L2].  GETACL, GETATTR and ACCESS change nothing, and SETACL done
+ * twice sets the same lists.
  */
 static enum oncrpc_dispatch
 nfsacl_dispatch(struct oncrpc_req *rq)
@@ -725,6 +912,22 @@ nfsacl_dispatch(struct oncrpc_req *rq)
 	/* The address is what the exports go by. */
 	if (rq->rq_nam == NULL)
 		return ONCRPC_ERR_SYSTEM;
+	if (rq->rq_vers == NFS_ACL_V2) {
+		switch (rq->rq_proc) {
+		case ACLPROC2_NULL:
+			return ONCRPC_DONE;
+		case ACLPROC2_GETACL:
+			return nfsacl_getacl(rq);
+		case ACLPROC2_SETACL:
+			return nfsacl_setacl(rq);
+		case ACLPROC2_GETATTR:
+			return nfsacl_getattr2(rq);
+		case ACLPROC2_ACCESS:
+			return nfsacl_access2(rq);
+		default:
+			return ONCRPC_ERR_PROC;
+		}
+	}
 	switch (rq->rq_proc) {
 	case ACLPROC3_NULL:
 		return ONCRPC_DONE;
@@ -737,11 +940,13 @@ nfsacl_dispatch(struct oncrpc_req *rq)
 	}
 }
 
+/* The procedures differ by version, so the dispatch tells PROC_UNAVAIL. */
 const struct oncrpc_program nfs_acl_program = {
 	.op_prog = NFS_ACL_PROGRAM,
-	.op_vers_low = NFS_ACL_V3,
+	.op_vers_low = NFS_ACL_V2,
 	.op_vers_high = NFS_ACL_V3,
-	.op_nprocs = ACLPROC3_NPROCS,
+	.op_nprocs = 0,
 	.op_dispatch = nfsacl_dispatch,
 	.op_owner = nfs_oncrpc_tag,
 };
+

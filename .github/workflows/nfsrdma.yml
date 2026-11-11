@@ -97,7 +97,7 @@ jobs:
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c netbsd:/var/tmp/nfsv4/
+          scp ci/nfsrdma/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsrdma/tunpipe.c ci/nfsrdma/try.c netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |
@@ -108,6 +108,8 @@ jobs:
               -L 2049:127.0.0.1:2049 -L 192.0.2.1:20049:127.0.0.1:20049 \
               -L 192.0.2.1:1234:127.0.0.1:1234 netbsd
           sleep 2
+      - name: A link for NLM and NSM
+        run: sh ci/nfsrdma/nlm-up.sh "$PWD/out" 2>&1 | tee out/nlm-up.txt
       - name: A peer that misbehaves
         timeout-minutes: 5
         shell: bash
@@ -137,4 +139,5 @@ jobs:
             out/rdma.pcap
             out/badpeer.txt
             out/summary.txt
+            out/nlm-up.txt
           retention-days: 14

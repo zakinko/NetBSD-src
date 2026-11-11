@@ -984,6 +984,8 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	ir->ir_xprt->xp_lastop = op;
 	mutex_exit(&svc->svc_lock);
 
+	/* Before oncrpc_gss_accept(): a channel binding names the connection. */
+	rq->rq_connid = ir->ir_xprt->xp_id;
 	gss = c->c_cred.oa_flavor == RPCSEC_GSS;
 	if (gss) {
 		/*

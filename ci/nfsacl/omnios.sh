@@ -45,8 +45,22 @@ for v in 3 2; do
 	show v$v-dfl /export/pacl/od$v -d $d
 	t sh -c "echo x >$d/new"
 	show v$v-inherit /export/pacl/od$v/new "" $d/new
-	echo '# no extended attributes: GETXATTRDIR is PROC_UNAVAIL'
-	n runat $f ls
+	echo '# named attributes: GETXATTRDIR, then NFS on its handles'
+	x=$m/x$v
+	rm -f $x
+	t touch $x
+	t runat $x cp /etc/hosts a
+	t runat $x cp a b
+	t runat $x rm b
+	t runat $x cp a c
+	echo "xattr-ls v$v $(runat $x ls | sort | tr '\n' ' ')"
+	echo "xattr-cat v$v $(runat $x cat a | cksum)"
+	echo "xattr-want v$v $(cksum </etc/hosts)"
+	echo "xattr-wantnl v$v $( (cat /etc/hosts; echo) | cksum)"
+	n runat $x mkdir d
+	# Does ls -l ask NFSACL for the ACL of an attribute?  See the capture.
+	echo "xattr-lsl v$v"; runat $x ls -l
+	echo "xattr-lsl-end v$v $(date -u +%H:%M:%S)"
 	echo '# and the ACLs are still there after it'
 	show v$v-after /export/pacl/o$v "" $f
 	t umount $m

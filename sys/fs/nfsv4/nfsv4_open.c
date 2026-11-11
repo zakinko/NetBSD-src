@@ -314,6 +314,9 @@ open_access(const struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			return nfsv4_errno(error);
 	}
 	if ((access & OPEN4_SHARE_ACCESS_WRITE) != 0) {
+		/* s5.13, before UF_IMMUTABLE's EPERM; see nfsv4_op_write(). */
+		if (nfsv4_retained(vp, false))
+			return NFS4ERR_ACCESS;
 		error = nfsv4_access_vp(&t, VWRITE);
 		if (error != 0)
 			return nfsv4_errno(error);
@@ -1302,18 +1305,20 @@ nfsv4_op_write(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_io_check(c, &wa->stateid, true);
 	if (st != NFS4_OK)
 		return st;
-	error = nfsv4_access_vp(cf, VWRITE);
-	if (error != 0)
-		return nfsv4_errno(error);
 	/*
 	 * RFC 8881 s5.13: a retained file's data MUST NOT change, and no
 	 * error is named for it.  NFS4ERR_ACCESS is one that WRITE, SETATTR,
 	 * OPEN, REMOVE and RENAME may all return (s15.2); NFS4ERR_PERM,
-	 * of not being the owner, is not one of REMOVE's or RENAME's, and
-	 * the owner is refused here too.
+	 * of not being the owner (s15.1.6.2), is not one of REMOVE's or
+	 * RENAME's, and the owner is refused here too.  Before the access
+	 * check: the file is UF_IMMUTABLE while retained, and VOP_ACCESS
+	 * would say EPERM, NFS4ERR_PERM, first.
 	 */
 	if (nfsv4_retained(vp, false))
 		return NFS4ERR_ACCESS;
+	error = nfsv4_access_vp(cf, VWRITE);
+	if (error != 0)
+		return nfsv4_errno(error);
 
 	/* s16.36.4: the server may write less than asked. */
 	n = MIN(wa->len, NFSV4_MAXIO);

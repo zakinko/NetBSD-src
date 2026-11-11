@@ -53,7 +53,10 @@ def trunc(n):
         {FATTR4_SIZE: 0})), open_claim4(CLAIM_NULL, stamp + n))]).status
 def vm(cmd):
     try:
-        p = subprocess.run(["ssh", "netbsd", "sh -c '%s'" % cmd],
+        # LogLevel: ssh says "Permanently added" on every connection,
+        # which on stdout hid the "uchg" of stat from uchg().
+        p = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "netbsd",
+                            "sh -c '%s'" % cmd],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                            timeout=120)
     except subprocess.TimeoutExpired:
@@ -61,7 +64,8 @@ def vm(cmd):
     return p.returncode, p.stdout.decode(errors="replace").strip()
 V = lambda n: "/%s/%s" % (b"/".join(export).decode(), (stamp + n).decode())
 def uchg(n):
-    return "uchg" in vm("stat -f %%Sf %s" % V(n))[1].split(",")
+    out = vm("stat -f %%Sf %s" % V(n))[1].splitlines()
+    return bool(out) and "uchg" in out[-1].split(",")
 # s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049.
 v3 = vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
         "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "

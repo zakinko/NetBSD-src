@@ -338,6 +338,15 @@ extern const char nfs_oncrpc_tag[];
 extern const struct oncrpc_program nfs_acl_program;
 void nfs_acl_init(void);
 void nfs_acl_fini(void);
+/* nfs_srvxattr.c */
+extern int (*const nfsrv_xattr_procs[NFS_NPROCS])(struct nfsrv_descript *,
+	struct nfssvc_sock *, struct lwp *, struct mbuf **);
+int nfsrv_xattr_marked(const nfsrvfh_t *, bool, uint8_t *, size_t *);
+int nfsrv_xattr_mkfh(const nfsrvfh_t *, bool, int, const char *,
+	nfsrvfh_t *);
+int nfsrv_xattr_fhtovp(const nfsrvfh_t *, bool, kauth_cred_t,
+	struct nfssvc_sock *, struct mbuf *, int, struct vnode **, int *,
+	char *, int *, nfsrvfh_t *);
 #endif
 void nfsrv_zapsock(struct nfssvc_sock *);
 void nfsrv_slpderef(struct nfssvc_sock *);

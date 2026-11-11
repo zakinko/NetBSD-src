@@ -47,9 +47,9 @@
  * illumos [IS 248-375] and Linux (fs/nfsd/nfs2acl.c [L2]) have them;
  * Linux clients speak only version 3 (fs/nfs/nfs3client.c:13-14).
  * GETXATTRDIR, version 2 procedure 5 and version 3 procedure 3, is
- * illumos' own [X 358-369]; Linux does not have it [L3 259-295], so it is
- * PROC_UNAVAIL, which an illumos client takes as "no extended
- * attributes" and keeps the ACLs [IN 1707-1732].
+ * illumos' own [X 358-369], which Linux does not have [L3 259-295]: the
+ * handle of the directory of a file's named attributes, which the
+ * client then walks with NFS itself (nfs_srvxattr.c).
  *
  * A file system answers _PC_ACL_EXTENDED if it keeps POSIX.1e ACLs.
  * For one that does not -- tmpfs, ZFS and FFS with NFSv4 ACLs -- GETACL
@@ -84,6 +84,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <nfs/rpcv2.h>
 #include <nfs/nfs.h>
 #include <nfs/nfs_var.h>
+#include <nfs/nfs_xattr.h>
 
 #include <oncrpc/oncrpc.h>
 #include <oncrpc/oncrpc_gss.h>
@@ -93,16 +94,18 @@ __KERNEL_RCSID(0, "$NetBSD$");
 /* [X 347, 361]. */
 #define	NFS_ACL_V2		2
 #define	NFS_ACL_V3		3
-/* [X 348-359]: 5 is GETXATTRDIR, not served. */
+/* [X 348-359]. */
 #define	ACLPROC2_NULL		0
 #define	ACLPROC2_GETACL		1
 #define	ACLPROC2_SETACL		2
 #define	ACLPROC2_GETATTR	3
 #define	ACLPROC2_ACCESS		4
-/* [X 362-369]: 3 is GETXATTRDIR, not served. */
+#define	ACLPROC2_GETXATTRDIR	5
+/* [X 362-369]. */
 #define	ACLPROC3_NULL		0
 #define	ACLPROC3_GETACL		1
 #define	ACLPROC3_SETACL		2
+#define	ACLPROC3_GETXATTRDIR	3
 
 /* ACCESS2args.access, [X 164-170]. */
 #define	ACCESS2_READ		0x1
@@ -321,16 +324,15 @@ nfsacl_get_fh(XDR *x, nfsrvfh_t *nsfh, bool v3)
 	return len == 0 || xdr_opaque(x, (char *)NFSRVFH_DATA(nsfh), len);
 }
 
-/* post_op_attr, RFC 1813 s2.6, with vp locked or NULL for none. */
+/* post_op_attr, RFC 1813 s2.6, of these or NULL for none. */
 static bool
-nfsacl_put_attr(XDR *x, struct vnode *vp, kauth_cred_t cred)
+nfsacl_put_va(XDR *x, const struct vattr *va)
 {
 	struct nfsrv_descript nd;
 	struct nfs_fattr fa;
-	struct vattr va;
 	uint32_t follows;
 
-	follows = vp != NULL && VOP_GETATTR(vp, &va, cred) == 0;
+	follows = va != NULL;
 	if (!xdr_u_int32_t(x, &follows))
 		return false;
 	if (!follows)
@@ -339,9 +341,41 @@ nfsacl_put_attr(XDR *x, struct vnode *vp, kauth_cred_t cred)
 	memset(&nd, 0, sizeof(nd));
 	nd.nd_flag = ND_NFSV3;
 	memset(&fa, 0, sizeof(fa));
-	nfsm_srvfattr(&nd, &va, &fa);
+	nfsm_srvfattr(&nd, __UNCONST(va), &fa);
 	CTASSERT(sizeof(fa) >= NFSX_V3FATTR);
 	return xdr_opaque(x, (char *)&fa, NFSX_V3FATTR);
+}
+
+/*
+ * What a handle is: the file, or a node of its named attributes, whose
+ * attributes are made once by nfs_xattr_vattr() (nfs_srvxattr.c).
+ */
+struct nfsacl_node {
+	bool		nn_xattr;
+	struct vattr	nn_va;
+};
+
+static int
+nfsacl_getattr(struct vnode *vp, kauth_cred_t cred,
+    const struct nfsacl_node *nn, struct vattr *va)
+{
+
+	if (nn->nn_xattr) {
+		*va = nn->nn_va;
+		return 0;
+	}
+	return VOP_GETATTR(vp, va, cred);
+}
+
+/* post_op_attr, RFC 1813 s2.6, with vp locked or NULL for none. */
+static bool
+nfsacl_put_attr(XDR *x, struct vnode *vp, kauth_cred_t cred,
+    const struct nfsacl_node *nn)
+{
+	struct vattr va;
+
+	return nfsacl_put_va(x, vp != NULL &&
+	    nfsacl_getattr(vp, cred, nn, &va) == 0 ? &va : NULL);
 }
 
 /* fattr, RFC 1094 s2.3.5, of a locked vnode. */
@@ -575,15 +609,41 @@ nfsacl_kerbflag(const struct oncrpc_req *rq)
  */
 static int
 nfsacl_fhtovp(struct oncrpc_req *rq, kauth_cred_t cred, nfsrvfh_t *nsfh,
-    struct vnode **vpp, int *rdonly)
+    struct vnode **vpp, int *rdonly, struct nfsacl_node *nn)
 {
+	char name[NFS_XATTR_NAMEMAX + 1];
+	bool v3 = rq->rq_vers == NFS_ACL_V3;
+	int error, kind;
 
 	*vpp = NULL;
+	nn->nn_xattr = false;
 	if (cred == NULL || (rq->rq_flavor != RPCAUTH_UNIX &&
 	    rq->rq_flavor != RPCSEC_GSS))
 		return NFSERR_AUTHERR | AUTH_TOOWEAK;
-	return nfsrv_fhtovp(nsfh, 1, vpp, cred, NULL, rq->rq_nam,
-	    rdonly, nfsacl_kerbflag(rq), false);
+	if (nfsrv_xattr_marked(nsfh, v3, NULL, NULL) == 0)
+		return nfsrv_fhtovp(nsfh, 1, vpp, cred, NULL, rq->rq_nam,
+		    rdonly, nfsacl_kerbflag(rq), false);
+	/*
+	 * A named attribute or its directory.  illumos answers for them
+	 * as for any file: VOP_GETSECATTR() of the ZFS file that holds the
+	 * attribute, or of the gfs directory, which has none, is ENOSYS for
+	 * these ACLs and fs_fab_acl() makes one of the mode [IS 89-113].
+	 * The vnode is the file's, which says who may do what, and the
+	 * attributes are the node's.
+	 */
+	error = nfsrv_xattr_fhtovp(nsfh, v3, cred, NULL, rq->rq_nam,
+	    nfsacl_kerbflag(rq), vpp, &kind, name, rdonly, NULL);
+	if (error == 0)
+		error = nfs_xattr_vattr(*vpp, cred, kind, name, &nn->nn_va);
+	if (error != 0) {
+		if (*vpp != NULL)
+			vrele(*vpp);
+		*vpp = NULL;
+		return error;
+	}
+	nn->nn_xattr = true;
+	vn_lock(*vpp, LK_EXCLUSIVE | LK_RETRY);
+	return 0;
 }
 
 /*
@@ -623,6 +683,7 @@ nfsacl_getacl(struct oncrpc_req *rq)
 	struct vattr va;
 	kauth_cred_t cred;
 	nfsrvfh_t nsfh;
+	struct nfsacl_node nn;
 	uint32_t mask, status;
 	int error, rdonly;
 	bool ok;
@@ -634,7 +695,7 @@ nfsacl_getacl(struct oncrpc_req *rq)
 
 	cred = nfsacl_takecred(rq);
 	vattr_null(&va);
-	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
 	if (error != 0)
 		goto out;
 	/* Version 2 has no NFSERR_INVAL: Linux sends NFSERR_IO [L2]. */
@@ -642,12 +703,12 @@ nfsacl_getacl(struct oncrpc_req *rq)
 		error = v3 ? EINVAL : EIO;
 		goto out;
 	}
-	error = VOP_GETATTR(vp, &va, cred);
+	error = nfsacl_getattr(vp, cred, &nn, &va);
 	if (error != 0)
 		goto out;
 	if (mask & (NA_ACL | NA_ACLCNT)) {
 		acl = acl_alloc(KM_SLEEP);
-		if (nfsacl_posix(vp)) {
+		if (!nn.nn_xattr && nfsacl_posix(vp)) {
 			error = VOP_GETACL(vp, ACL_TYPE_ACCESS, acl, cred);
 			if (error != 0)
 				goto out;
@@ -657,7 +718,7 @@ nfsacl_getacl(struct oncrpc_req *rq)
 	if (mask & (NA_DFACL | NA_DFACLCNT)) {
 		dfacl = acl_alloc(KM_SLEEP);
 		/* fs_fab_acl() makes no default ACL [IF 623]. */
-		if (vp->v_type == VDIR && nfsacl_posix(vp)) {
+		if (vp->v_type == VDIR && !nn.nn_xattr && nfsacl_posix(vp)) {
 			error = VOP_GETACL(vp, ACL_TYPE_DEFAULT, dfacl, cred);
 			if (error != 0)
 				goto out;
@@ -672,7 +733,7 @@ out:
 	if (v3) {
 		status = nfsacl_errno(error);
 		ok = xdr_u_int32_t(rx, &status) &&
-		    nfsacl_put_attr(rx, vp, cred);
+		    nfsacl_put_attr(rx, vp, cred, &nn);
 	} else {
 		status = nfsacl_errno2(error);
 		ok = xdr_u_int32_t(rx, &status) &&
@@ -745,6 +806,7 @@ nfsacl_setacl(struct oncrpc_req *rq)
 	struct vnode *vp = NULL;
 	kauth_cred_t cred;
 	nfsrvfh_t nsfh;
+	struct nfsacl_node nn;
 	uint32_t mask, status;
 	int error, rdonly;
 	bool ok;
@@ -765,7 +827,7 @@ nfsacl_setacl(struct oncrpc_req *rq)
 	}
 
 	cred = nfsacl_takecred(rq);
-	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
 	if (error != 0)
 		goto out;
 	if ((mask & (NA_ACL | NA_DFACL)) == 0)
@@ -775,7 +837,7 @@ nfsacl_setacl(struct oncrpc_req *rq)
 		error = EROFS;
 		goto out;
 	}
-	if (!nfsacl_posix(vp)) {
+	if (nn.nn_xattr || !nfsacl_posix(vp)) {
 		error = EOPNOTSUPP;
 		goto out;
 	}
@@ -798,11 +860,11 @@ out:
 	if (v3) {
 		status = nfsacl_errno(error);
 		ok = xdr_u_int32_t(rx, &status) &&
-		    nfsacl_put_attr(rx, vp, cred);
+		    nfsacl_put_attr(rx, vp, cred, &nn);
 	} else {
 		/* SETACL2res [X 118-127]: attrstat, as fh_getattr() [L2]. */
 		if (error == 0)
-			error = VOP_GETATTR(vp, &va, cred);
+			error = nfsacl_getattr(vp, cred, &nn, &va);
 		status = nfsacl_errno2(error);
 		ok = xdr_u_int32_t(rx, &status) &&
 		    (status != NFS_OK || nfsacl_put_fattr2(rx, &va));
@@ -829,6 +891,7 @@ nfsacl_getattr2(struct oncrpc_req *rq)
 	struct vattr va;
 	kauth_cred_t cred;
 	nfsrvfh_t nsfh;
+	struct nfsacl_node nn;
 	uint32_t status;
 	int error, rdonly;
 	bool ok;
@@ -836,9 +899,9 @@ nfsacl_getattr2(struct oncrpc_req *rq)
 	if (!nfsacl_get_fh(ax, &nsfh, false))
 		return ONCRPC_ERR_ARGS;
 	cred = nfsacl_takecred(rq);
-	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
 	if (error == 0)
-		error = VOP_GETATTR(vp, &va, cred);
+		error = nfsacl_getattr(vp, cred, &nn, &va);
 	status = nfsacl_errno2(error);
 	ok = xdr_u_int32_t(rx, &status) &&
 	    (status != NFS_OK || nfsacl_put_fattr2(rx, &va));
@@ -864,6 +927,7 @@ nfsacl_access2(struct oncrpc_req *rq)
 	struct vattr va;
 	kauth_cred_t cred;
 	nfsrvfh_t nsfh;
+	struct nfsacl_node nn;
 	uint32_t want, got = 0, status;
 	int error, rdonly;
 	bool ok, wperm;
@@ -871,7 +935,7 @@ nfsacl_access2(struct oncrpc_req *rq)
 	if (!nfsacl_get_fh(ax, &nsfh, false) || !xdr_u_int32_t(ax, &want))
 		return ONCRPC_ERR_ARGS;
 	cred = nfsacl_takecred(rq);
-	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
 	if (error != 0)
 		goto out;
 	wperm = !((rdonly || (vp->v_mount->mnt_flag & MNT_RDONLY)) &&
@@ -889,7 +953,7 @@ nfsacl_access2(struct oncrpc_req *rq)
 		got |= ACCESS2_DELETE;
 	if ((want & ACCESS2_EXECUTE) && VOP_ACCESS(vp, VEXEC, cred) == 0)
 		got |= ACCESS2_EXECUTE;
-	error = VOP_GETATTR(vp, &va, cred);
+	error = nfsacl_getattr(vp, cred, &nn, &va);
 out:
 	status = nfsacl_errno2(error);
 	ok = xdr_u_int32_t(rx, &status) &&
@@ -902,9 +966,78 @@ out:
 }
 
 /*
+ * GETXATTRDIR [X 185-203, 255-273], as acl2_getxattrdir() and
+ * acl3_getxattrdir() [IS 383-440, 623-679]: without create, a file with
+ * no named attributes is NOENT; otherwise the handle of its attribute
+ * directory, which is not made, there being nothing to make, and its
+ * attributes.  illumos asks the file system with _PC_XATTR_EXISTS; here
+ * it is whether the list of the namespace user is empty.  A file system
+ * without extended attributes is EOPNOTSUPP, NFS3ERR_NOTSUPP or
+ * NFSERR_OPNOTSUPP, where illumos' VOP_LOOKUP() gives EINVAL; the same
+ * answer comes from version 2 where the handle has no room for the mark,
+ * see nfs_srvxattr.c.  A handle that is itself of a named attribute is
+ * EINVAL, as illumos refuses attributes of an attribute.
+ */
+static enum oncrpc_dispatch
+nfsacl_getxattrdir(struct oncrpc_req *rq)
+{
+	XDR *ax = rq->rq_args, *rx = rq->rq_res;
+	struct vnode *vp = NULL;
+	struct vattr va;
+	kauth_cred_t cred;
+	nfsrvfh_t nsfh, dfh;
+	struct nfsacl_node nn;
+	uint32_t create, status, len;
+	int error, rdonly;
+	bool ok, any, v3 = rq->rq_vers == NFS_ACL_V3;
+
+	if (!nfsacl_get_fh(ax, &nsfh, v3) || !xdr_u_int32_t(ax, &create))
+		return ONCRPC_ERR_ARGS;
+	dfh.nsfh_size = 0;
+	vattr_null(&va);
+	cred = nfsacl_takecred(rq);
+	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
+	/* No attributes of an attribute, zfs_vnops.c:1488-1495. */
+	if (error == 0 && nn.nn_xattr) {
+		VOP_UNLOCK(vp);
+		error = EINVAL;
+	} else if (error == 0) {
+		error = nfsrv_composefh(vp, &nsfh, v3);
+		VOP_UNLOCK(vp);
+	}
+	if (error == 0)
+		error = nfs_xattr_any(vp, cred, &any);
+	if (error == 0 && !any && !create)
+		error = ENOENT;
+	if (error == 0)
+		error = nfsrv_xattr_mkfh(&nsfh, v3, NFS_XATTR_DIR, NULL, &dfh);
+	if (error == 0)
+		error = nfs_xattr_vattr(vp, cred, NFS_XATTR_DIR, "", &va);
+	if (vp != NULL)
+		vrele(vp);
+	if (v3) {
+		status = nfsacl_errno(error);
+		len = NFSRVFH_SIZE(&dfh);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    (status != NFS_OK ||
+		     (xdr_u_int32_t(rx, &len) &&
+		      xdr_opaque(rx, (char *)NFSRVFH_DATA(&dfh), len) &&
+		      nfsacl_put_va(rx, &va)));
+	} else {
+		status = nfsacl_errno2(error);
+		ok = xdr_u_int32_t(rx, &status) &&
+		    (status != NFS_OK ||
+		     (xdr_opaque(rx, (char *)NFSRVFH_DATA(&dfh), NFSX_V2FH) &&
+		      nfsacl_put_fattr2(rx, &va)));
+	}
+	nfsacl_freecred(cred);
+	return ok ? ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
+}
+
+/*
  * No reply cache: Linux has RC_NOCACHE for all of them [L3 267-292,
- * L2].  GETACL, GETATTR and ACCESS change nothing, and SETACL done
- * twice sets the same lists.
+ * L2].  GETACL, GETATTR, ACCESS and GETXATTRDIR change nothing, and
+ * SETACL done twice sets the same lists.
  */
 static enum oncrpc_dispatch
 nfsacl_dispatch(struct oncrpc_req *rq)
@@ -925,6 +1058,8 @@ nfsacl_dispatch(struct oncrpc_req *rq)
 			return nfsacl_getattr2(rq);
 		case ACLPROC2_ACCESS:
 			return nfsacl_access2(rq);
+		case ACLPROC2_GETXATTRDIR:
+			return nfsacl_getxattrdir(rq);
 		default:
 			return ONCRPC_ERR_PROC;
 		}
@@ -936,6 +1071,8 @@ nfsacl_dispatch(struct oncrpc_req *rq)
 		return nfsacl_getacl(rq);
 	case ACLPROC3_SETACL:
 		return nfsacl_setacl(rq);
+	case ACLPROC3_GETXATTRDIR:
+		return nfsacl_getxattrdir(rq);
 	default:
 		return ONCRPC_ERR_PROC;
 	}

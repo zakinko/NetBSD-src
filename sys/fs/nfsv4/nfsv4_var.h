@@ -236,6 +236,9 @@ void	nfsv4_xstore_time(struct vnode *, struct timespec *);
 uint32_t nfsv4_retention_check(struct nfsv4_compound *, struct vnode *,
 	    kauth_cred_t);
 bool	nfsv4_retained(struct vnode *, bool);
+void	nfsv4_retention_scan(void);
+void	nfsv4_retention_init(void);
+void	nfsv4_retention_fini(void);
 void	nfsv4_retention_get(struct vnode *, u_int, uint64_t *,
 	    struct timespec *);
 uint64_t nfsv4_retention_hold(struct vnode *);

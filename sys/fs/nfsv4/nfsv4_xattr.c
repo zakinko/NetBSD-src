@@ -243,15 +243,23 @@ xs_get(struct vnode *vp, const char *name, void *buf, size_t len, size_t *gotp)
 }
 
 static int
-xs_set(struct vnode *vp, const char *name, const void *buf, size_t len)
+xs_set_locked(struct vnode *vp, const char *name, const void *buf,
+    size_t len)
 {
 	struct iovec iov;
 	struct uio uio;
-	int error;
 
 	xa_uio(&uio, &iov, __UNCONST(buf), len, UIO_WRITE);
+	return VOP_SETEXTATTR(vp, XS_NS, name, &uio, NOCRED);
+}
+
+static int
+xs_set(struct vnode *vp, const char *name, const void *buf, size_t len)
+{
+	int error;
+
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-	error = VOP_SETEXTATTR(vp, XS_NS, name, &uio, NOCRED);
+	error = xs_set_locked(vp, name, buf, len);
 	VOP_UNLOCK(vp);
 	return error;
 }
@@ -292,6 +300,19 @@ nfsv4_xstore_time(struct vnode *vp, struct timespec *ts)
  * The retention attributes, RFC 8881 s5.13, kept in one record beside
  * the others so that the check on every WRITE is one read.  A begin
  * time is kept only while enabled.
+ *
+ * A retained file also has UF_IMMUTABLE, so that local processes and
+ * the server of NFSv2 and NFSv3 cannot change it either; ufs_accessx()
+ * and ufs_setattr() refuse writes, and ufs_remove() and ufs_rename()
+ * the name, of such a file.  Not SF_IMMUTABLE: above securelevel 0 it
+ * cannot be cleared when retention ends.  RR_IMMUTABLE says that this
+ * code set the flag, so that one the owner had set before stays when
+ * retention ends.  The owner can still clear it with chflags(2) while
+ * retained (ufs_accessx() leaves VADMIN_PERMS to the owner); the server
+ * checks the record itself, and sets the flag again the next time it
+ * looks.  NFS has no attribute for the flags, so no client clears it.
+ * A flag the owner sets again while retained is taken for this one's
+ * and cleared with it: there is one bit.
  */
 struct ret_rec {
 	struct {
@@ -301,7 +322,27 @@ struct ret_rec {
 		int64_t		r_nsec;
 	}		rr[2];		/* NFSV4_RET* */
 	uint64_t	rr_hold;
+	uint64_t	rr_flags;
 };
+#define	RR_IMMUTABLE	0x1		/* UF_IMMUTABLE set here */
+
+/*
+ * When it ends, the flag is cleared when the file is next looked at,
+ * as an expired lease is noticed when the client next comes, in
+ * nfsv4_client_get(), and a quota's grace when the owner next
+ * allocates, in chkdqchg() of ufs_quota1.c.  For a file nobody
+ * looks at, lease_thread() looks through these every NFSV4_LEASE_SCAN
+ * seconds, as it does through the leases nobody renews.  The list is
+ * in memory only: after a reboot or a reload of the module a file is
+ * cleared only when it is next looked at.
+ */
+struct ret_pend {
+	LIST_ENTRY(ret_pend) rp_list;
+	time_t		rp_end;		/* wall clock, as the begin times */
+	fhandle_t	*rp_fh;
+};
+static LIST_HEAD(, ret_pend) ret_pend_list;
+static kmutex_t ret_pend_lock;
 
 static void
 ret_read(struct vnode *vp, bool locked, struct ret_rec *r)
@@ -341,20 +382,172 @@ ret_left(const struct ret_rec *r, u_int i, const struct timespec *now)
 
 /*
  * Retained, s5.13: by a hold, s5.13.5, or by either kind of retention,
- * each whatever the other says, s5.13.4.  locked says vp is locked.
+ * each whatever the other says, s5.13.4.
  */
+static bool
+ret_retained(const struct ret_rec *r, const struct timespec *now)
+{
+
+	return r->rr_hold != 0 || ret_left(r, NFSV4_RET, now) != 0 ||
+	    ret_left(r, NFSV4_RETEVT, now) != 0;
+}
+
+/* When retention without a hold ends, or 0 for never by itself. */
+static time_t
+ret_end(const struct ret_rec *r, const struct timespec *now)
+{
+	uint64_t left;
+	time_t end = 0;
+	u_int i;
+
+	if (r->rr_hold != 0)
+		return 0;		/* until a SETATTR, which looks */
+	for (i = 0; i < 2; i++) {
+		left = ret_left(r, i, now);
+		if (left > (uint64_t)INT32_MAX)
+			return 0;	/* past any scan worth keeping */
+		if (left != 0 && now->tv_sec + (time_t)left + 1 > end)
+			end = now->tv_sec + (time_t)left + 1;
+	}
+	return end;
+}
+
+static void
+ret_pend_add(struct vnode *vp, time_t end)
+{
+	struct ret_pend *rp, *nrp;
+	fhandle_t *fh;
+
+	if (vfs_composefh_alloc(vp, &fh) != 0)
+		return;
+	nrp = kmem_alloc(sizeof(*nrp), KM_SLEEP);
+	mutex_enter(&ret_pend_lock);
+	LIST_FOREACH(rp, &ret_pend_list, rp_list) {
+		if (FHANDLE_SIZE(rp->rp_fh) == FHANDLE_SIZE(fh) &&
+		    memcmp(rp->rp_fh, fh, FHANDLE_SIZE(fh)) == 0)
+			break;
+	}
+	if (rp == NULL) {
+		rp = nrp;
+		rp->rp_fh = fh;
+		nrp = NULL;
+		fh = NULL;
+		LIST_INSERT_HEAD(&ret_pend_list, rp, rp_list);
+	}
+	rp->rp_end = end;
+	mutex_exit(&ret_pend_lock);
+	if (nrp != NULL)
+		kmem_free(nrp, sizeof(*nrp));
+	if (fh != NULL)
+		vfs_composefh_free(fh);
+}
+
+/*
+ * Make UF_IMMUTABLE agree with r, vp being locked exclusively.  The
+ * credential is the kernel's: who looked may not own the file.
+ */
+static void
+ret_flag(struct vnode *vp, struct ret_rec *r, const struct timespec *now)
+{
+	struct vattr va;
+	uint64_t was = r->rr_flags;
+	bool want = ret_retained(r, now);
+	u_long f;
+	time_t end;
+
+	if (VOP_GETATTR(vp, &va, lwp0.l_cred) != 0)
+		return;
+	/* All of the flags, so that the SF_ ones are not changed. */
+	if (want && (va.va_flags & UF_IMMUTABLE) == 0) {
+		f = va.va_flags | UF_IMMUTABLE;
+		vattr_null(&va);
+		va.va_flags = f;
+		if (VOP_SETATTR(vp, &va, lwp0.l_cred) == 0)
+			r->rr_flags |= RR_IMMUTABLE;
+	} else if (!want && (r->rr_flags & RR_IMMUTABLE) != 0) {
+		if ((va.va_flags & UF_IMMUTABLE) != 0) {
+			f = va.va_flags & ~UF_IMMUTABLE;
+			vattr_null(&va);
+			va.va_flags = f;
+			if (VOP_SETATTR(vp, &va, lwp0.l_cred) != 0)
+				return;
+		}
+		r->rr_flags &= ~RR_IMMUTABLE;
+	}
+	if (r->rr_flags != was)
+		(void)xs_set_locked(vp, "nfsv4.retention", r, sizeof(*r));
+	if (want && (end = ret_end(r, now)) != 0)
+		ret_pend_add(vp, end);
+}
+
+/* Whether vp is retained, its flag made to agree.  locked: exclusively. */
 bool
 nfsv4_retained(struct vnode *vp, bool locked)
 {
 	struct ret_rec r;
 	struct timespec now;
+	bool want;
 
-	ret_read(vp, locked, &r);
-	if (r.rr_hold != 0)
-		return true;
+	if (!locked)
+		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	ret_read(vp, true, &r);
 	getnanotime(&now);
-	return ret_left(&r, NFSV4_RET, &now) != 0 ||
-	    ret_left(&r, NFSV4_RETEVT, &now) != 0;
+	want = ret_retained(&r, &now);
+	if (want || (r.rr_flags & RR_IMMUTABLE) != 0)
+		ret_flag(vp, &r, &now);
+	if (!locked)
+		VOP_UNLOCK(vp);
+	return want;
+}
+
+/* lease_thread(): the files whose retention has ended. */
+void
+nfsv4_retention_scan(void)
+{
+	LIST_HEAD(, ret_pend) due;
+	struct ret_pend *rp, *next;
+	struct vnode *vp;
+
+	LIST_INIT(&due);
+	mutex_enter(&ret_pend_lock);
+	LIST_FOREACH_SAFE(rp, &ret_pend_list, rp_list, next) {
+		if (rp->rp_end <= time_second) {
+			LIST_REMOVE(rp, rp_list);
+			LIST_INSERT_HEAD(&due, rp, rp_list);
+		}
+	}
+	mutex_exit(&ret_pend_lock);
+	while ((rp = LIST_FIRST(&due)) != NULL) {
+		LIST_REMOVE(rp, rp_list);
+		/* Locked exclusively; a file gone or unmounted is let be. */
+		if (vfs_fhtovp(rp->rp_fh, &vp) == 0) {
+			(void)nfsv4_retained(vp, true);
+			vput(vp);
+		}
+		vfs_composefh_free(rp->rp_fh);
+		kmem_free(rp, sizeof(*rp));
+	}
+}
+
+void
+nfsv4_retention_init(void)
+{
+
+	mutex_init(&ret_pend_lock, MUTEX_DEFAULT, IPL_NONE);
+	LIST_INIT(&ret_pend_list);
+}
+
+void
+nfsv4_retention_fini(void)
+{
+	struct ret_pend *rp;
+
+	while ((rp = LIST_FIRST(&ret_pend_list)) != NULL) {
+		LIST_REMOVE(rp, rp_list);
+		vfs_composefh_free(rp->rp_fh);
+		kmem_free(rp, sizeof(*rp));
+	}
+	mutex_destroy(&ret_pend_lock);
 }
 
 /* retention_get4, s5.13.1: no begin time once the duration is 0. */
@@ -461,8 +654,17 @@ nfsv4_xstore_apply(struct nfsv4_compound *c, struct vnode *vp,
 	if (xs->xs_set2 != 0) {
 		/* Not VWRITE; a retained file still takes these, s5.13. */
 		st = ret_make(c, vp, cred, &r);
-		if (st == NFS4_OK)
-			error = xs_set(vp, "nfsv4.retention", &r, sizeof(r));
+		if (st == NFS4_OK) {
+			struct timespec now;
+
+			vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+			error = xs_set_locked(vp, "nfsv4.retention", &r,
+			    sizeof(r));
+			getnanotime(&now);
+			if (error == 0)
+				ret_flag(vp, &r, &now);
+			VOP_UNLOCK(vp);
+		}
 		if (st == NFS4_OK && error == 0)
 			xs->xs_did2 = xs->xs_set2;
 		xs->xs_set2 = 0;

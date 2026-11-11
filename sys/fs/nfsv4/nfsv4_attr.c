@@ -668,6 +668,14 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		vn_lock(vp, LK_SHARED | LK_RETRY);
 		error = VOP_GETATTR(vp, &va, cf->cf_cred);
 		VOP_UNLOCK(vp);
+		/* RFC 8881 s5.13: one whose retention ended is let go. */
+		if (error == 0 && cf->cf_attr == 0 &&
+		    (va.va_flags & UF_IMMUTABLE) != 0 &&
+		    !nfsv4_retained(vp, false)) {
+			vn_lock(vp, LK_SHARED | LK_RETRY);
+			error = VOP_GETATTR(vp, &va, cf->cf_cred);
+			VOP_UNLOCK(vp);
+		}
 		if (error != 0)
 			return nfsv4_errno(error);
 		if (cf->cf_attr == NFSV4_ATTR_FILE) {

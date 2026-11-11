@@ -803,6 +803,7 @@ lease_thread(void *arg)
 		mutex_exit(&nfsv4_state_lock);
 		nfsv4_reap_finish(&reap);
 		nfsv4_grace_scan();
+		nfsv4_retention_scan();
 		mutex_enter(&nfsv4_state_lock);
 		do {
 			again = false;
@@ -884,6 +885,7 @@ nfsv4_state_init(void)
 	nfsv4_dying = false;
 	nfsv4_deleg_init();
 	nfsv4_session_init();
+	nfsv4_retention_init();
 	/*
 	 * Each load is a new instance of the server: stale stateids and
 	 * client IDs must be seen as such, s9.1.1.  A second would do, as
@@ -911,6 +913,7 @@ nfsv4_state_fini(void)
 		client_free(cl);
 	mutex_exit(&nfsv4_state_lock);
 	nfsv4_session_fini();
+	nfsv4_retention_fini();
 	cv_destroy(&nfsv4_state_cv);
 	mutex_destroy(&nfsv4_state_lock);
 }

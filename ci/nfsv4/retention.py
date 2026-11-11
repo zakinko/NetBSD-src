@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The retention attributes, RFC 8881 s5.13.  Run from pynfs's nfs4.1
 directory: retention.py EXPORT, on a file system with extended
-attributes, where they are kept.  Failures are the measurement."""
-import sys, time, traceback
+attributes, where they are kept.  ssh to the VM tries UF_IMMUTABLE from
+inside, locally and through NFSv3.  Failures are the measurement."""
+import subprocess, sys, time, traceback
 import nfs_ops, nfs4client, nfs4lib
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import *
@@ -50,6 +51,19 @@ def trunc(n):
     return s.compound(use_obj(export) + [op.open(0, OPEN4_SHARE_ACCESS_WRITE, 0,
         open_owner4(0, b"tr" + n), openflag4(OPEN4_CREATE, createhow4(UNCHECKED4,
         {FATTR4_SIZE: 0})), open_claim4(CLAIM_NULL, stamp + n))]).status
+def vm(cmd):
+    p = subprocess.run(["ssh", "netbsd", "sh -c '%s'" % cmd],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return p.returncode, p.stdout.decode(errors="replace").strip()
+V = lambda n: "/%s/%s" % (b"/".join(export).decode(), (stamp + n).decode())
+def uchg(n):
+    return "uchg" in vm("stat -f %%Sf %s" % V(n))[1].split(",")
+# s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049.
+v3 = vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
+        "mkdir -p /mnt/v3r; mount | grep -q /mnt/v3r || "
+        "mount_nfs -3 -U 127.0.0.1:%s /mnt/v3r" % "/".join([""] + [e.decode() for e in export]))
+print("  NFSv3 mount:", v3)
+W = lambda n: "/mnt/v3r/%s" % (stamp + n).decode()
 RS = lambda en, d=None: retention_set4(en, [] if d is None else [d])
 RET = (FATTR4_RETENTION_GET, FATTR4_RETENTION_SET, FATTR4_RETENTEVT_GET,
        FATTR4_RETENTEVT_SET, FATTR4_RETENTION_HOLD)
@@ -77,13 +91,13 @@ def body():
     # s5.13.2: a duration not enabled may go down.
     t("s5.13.2 duration 100", setattr(fh, {FATTR4_RETENTION_SET: RS(False, 100)}),
       NFS4_OK)
-    t("s5.13.2 down to 3", setattr(fh, {FATTR4_RETENTION_SET: RS(False, 3)}),
+    t("s5.13.2 down to 20", setattr(fh, {FATTR4_RETENTION_SET: RS(False, 20)}),
       NFS4_OK)
     t("s5.13.2 enable", setattr(fh, {FATTR4_RETENTION_SET: RS(True)}), NFS4_OK)
     st, a = getattr(fh, [FATTR4_RETENTION_GET])
     g = a[FATTR4_RETENTION_GET] if a else None
     t("s5.13.1 begin time", g is not None and len(g.rg_begin_time), 1)
-    t("s5.13.2 counting down", g is not None and 1 <= g.rg_duration <= 3, True)
+    t("s5.13.2 counting down", g is not None and 1 <= g.rg_duration <= 20, True)
     t("s5.13.2 shorten while enabled", setattr(fh,
       {FATTR4_RETENTION_SET: RS(True, 1)}), NFS4ERR_INVAL)
     t("s5.13.2 disable while enabled", setattr(fh,
@@ -91,8 +105,19 @@ def body():
     # s5.13: the data and the name.
     t("s5.13 WRITE", write(fh, sid), NFS4ERR_ACCESS)
     t("s5.13 SETATTR size", setattr(fh, {FATTR4_SIZE: 0}, sid), NFS4ERR_ACCESS)
-    t("s5.13 SETATTR mode, not retained", setattr(fh, {FATTR4_MODE: 0o644}),
-      NFS4_OK)
+    # Not asked for by s5.13; UF_IMMUTABLE refuses it in ufs_setattr().
+    t("s5.13 SETATTR mode", setattr(fh, {FATTR4_MODE: 0o644}), NFS4ERR_PERM)
+    # UF_IMMUTABLE, so local processes and NFSv3 are refused too.
+    t("uchg while retained", uchg(b"a"), True)
+    t("local append refused", vm("echo x >> %s" % V(b"a"))[0] != 0, True)
+    t("local rm refused", vm("rm -f %s" % V(b"a"))[0] != 0, True)
+    if v3[0] == 0:
+        t("NFSv3 append refused", vm("echo x >> %s" % W(b"a"))[0] != 0, True)
+        t("NFSv3 rm refused", vm("rm -f %s" % W(b"a"))[0] != 0, True)
+    # The owner may clear it (ufs_accessx); the server sets it again.
+    vm("chflags nouchg %s" % V(b"a"))
+    t("chflags nouchg, then REMOVE", [uchg(b"a"), remove(b"a"), uchg(b"a")],
+      [[False, NFS4ERR_ACCESS, True]])
     close_file(s, fh, sid)
     t("s5.13 OPEN truncating", trunc(b"a"), NFS4ERR_ACCESS)
     t("s5.13 REMOVE", remove(b"a"), NFS4ERR_ACCESS)
@@ -100,7 +125,13 @@ def body():
     fo, so = mk(b"o")
     close_file(s, fo, so)
     t("s5.13 RENAME over", rename(b"o", b"a"), NFS4ERR_ACCESS)
-    time.sleep(4)
+    # Nothing over NFS now: lease_thread() is to clear it, 10 s after.
+    for i in range(40):
+        time.sleep(1)
+        if not uchg(b"a"):
+            break
+    print("  uchg gone after", i + 1, "s")
+    t("uchg gone with nobody looking", uchg(b"a"), False)
     st, a = getattr(fh, [FATTR4_RETENTION_GET])
     t("s5.13.1 ended", st == 0 and [a[FATTR4_RETENTION_GET].rg_duration,
       a[FATTR4_RETENTION_GET].rg_begin_time], [[0, []]])
@@ -121,6 +152,19 @@ def body():
     time.sleep(4)
     t("s5.13.4 REMOVE after", remove(b"e"), NFS4_OK)
 
+    # A flag set before is not this one's, and stays.
+    fh, sid = mk(b"u")
+    close_file(s, fh, sid)
+    t("chflags uchg", vm("chflags uchg %s" % V(b"u"))[0], 0)
+    t("enable over uchg", setattr(fh, {FATTR4_RETENTION_SET: RS(True, 2)}), NFS4_OK)
+    time.sleep(13)
+    t("uchg kept after, scanned", uchg(b"u"), True)
+    t("GETATTR after", getattr(fh, [FATTR4_RETENTION_GET])[0], NFS4_OK)
+    t("uchg kept after, looked at", uchg(b"u"), True)
+    t("REMOVE, the owner's uchg", remove(b"u"), [NFS4ERR_PERM, NFS4ERR_ACCESS])
+    vm("chflags nouchg %s" % V(b"u"))
+    t("REMOVE after nouchg", remove(b"u"), NFS4_OK)
+
     # s5.13.5
     fh, sid = mk(b"h")
     close_file(s, fh, sid)
@@ -129,7 +173,9 @@ def body():
     t("s5.13.5 read", st == 0 and a[FATTR4_RETENTION_HOLD], 1 << 63)
     t("s5.13.5 REMOVE", remove(b"h"), NFS4ERR_ACCESS)
     t("s5.13.5 RENAME", rename(b"h", b"h2"), NFS4ERR_ACCESS)
+    t("s5.13.5 uchg", uchg(b"h"), True)
     t("s5.13.5 released", setattr(fh, {FATTR4_RETENTION_HOLD: 0}), NFS4_OK)
+    t("s5.13.5 uchg gone at once", uchg(b"h"), False)
     t("s5.13.5 REMOVE after", remove(b"h"), NFS4_OK)
 
 try:
@@ -137,5 +183,7 @@ try:
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")
+if v3[0] == 0:
+    vm("umount /mnt/v3r")
 print("failures:", fails)
 sys.exit(0)

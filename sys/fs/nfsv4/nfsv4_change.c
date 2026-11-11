@@ -564,9 +564,12 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = nfsv4_io_check(c, &sa->stateid, true);
 	} else if (st == NFS4_OK && c->c_minor != 0)
 		st = nfsv4_setattr_stateid(c, &sa->stateid);	/* RFC 8881 s8.2.6 */
-	/* RFC 8881 s5.13, before anything is changed; see nfsv4_op_write(). */
-	if (st == NFS4_OK && (set & (1ULL << FATTR4_SIZE)) != 0 &&
-	    nfsv4_retained(vp, false))
+	/*
+	 * RFC 8881 s5.13, before anything is changed; see nfsv4_op_write().
+	 * An ended retention lets go of UF_IMMUTABLE here first.
+	 */
+	if (st == NFS4_OK && set != 0 && nfsv4_retained(vp, false) &&
+	    (set & (1ULL << FATTR4_SIZE)) != 0)
 		st = NFS4ERR_ACCESS;
 	if (st == NFS4_OK)
 		st = nfsv4_retention_check(c, vp, cf->cf_cred);

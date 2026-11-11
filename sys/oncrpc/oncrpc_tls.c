@@ -137,7 +137,8 @@ tc_tombuf(const uint8_t *buf, u_int len)
 		m = top == NULL ? m_gethdr(M_WAIT, MT_DATA) :
 		    m_get(M_WAIT, MT_DATA);
 		n = len - off;
-		if (n > MLEN) {
+		/* The first holds MHLEN, behind its packet header. */
+		if (n > (top == NULL ? MHLEN : MLEN)) {
 			MCLGET(m, M_WAIT);
 			n = MIN(n, MCLBYTES);
 		}

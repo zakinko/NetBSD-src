@@ -15,6 +15,8 @@ on:
       - 'ci/nfsv4/nfsv4d.c'
       - 'ci/nfsv4/build.sh'
       - 'ci/nfsrdma/badpeer.py'
+      - 'ci/nfsrdma/badpeer_lib.py'
+      - 'ci/nfsrdma/recall41.py'
       - 'ci/nfsrdma/in-vm.sh'
       - 'ci/nfsrdma/diag.sh'
       - '.github/workflows/nfsrdma.yml'
@@ -102,6 +104,10 @@ jobs:
         timeout-minutes: 5
         shell: bash
         run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
+      - name: A recall on the backchannel of RDMA, then the forward channel
+        timeout-minutes: 4
+        shell: bash
+        run: set -o pipefail; python3 -u ci/nfsrdma/recall41.py 192.0.2.1 20049 2049 /export/x 2>&1 | tee out/recall41.txt
       - name: Result
         if: always()
         timeout-minutes: 2
@@ -117,6 +123,7 @@ jobs:
             out/kernel.txt
             out/rdma.pcap
             out/badpeer.txt
+            out/recall41.txt
             out/summary.txt
             out/nlm-up.txt
             out/tun.err

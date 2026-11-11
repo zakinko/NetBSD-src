@@ -878,6 +878,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_cb_vers1, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_trace", SYSCTL_DESCR("Log GETATTR under write delegations"),
+	    NULL, 0, &nfsv4_cb_trace, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "excl_inherit", SYSCTL_DESCR("Inherit ACEs on EXCLUSIVE4 create"),
 	    NULL, 0, &nfsv4_excl_inherit, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

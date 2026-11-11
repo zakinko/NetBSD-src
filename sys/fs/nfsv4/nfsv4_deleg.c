@@ -58,6 +58,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/fcntl.h>
 #include <sys/kmem.h>
 #include <sys/systm.h>
+#include <sys/syslog.h>
 #include <sys/time.h>
 #include <sys/vnode.h>
 
@@ -263,6 +264,13 @@ nfsv4_open_denies_remove(const struct nfsv4_cfh *dir, const char *name)
 }
 
 /*
+ * vfs.nfsv4.cb_trace: say in the kernel's log what a GETATTR under
+ * another client's write delegation found and what CB_GETATTR answered,
+ * with the time asked.  Off by default; for the tests to read.
+ */
+int nfsv4_cb_trace = 0;
+
+/*
  * RFC 7530 s10.4.3: the constructed times SHOULD go into the file's
  * metadata, so that they cannot seem to go backward if the holder never
  * writes.  VOP_SETATTR takes no ctime, but setting the mtime makes the
@@ -304,8 +312,11 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 	uint64_t other, size, cc;
 	int error;
 
-	if (atomic_load_relaxed(&deleg_count) == 0)
+	if (atomic_load_relaxed(&deleg_count) == 0) {
+		if (nfsv4_cb_trace)
+			log(LOG_DEBUG, "nfsv4 cbtrace: no delegation at all\n");
 		return NFS4_OK;
+	}
 	vn_lock(vp, LK_SHARED | LK_RETRY);
 	error = VOP_GETATTR(vp, &va, cf->cf_cred);
 	VOP_UNLOCK(vp);
@@ -317,6 +328,14 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 	if (f != NULL) {
 		LIST_FOREACH(st, &f->f_states, st_flist) {
 			cl = st->st_owner->sw_client;
+			if (nfsv4_cb_trace && st->st_type == NFSV4_ST_DELEG)
+				log(LOG_DEBUG, "nfsv4 cbtrace: deleg type %u "
+				    "recalled %d prev %d cbstate %d same conn "
+				    "%d minor %u\n", st->st_dtype,
+				    st->st_recalled, st->st_prev,
+				    cl->cl_cbstate,
+				    cl->cl_connid == c->c_rq->rq_connid,
+				    cl->cl_minor);
 			if (st->st_type == NFSV4_ST_DELEG &&
 			    st->st_dtype == OPEN_DELEGATE_WRITE &&
 			    !st->st_recalled && !st->st_prev &&
@@ -327,9 +346,25 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 		if (st != NULL) {
 			other = st->st_other;
 			fh = f->f_fh;
+			if (nfsv4_cb_trace)
+				log(LOG_DEBUG, "nfsv4 cbtrace: CB_GETATTR at "
+				    "%lld, file size %llu\n",
+				    (long long)time_second,
+				    (unsigned long long)va.va_size);
 			error = nfsv4_cb_getattr(cl, &fh, &size, &cc);
+			if (nfsv4_cb_trace)
+				log(LOG_DEBUG, "nfsv4 cbtrace: error %d cc %llu "
+				    "size %llu at %lld\n", error,
+				    (unsigned long long)cc,
+				    (unsigned long long)size,
+				    (long long)time_second);
 			st = error == 0 ? nfsv4_state_byother(other) : NULL;
 			if (st != NULL && st->st_file != NULL) {
+				if (nfsv4_cb_trace)
+					log(LOG_DEBUG, "nfsv4 cbtrace: sc %llu "
+					    "modified %d\n",
+					    (unsigned long long)st->st_sc,
+					    st->st_modified);
 				if (!st->st_modified && (cc != st->st_sc ||
 				    size != va.va_size))
 					st->st_modified = true;
@@ -348,6 +383,9 @@ nfsv4_deleg_getattr(struct nfsv4_compound *c)
 		}
 	}
 	mutex_exit(&nfsv4_state_lock);
+	if (nfsv4_cb_trace)
+		log(LOG_DEBUG, "nfsv4 cbtrace: no CB_GETATTR (file %d), "
+		    "recall if any\n", f != NULL);
 	return nfsv4_deleg_break(vp, NULL, c->c_rq->rq_connid, NFSV4_DC_READ);
 }
 

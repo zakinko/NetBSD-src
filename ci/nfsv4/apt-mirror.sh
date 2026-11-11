@@ -11,6 +11,8 @@ if getent hosts azure.archive.ubuntu.com >/dev/null &&
 	echo "apt-mirror: ubuntu.com resolves, left alone"
 	exit 0
 fi
+# A warning on the run's page too, so that the switch is not missed.
+echo "::warning::apt-mirror: ubuntu.com does not resolve, using $M"
 echo "apt-mirror: ubuntu.com does not resolve, using $M"
 for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
 	[ -f "$f" ] || continue

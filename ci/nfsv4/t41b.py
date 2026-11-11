@@ -387,14 +387,14 @@ res = create_file(s, stamp + b"f", path=sec + [stamp + b"f"])
 check(res)
 secfile, sid = res.resarray[-1].object, res.resarray[-2].stateid
 close_file(s, secfile, sid)
-rc = subprocess.call(["ssh", "netbsd", "sudo sh -c \"sed -i.bak '/^%s /s/ -noresvport//' "
+rc = subprocess.call(["ssh", "netbsd", "sh -c \"sed -i.bak '/^%s /s/ -noresvport//' "
                       "/etc/exports && kill -HUP \\$(cat /var/run/mountd.pid)\""
                       % sys.argv[2].replace('/', '\\/')])
 print("  closing the export:", rc)
 time.sleep(3)
 def ws(name, ops, status, last):
     res = s.compound(ops)
-    t("s2.6.3.1.1 " + name, (res.status, res.resarray[-1].resop), (status, last))
+    t("s2.6.3.1.1 " + name, (res.status, res.resarray[-1].resop), [(status, last)])
 OK, WS = NFS4_OK, NFS4ERR_WRONGSEC
 g = op.getattr(1 << FATTR4_TYPE)
 ws("alone", [op.putfh(secfh)], OK, OP_PUTFH)

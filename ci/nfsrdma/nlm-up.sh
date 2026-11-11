@@ -62,7 +62,7 @@ s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
 c = struct.pack(">10I", 7, 0, 2, 100021, 4, 0, 0, 0, 0, 0)
 s.sendall(struct.pack(">I", 0x80000000 | len(c)) + c)
 r = s.recv(64)
-w = struct.unpack(">7I", r[4:32])
+w = struct.unpack(">6I", r[4:28])
 print("NLM 4 NULL by", sys.argv[1], "accept_stat", w[5], "ok" if w[0] == 7 and w[5] == 0 else "FAILED")
 ' "$a" "$p" || echo "NLM 4 NULL by $a: no answer"
 done

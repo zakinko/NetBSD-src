@@ -17,7 +17,7 @@ if [ "$WHAT" = kernel ]; then
 	exit 0
 fi
 cp "$W/netbsd" "$OUT/netbsd"
-for d in sys/modules/xdr sys/modules/oncrpc sys/modules/nfsv4; do
+for d in sys/modules/xdr sys/modules/oncrpc sys/modules/nfsxattr sys/modules/nfsv4; do
 	m=${d##*/}
 	(cd "$d" && "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
 	    "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) \

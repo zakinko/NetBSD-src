@@ -887,7 +887,7 @@ nfsv4_sysctl_init(void)
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 }
 
-MODULE(MODULE_CLASS_MISC, nfsv4, "oncrpc,nfsserver");
+MODULE(MODULE_CLASS_MISC, nfsv4, "oncrpc,nfsserver,nfsxattr");
 
 static int
 nfsv4_modcmd(modcmd_t cmd, void *arg)

@@ -6,6 +6,8 @@ on:
       - 'sys/nfs/**'
       - 'sys/oncrpc/**'
       - 'sys/modules/nfsserver/**'
+      - 'sys/modules/nfsxattr/**'
+      - 'sys/fs/nfsv4/**'
       - 'usr.sbin/nfsd/**'
       - 'etc/rpc'
       - 'ci/nfsacl/**'

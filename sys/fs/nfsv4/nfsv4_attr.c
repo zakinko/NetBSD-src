@@ -53,6 +53,8 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/unistd.h>
 #include <sys/vnode.h>
 
+#include <nfs/nfs_xattr.h>
+
 #include <oncrpc/oncrpc_gss.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
@@ -458,16 +460,6 @@ attr_pseudo_fileid(const struct nfsv4_cfh *cf)
 	return h;
 }
 
-/* The high bit keeps it from the numbers that files have. */
-static uint64_t
-attr_named_fileid(uint64_t id, const char *name)
-{
-
-	for (; *name != '\0'; name++)
-		id = (id ^ (uint8_t)*name) * 0x100000001b3ULL;
-	return id | (1ULL << 63);
-}
-
 /*
  * RFC 7530 s5.8.2.19: at the root of a file system, the file id of the
  * directory at the bottom of whatever is mounted there.
@@ -526,7 +518,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 	uint64_t m, out, id, maxsize, sup;
 	uint32_t st, w2;
 	u_int n;
-	bool ok;
+	bool ok, any;
 	XDR x;
 	int error;
 
@@ -546,22 +538,18 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 
 	id = 0;
 	if (vp != NULL && (m & attr_vattr) != 0) {
-		vn_lock(vp, LK_SHARED | LK_RETRY);
-		error = VOP_GETATTR(vp, &va, cf->cf_cred);
-		VOP_UNLOCK(vp);
+		if (cf->cf_attr != 0) {
+			/* As versions 2 and 3 make them. */
+			error = nfs_xattr_vattr(vp, cf->cf_cred,
+			    cf->cf_attr == NFSV4_ATTR_DIR ? NFS_XATTR_DIR :
+			    NFS_XATTR_FILE, cf->cf_aname, &va);
+		} else {
+			vn_lock(vp, LK_SHARED | LK_RETRY);
+			error = VOP_GETATTR(vp, &va, cf->cf_cred);
+			VOP_UNLOCK(vp);
+		}
 		if (error != 0)
 			return nfsv4_errno(error);
-		if (cf->cf_attr == NFSV4_ATTR_FILE) {
-			/* Its own number among the file system's. */
-			va.va_fileid = attr_named_fileid(va.va_fileid,
-			    cf->cf_aname);
-			va.va_size = 0;
-			if ((m & BIT(FATTR4_SIZE)) != 0) {
-				error = nfsv4_xattr_size(cf, &va.va_size);
-				if (error != 0)
-					return nfsv4_errno(error);
-			}
-		}
 		/* s10.4.3 */
 		if (c->c_ov.ao_valid) {
 			va.va_size = c->c_ov.ao_size;
@@ -693,7 +681,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			break;
 		case FATTR4_NAMED_ATTR:
 			ok = attr_u32(&x, vp != NULL && cf->cf_attr == 0 &&
-			    nfsv4_xattr_any(cf));
+			    nfs_xattr_any(vp, cf->cf_cred, &any) == 0 && any);
 			break;
 		case FATTR4_CASE_INSENSITIVE:
 			ok = attr_u32(&x, 0);

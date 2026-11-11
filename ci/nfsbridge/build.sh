@@ -15,7 +15,7 @@ log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" -u kernel=NFSBROFF
 cp "$O/sys/arch/amd64/compile/NFSBROFF/netbsd" "$OUT/netbsd.off"
 log ./build.sh -U -m amd64 -j "$J" -O "$O" -T "$T" -u kernel=NFSBRON
 cp "$O/sys/arch/amd64/compile/NFSBRON/netbsd" "$OUT/netbsd.on"
-for d in sys/modules/xdr sys/modules/oncrpc sys/modules/nfsv4; do
+for d in sys/modules/xdr sys/modules/oncrpc sys/modules/nfsxattr sys/modules/nfsv4; do
 	m=${d##*/}
 	(cd "$d" && "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
 	    "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) \

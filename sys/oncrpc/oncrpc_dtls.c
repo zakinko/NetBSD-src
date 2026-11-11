@@ -54,6 +54,16 @@
  *
  * The callback runs with the socket locked, in softint, and so only
  * queues; the svc workers open the records, oncrpc_dtls_getmsg().
+ *
+ * The handshake is rpc.tlsservd's.  A peer whose ClientHello came goes
+ * on dtls_ready; oncrpc_dtls_take() gives the daemon one end of an
+ * AF_LOCAL datagram pair, and d_work carries datagrams across: the
+ * peer's into the pair, the daemon's out of the UDP socket to the peer.
+ * oncrpc_dtls_done() ends it with the traffic secrets.
+ *
+ * Locks: the UDP socket's, then d_lock; dtls_glock before d_lock, and
+ * never taken holding it.  The pair's socket lock is taken with none
+ * of these held, and its upcall takes only d_lock.
  */
 
 #include <sys/cdefs.h>
@@ -64,17 +74,28 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #endif
 
 #include <sys/param.h>
+#include <sys/atomic.h>
 #include <sys/errno.h>
+#include <sys/file.h>
+#include <sys/filedesc.h>
 #include <sys/kmem.h>
 #include <sys/mbuf.h>
 #include <sys/mutex.h>
+#include <sys/protosw.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
+#include <sys/socketvar.h>
 #include <sys/systm.h>
 #include <sys/time.h>
+#include <sys/uio.h>
+#include <sys/workqueue.h>
 
+#include <net/if.h>
+#include <net/route.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/udp.h>
 
 #include <oncrpc/oncrpc.h>
 #include <oncrpc/oncrpc_dtls.h>
@@ -106,6 +127,9 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	DP_ESTABLISHED	3
 #define	DP_CLOSED	4
 
+/* The top bit tells a datagram association's cookie from a stream's. */
+#define	ONCRPC_DTLS_COOKIE	(1ULL << 63)
+
 /* RFC 9147 s6.1: application data is protected under epoch 3. */
 #define	DTLS13_EPOCH_APP	3
 
@@ -117,10 +141,23 @@ struct dtls_dgram {
 };
 SIMPLEQ_HEAD(dtls_dgramq, dtls_dgram);
 
+/* A socket of a pair to close in d_work, where that may sleep. */
+struct dtls_reap {
+	SIMPLEQ_ENTRY(dtls_reap) dr_next;
+	struct socket		*dr_so;
+};
+
 struct oncrpc_dtlspeer {
 	LIST_ENTRY(oncrpc_dtlspeer) dp_hash;
+	LIST_ENTRY(oncrpc_dtlspeer) dp_glist;	/* dtls_ready, dtls_busy */
 	struct oncrpc_dtls	*dp_dtls;
 	struct sockaddr_storage	 dp_addr;
+	uint64_t		 dp_id;		/* the daemon's cookie */
+	/* Under d_lock: */
+	bool			 dp_hashed;
+	bool			 dp_queued;	/* on dtls_ready or after */
+	struct socket		*dp_kso;	/* HANDSHAKE: the pair, ours */
+	struct dtls_reap	*dp_reap;	/* for dp_kso */
 	/* Under d_lock: */
 	u_int			 dp_state;	/* DP_* */
 	u_int			 dp_refs;	/* the table's is one */
@@ -148,7 +185,37 @@ struct oncrpc_dtls {
 	struct dtls_dgramq	 d_msgs;	/* opened, to be served */
 	void			(*d_wake)(void *);
 	void			*d_arg;
+	struct socket		*d_so;		/* the UDP socket */
+	struct workqueue	*d_wq;
+	struct work		 d_work;
+	bool			 d_workq;	/* d_work enqueued */
+	SIMPLEQ_HEAD(, dtls_reap) d_reap;
 };
+
+/* Peers for the daemon, and those it has, under dtls_glock. */
+static kmutex_t dtls_glock;
+static LIST_HEAD(, oncrpc_dtlspeer) dtls_ready =
+    LIST_HEAD_INITIALIZER(dtls_ready);
+static LIST_HEAD(, oncrpc_dtlspeer) dtls_busy =
+    LIST_HEAD_INITIALIZER(dtls_busy);
+static void (*dtls_readyfn)(void);
+static volatile uint64_t dtls_nextid;
+
+static void dtls_work(struct work *, void *);
+static void dtls_reapall(struct oncrpc_dtls *);
+static void dtls_unpair(struct oncrpc_dtlspeer *);
+
+/* Under d_lock. */
+static void
+dtls_kick(struct oncrpc_dtls *d)
+{
+
+	KASSERT(mutex_owned(&d->d_lock));
+	if (d->d_workq || d->d_wq == NULL)
+		return;
+	d->d_workq = true;
+	workqueue_enqueue(d->d_wq, &d->d_work, NULL);
+}
 
 static bool
 dtls_sameaddr(const struct sockaddr *a, const struct sockaddr *b)
@@ -231,11 +298,23 @@ dtls_dgramq_free(struct dtls_dgramq *q)
 	}
 }
 
+/* With d_lock held when the peer has been in a table. */
 static void
 dtls_peer_free(struct oncrpc_dtlspeer *p)
 {
+	struct oncrpc_dtls *d = p->dp_dtls;
 
 	KASSERT(p->dp_refs == 0);
+	if (p->dp_kso != NULL) {
+		KASSERT(mutex_owned(&d->d_lock));
+		p->dp_reap->dr_so = p->dp_kso;
+		SIMPLEQ_INSERT_TAIL(&d->d_reap, p->dp_reap, dr_next);
+		p->dp_reap = NULL;
+		p->dp_kso = NULL;
+		dtls_kick(d);
+	}
+	if (p->dp_reap != NULL)
+		kmem_free(p->dp_reap, sizeof(*p->dp_reap));
 	dtls_dgramq_free(&p->dp_hsq);
 	dtls13_dir_fini(&p->dp_rx);
 	dtls13_dir_fini(&p->dp_tx);
@@ -252,6 +331,7 @@ dtls_peer_unhash(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 
 	KASSERT(mutex_owned(&d->d_lock));
 	LIST_REMOVE(p, dp_hash);
+	p->dp_hashed = false;
 	d->d_npeers--;
 	if (--p->dp_refs == 0)
 		dtls_peer_free(p);
@@ -299,6 +379,22 @@ dtls_sweep(struct oncrpc_dtls *d)
 	}
 }
 
+/* The pair's end goes to d_work to close.  Under d_lock. */
+static void
+dtls_unpair(struct oncrpc_dtlspeer *p)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+
+	KASSERT(mutex_owned(&d->d_lock));
+	if (p->dp_kso == NULL)
+		return;
+	p->dp_reap->dr_so = p->dp_kso;
+	SIMPLEQ_INSERT_TAIL(&d->d_reap, p->dp_reap, dr_next);
+	p->dp_reap = NULL;
+	p->dp_kso = NULL;
+	dtls_kick(d);
+}
+
 static void
 dtls_close(struct oncrpc_dtlspeer *p)
 {
@@ -308,6 +404,7 @@ dtls_close(struct oncrpc_dtlspeer *p)
 	p->dp_until = time_uptime + ONCRPC_DTLS_CLOSEWAIT;
 	dtls_dgramq_free(&p->dp_hsq);
 	p->dp_hsqlen = 0;
+	dtls_unpair(p);
 }
 
 /*
@@ -315,12 +412,17 @@ dtls_close(struct oncrpc_dtlspeer *p)
  * socket locked, when a datagram is queued for oncrpc_dtls_getmsg().
  */
 struct oncrpc_dtls *
-oncrpc_dtls_create(void (*wake)(void *), void *arg)
+oncrpc_dtls_create(struct socket *so, void (*wake)(void *), void *arg)
 {
 	struct oncrpc_dtls *d;
 	u_int i;
 
 	d = kmem_zalloc(sizeof(*d), KM_SLEEP);
+	d->d_so = so;
+	SIMPLEQ_INIT(&d->d_reap);
+	if (workqueue_create(&d->d_wq, "rpcdtls", dtls_work, d, PRI_NONE,
+	    IPL_NONE, WQ_MPSAFE) != 0)
+		d->d_wq = NULL;	/* no handshakes then; see dtls_kick() */
 	mutex_init(&d->d_lock, MUTEX_DEFAULT, IPL_NONE);
 	for (i = 0; i < ONCRPC_DTLS_NHASH; i++)
 		LIST_INIT(&d->d_hash[i]);
@@ -344,6 +446,23 @@ oncrpc_dtls_destroy(struct oncrpc_dtls *d)
 
 	if (d == NULL)
 		return;
+	/* The daemon's lists hold references too. */
+	mutex_enter(&dtls_glock);
+	for (i = 0; i < 2; i++) {
+		struct oncrpc_dtlspeer *np;
+
+		LIST_FOREACH_SAFE(p, i == 0 ? &dtls_ready : &dtls_busy,
+		    dp_glist, np) {
+			if (p->dp_dtls != d)
+				continue;
+			LIST_REMOVE(p, dp_glist);
+			mutex_enter(&d->d_lock);
+			if (--p->dp_refs == 0)
+				dtls_peer_free(p);
+			mutex_exit(&d->d_lock);
+		}
+	}
+	mutex_exit(&dtls_glock);
 	mutex_enter(&d->d_lock);
 	while ((dg = SIMPLEQ_FIRST(&d->d_q)) != NULL) {
 		SIMPLEQ_REMOVE_HEAD(&d->d_q, dg_next);
@@ -365,6 +484,11 @@ oncrpc_dtls_destroy(struct oncrpc_dtls *d)
 	}
 	KASSERT(d->d_npeers == 0);
 	mutex_exit(&d->d_lock);
+	if (d->d_wq != NULL) {
+		workqueue_wait(d->d_wq, &d->d_work);
+		workqueue_destroy(d->d_wq);
+	}
+	dtls_reapall(d);
 	mutex_destroy(&d->d_lock);
 	kmem_free(d, sizeof(*d));
 }
@@ -422,7 +546,21 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 		dg->dg_peer = NULL;
 		SIMPLEQ_INSERT_TAIL(&p->dp_hsq, dg, dg_next);
 		p->dp_hsqlen++;
-		mutex_exit(&d->d_lock);
+		if (p->dp_state == DP_HANDSHAKE) {
+			dtls_kick(d);
+			mutex_exit(&d->d_lock);
+		} else if (!p->dp_queued) {
+			/* For the daemon, with the list's reference. */
+			p->dp_queued = true;
+			p->dp_refs++;
+			mutex_exit(&d->d_lock);
+			mutex_enter(&dtls_glock);
+			LIST_INSERT_HEAD(&dtls_ready, p, dp_glist);
+			mutex_exit(&dtls_glock);
+			if (dtls_readyfn != NULL)
+				(*dtls_readyfn)();
+		} else
+			mutex_exit(&d->d_lock);
 		*mp = NULL;
 		return 1;
 
@@ -648,6 +786,8 @@ oncrpc_dtls_probed(struct oncrpc_dtls *d, const struct sockaddr *sa)
 		return ENOSPC;
 	}
 	np->dp_dtls = d;
+	np->dp_hashed = true;
+	np->dp_id = atomic_inc_64_nv(&dtls_nextid) | ONCRPC_DTLS_COOKIE;
 	LIST_INSERT_HEAD(&d->d_hash[dtls_hash(sa)], np, dp_hash);
 	d->d_npeers++;
 	mutex_exit(&d->d_lock);
@@ -659,20 +799,17 @@ oncrpc_dtls_probed(struct oncrpc_dtls *d, const struct sockaddr *sa)
  * connection IDs, cid of ours that the peer puts on what it sends and of
  * its that we put on ours, RFC 9147 s9, and the "tls-exporter" value.
  */
-int
-oncrpc_dtls_establish(struct oncrpc_dtls *d, const struct sockaddr *sa,
-    const uint8_t *csecret, const uint8_t *ssecret, const uint8_t *rcid,
-    size_t rcidlen, const uint8_t *tcid, size_t tcidlen,
-    const uint8_t *exporter)
+static int
+dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
+    const uint8_t *ssecret, const uint8_t *rcid, size_t rcidlen,
+    const uint8_t *tcid, size_t tcidlen, const uint8_t *exporter)
 {
-	struct oncrpc_dtlspeer *p;
+	struct oncrpc_dtls *d = p->dp_dtls;
 
 	if (rcidlen > DTLS13_MAXCID || tcidlen > DTLS13_MAXCID)
 		return EINVAL;
 	mutex_enter(&d->d_lock);
-	p = dtls_lookup(d, sa);
-	if (p == NULL ||
-	    (p->dp_state != DP_PROBED && p->dp_state != DP_HANDSHAKE)) {
+	if (!p->dp_hashed || dtls_expired(p) || p->dp_state != DP_HANDSHAKE) {
 		mutex_exit(&d->d_lock);
 		return ESRCH;
 	}
@@ -686,6 +823,7 @@ oncrpc_dtls_establish(struct oncrpc_dtls *d, const struct sockaddr *sa,
 	memcpy(p->dp_exporter, exporter, sizeof(p->dp_exporter));
 	dtls_dgramq_free(&p->dp_hsq);
 	p->dp_hsqlen = 0;
+	dtls_unpair(p);
 	p->dp_state = DP_ESTABLISHED;
 	mutex_exit(&d->d_lock);
 	return 0;
@@ -762,7 +900,312 @@ oncrpc_dtls_rele(struct oncrpc_dtlspeer *p)
 	mutex_enter(&d->d_lock);
 	KASSERT(p->dp_refs > 0);
 	last = --p->dp_refs == 0;	/* off the table already, then */
-	mutex_exit(&d->d_lock);
 	if (last)
 		dtls_peer_free(p);
+	mutex_exit(&d->d_lock);
+}
+
+/*
+ * The largest datagram payload toward sa, for the handshake's records,
+ * RFC 9147 s4.4: the path MTU of the route, less the IP and UDP headers.
+ * Without a route, IPv6's minimum link MTU, RFC 8200 s5, which IPv4
+ * paths in practice also carry.
+ */
+static uint32_t
+dtls_pmtu(const struct sockaddr *sa)
+{
+	struct rtentry *rt;
+	uint64_t mtu = 1280;		/* RFC 8200 s5 */
+	uint32_t hdr;
+
+	hdr = (sa->sa_family == AF_INET6 ? sizeof(struct ip6_hdr) :
+	    sizeof(struct ip)) + sizeof(struct udphdr);
+	rt = rtalloc1(sa, 1);
+	if (rt != NULL) {
+		if (rt->rt_rmx.rmx_mtu != 0)
+			mtu = rt->rt_rmx.rmx_mtu;
+		else if (rt->rt_ifp != NULL)
+			mtu = rt->rt_ifp->if_mtu;
+		rt_unref(rt);
+	}
+	if (mtu > IP_MAXPACKET)
+		mtu = IP_MAXPACKET;
+	return mtu > hdr ? (uint32_t)(mtu - hdr) : 0;
+}
+
+/* The pair's end that is ours has something, or room. */
+static void
+dtls_kupcall(struct socket *so, void *arg, int events, int waitflag)
+{
+	struct oncrpc_dtls *d = arg;
+
+	mutex_enter(&d->d_lock);
+	dtls_kick(d);
+	mutex_exit(&d->d_lock);
+}
+
+static void
+dtls_reapall(struct oncrpc_dtls *d)
+{
+	struct dtls_reap *dr;
+
+	for (;;) {
+		mutex_enter(&d->d_lock);
+		dr = SIMPLEQ_FIRST(&d->d_reap);
+		if (dr != NULL)
+			SIMPLEQ_REMOVE_HEAD(&d->d_reap, dr_next);
+		mutex_exit(&d->d_lock);
+		if (dr == NULL)
+			return;
+		solock(dr->dr_so);
+		dr->dr_so->so_upcall = NULL;
+		dr->dr_so->so_upcallarg = NULL;
+		dr->dr_so->so_rcv.sb_flags &= ~SB_UPCALL;
+		sounlock(dr->dr_so);
+		(void)soclose(dr->dr_so);
+		kmem_free(dr, sizeof(*dr));
+	}
+}
+
+/*
+ * Carry one peer's handshake datagrams across the pair: the peer's in,
+ * the daemon's out of the UDP socket.  A datagram either way is whole,
+ * as SOCK_DGRAM keeps it.
+ */
+static void
+dtls_carry(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
+{
+	struct dtls_dgram *dg;
+	struct socket *kso;
+	struct mbuf *m;
+	struct uio uio;
+	int flags;
+
+	for (;;) {
+		mutex_enter(&d->d_lock);
+		kso = p->dp_kso;
+		dg = SIMPLEQ_FIRST(&p->dp_hsq);
+		if (dg != NULL && kso != NULL) {
+			SIMPLEQ_REMOVE_HEAD(&p->dp_hsq, dg_next);
+			p->dp_hsqlen--;
+		} else
+			dg = NULL;
+		mutex_exit(&d->d_lock);
+		if (dg == NULL)
+			break;
+		/* Lost if the daemon does not read: as on the wire. */
+		(void)(*kso->so_send)(kso, NULL, NULL, dg->dg_m, NULL,
+		    MSG_DONTWAIT, curlwp);
+		kmem_intr_free(dg, sizeof(*dg));
+	}
+	if (kso == NULL)
+		return;
+	for (;;) {
+		m = NULL;
+		memset(&uio, 0, sizeof(uio));
+		uio.uio_resid = IP_MAXPACKET;
+		flags = MSG_DONTWAIT;
+		(void)(*kso->so_receive)(kso, NULL, &uio, &m, NULL, &flags);
+		if (m == NULL)
+			break;
+		(void)(*d->d_so->so_send)(d->d_so,
+		    (struct sockaddr *)&p->dp_addr, NULL, m, NULL, 0, curlwp);
+	}
+}
+
+static void
+dtls_work(struct work *wk, void *arg)
+{
+	struct oncrpc_dtls *d = arg;
+	struct oncrpc_dtlspeer *p, **v;
+	u_int i, n, nv;
+
+	mutex_enter(&d->d_lock);
+	d->d_workq = false;
+	nv = d->d_npeers;
+	mutex_exit(&d->d_lock);
+	v = nv != 0 ? kmem_alloc(nv * sizeof(*v), KM_SLEEP) : NULL;
+	n = 0;
+	mutex_enter(&d->d_lock);
+	for (i = 0; i < ONCRPC_DTLS_NHASH; i++) {
+		LIST_FOREACH(p, &d->d_hash[i], dp_hash) {
+			if (n == nv || p->dp_kso == NULL)
+				continue;
+			p->dp_refs++;
+			v[n++] = p;
+		}
+	}
+	mutex_exit(&d->d_lock);
+	for (i = 0; i < n; i++) {
+		dtls_carry(d, v[i]);
+		oncrpc_dtls_rele(v[i]);
+	}
+	if (v != NULL)
+		kmem_free(v, nv * sizeof(*v));
+	/* After the carrying, which may have been using these. */
+	dtls_reapall(d);
+	if (n == nv && nv != 0) {
+		/* Peers may have come since d_npeers was read. */
+		mutex_enter(&d->d_lock);
+		dtls_kick(d);
+		mutex_exit(&d->d_lock);
+	}
+}
+
+/*
+ * For the handshake daemon in oncrpc_tls_wait(): a peer whose
+ * ClientHello came, as a new descriptor of the calling process, one end
+ * of an AF_LOCAL datagram pair, with the cookie oncrpc_dtls_done() is to
+ * name it by.  ENOENT if there is none.
+ */
+int
+oncrpc_dtls_take(uint64_t *cookiep, int *fdp, struct oncrpc_tls_dgram *td)
+{
+	struct oncrpc_dtlspeer *p;
+	struct oncrpc_dtls *d;
+	struct socket *dso, *kso;
+	struct dtls_reap *dr;
+	file_t *fp;
+	bool more;
+	int error, fd;
+
+	mutex_enter(&dtls_glock);
+	p = LIST_FIRST(&dtls_ready);
+	if (p == NULL) {
+		mutex_exit(&dtls_glock);
+		return ENOENT;
+	}
+	LIST_REMOVE(p, dp_glist);
+	more = !LIST_EMPTY(&dtls_ready);
+	mutex_exit(&dtls_glock);
+	if (more && dtls_readyfn != NULL)
+		(*dtls_readyfn)();	/* for the next daemon */
+	d = p->dp_dtls;
+
+	error = fsocreate(AF_LOCAL, &dso, SOCK_DGRAM, 0, &fd, &fp, NULL);
+	if (error != 0)
+		goto fail;
+	error = socreate(AF_LOCAL, &kso, SOCK_DGRAM, 0, curlwp, dso);
+	if (error != 0) {
+		fd_abort(curproc, fp, fd);
+		goto fail;
+	}
+	solock(dso);
+	error = soconnect2(dso, kso);
+	if (error == 0)
+		error = soconnect2(kso, dso);	/* asymmetric, as socketpair */
+	if (error == 0) {
+		kso->so_upcallarg = d;
+		kso->so_upcall = dtls_kupcall;
+		kso->so_rcv.sb_flags |= SB_UPCALL;
+	}
+	sounlock(dso);
+	if (error != 0) {
+		(void)soclose(kso);
+		fd_abort(curproc, fp, fd);
+		goto fail;
+	}
+	dr = kmem_zalloc(sizeof(*dr), KM_SLEEP);
+
+	mutex_enter(&d->d_lock);
+	if (!p->dp_hashed || dtls_expired(p) || p->dp_state != DP_PROBED) {
+		mutex_exit(&d->d_lock);
+		kmem_free(dr, sizeof(*dr));
+		(void)soclose(kso);
+		fd_abort(curproc, fp, fd);
+		error = ESRCH;
+		goto fail;
+	}
+	p->dp_state = DP_HANDSHAKE;
+	p->dp_until = time_uptime + ONCRPC_DTLS_HSWAIT;
+	p->dp_kso = kso;
+	p->dp_reap = dr;
+	dtls_kick(d);			/* the ClientHello, into the pair */
+	mutex_exit(&d->d_lock);
+
+	td->td_is = true;
+	td->td_pmtu = dtls_pmtu((const struct sockaddr *)&p->dp_addr);
+	memcpy(&td->td_peer, &p->dp_addr, sizeof(td->td_peer));
+	*cookiep = p->dp_id;
+	mutex_enter(&dtls_glock);
+	LIST_INSERT_HEAD(&dtls_busy, p, dp_glist);	/* the list's ref */
+	mutex_exit(&dtls_glock);
+	fd_affix(curproc, fp, fd);
+	*fdp = fd;
+	return 0;
+
+fail:
+	oncrpc_dtls_rele(p);
+	return error;
+}
+
+/* Whether cookie names a datagram association. */
+bool
+oncrpc_dtls_cookie(uint64_t cookie)
+{
+
+	return (cookie & ONCRPC_DTLS_COOKIE) != 0;
+}
+
+/*
+ * The daemon's verdict on the association named by cookie, as
+ * oncrpc_tls_done() for a stream.  A handshake that failed leaves the
+ * 5-tuple discarded for a while, RFC 9289 s5.1.2, as after a closure.
+ */
+int
+oncrpc_dtls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
+{
+	struct oncrpc_dtlspeer *p;
+	struct oncrpc_dtls *d;
+	int rv;
+
+	mutex_enter(&dtls_glock);
+	LIST_FOREACH(p, &dtls_busy, dp_glist) {
+		if (p->dp_id == cookie)
+			break;
+	}
+	if (p != NULL)
+		LIST_REMOVE(p, dp_glist);
+	mutex_exit(&dtls_glock);
+	if (p == NULL)
+		return ESRCH;
+	d = p->dp_dtls;
+
+	rv = 0;
+	if (error == 0 && tp != NULL) {
+		/* Only the suite RFC 8446 s9.1 makes mandatory, as TLS. */
+		if (tp->tp_suite != TLS13_AES_128_GCM_SHA256 ||
+		    tp->tp_secretlen != TLS13_SECRETLEN)
+			rv = EPROTONOSUPPORT;
+		else
+			rv = dtls_establish(p, tp->tp_csecret, tp->tp_ssecret,
+			    tp->tp_rcid, tp->tp_rcidlen, tp->tp_tcid,
+			    tp->tp_tcidlen, tp->tp_exporter);
+	} else if (error == 0)
+		rv = EINVAL;
+	if (error != 0 || rv != 0) {
+		mutex_enter(&d->d_lock);
+		if (p->dp_hashed)
+			dtls_close(p);
+		mutex_exit(&d->d_lock);
+	}
+	oncrpc_dtls_rele(p);
+	return rv;
+}
+
+/* ready() is called when a peer goes on dtls_ready, from softint. */
+void
+oncrpc_dtls_init(void (*ready)(void))
+{
+
+	mutex_init(&dtls_glock, MUTEX_DEFAULT, IPL_NONE);
+	dtls_readyfn = ready;
+}
+
+void
+oncrpc_dtls_fini(void)
+{
+
+	KASSERT(LIST_EMPTY(&dtls_ready) && LIST_EMPTY(&dtls_busy));
+	mutex_destroy(&dtls_glock);
 }

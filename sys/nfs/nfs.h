@@ -220,6 +220,8 @@ struct nfsd_args {
  */
 #define	NFSD_TLS_SECRETMAX	48	/* SHA-384, RFC 8446 s7.1 */
 #define	NFSD_TLS_EXPORTERLEN	32	/* "tls-exporter", RFC 9266 s2 */
+#define	NFSD_TLS_MAXCID		20	/* DTLS connection ID, ours */
+#define	NFSD_TLS_PEERLEN	128	/* sizeof(struct sockaddr_storage) */
 
 struct nfsd_tlsarg {
 	uint64_t nt_cookie;
@@ -234,12 +236,24 @@ struct nfsd_tlsarg {
 	uint8_t	nt_exporter[NFSD_TLS_EXPORTERLEN];
 	uint8_t	nt_alertlevel;		/* NFSD_TLS_EVENT, RFC 8446 s6 */
 	uint8_t	nt_alertdesc;
+	/* NFSD_TLS_DGRAM, RFC 9289 s5.1.2: nt_fd is an AF_LOCAL datagram
+	 * socket carrying the peer's DTLS datagrams; nt_peer is where they
+	 * come from and nt_pmtu the largest payload toward it. */
+	uint32_t nt_pmtu;
+	uint8_t	nt_peer[NFSD_TLS_PEERLEN];	/* a struct sockaddr */
+	/* TLSDONE of a datagram association, RFC 9147 s9 */
+	uint8_t	nt_rcidlen;		/* ours, on what the peer sends */
+	uint8_t	nt_tcidlen;		/* the peer's, on what we send */
+	uint8_t	nt_rcid[NFSD_TLS_MAXCID];
+	uint8_t	nt_tcid[NFSD_TLS_MAXCID];
 };
 
 /* nt_flags */
 #define	NFSD_TLS_PEERCERT	0x01	/* the client's certificate verified */
 #define	NFSD_TLS_EVENT		0x02	/* TLSWAIT: an alert, nt_fd is -1 */
 #define	NFSD_TLS_ALERTSENT	0x04	/* the alert was ours */
+#define	NFSD_TLS_DGRAMOK	0x08	/* TLSWAIT in: the daemon does DTLS */
+#define	NFSD_TLS_DGRAM		0x10	/* TLSWAIT out: a DTLS association */
 
 struct nfsd_srvargs {
 	struct nfsd	*nsd_nfsd;	/* Pointer to in kernel nfsd struct */

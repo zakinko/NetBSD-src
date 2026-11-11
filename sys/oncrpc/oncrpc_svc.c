@@ -224,10 +224,13 @@ static volatile u_int oncrpc_tls_seen;	/* time_uptime a daemon last left it */
 #define	ONCRPC_TLS_CLOSEWAIT	5
 
 /*
- * Whether a UDP probe is offered STARTTLS, RFC 9289 s5.1.2.  Not until
- * the handshake daemon can be handed a datagram association.
+ * The same for daemons that do DTLS, RFC 9289 s5.1.2: a UDP probe is
+ * offered STARTTLS only while one waits.  A daemon built without DTLS
+ * never says so, and UDP probes are then answered as by a server
+ * without TLS.
  */
-static bool oncrpc_dtls_offer = false;
+static u_int oncrpc_dtls_ndaemon;
+static volatile u_int oncrpc_dtls_seen;
 
 /* Not from the RFC: alerts kept for rpc.tlsservd until it reads them. */
 #define	ONCRPC_TLS_NEVENTS	64
@@ -684,9 +687,14 @@ svc_tls_probe(struct oncrpc_ireq *ir, const struct oncrpc_call *c)
 	if (c->c_verf.oa_flavor != ONCRPC_AUTH_NONE || c->c_verf.oa_len != 0)
 		return ONCRPC_AUTH_BADVERF;
 
-	daemon = atomic_load_relaxed(&oncrpc_tls_ndaemon) != 0 ||
-	    (u_int)time_uptime - atomic_load_relaxed(&oncrpc_tls_seen) <=
-	    ONCRPC_TLS_GRACE;
+	if (xp->xp_so->so_type == SOCK_STREAM)
+		daemon = atomic_load_relaxed(&oncrpc_tls_ndaemon) != 0 ||
+		    (u_int)time_uptime - atomic_load_relaxed(&oncrpc_tls_seen) <=
+		    ONCRPC_TLS_GRACE;
+	else
+		daemon = atomic_load_relaxed(&oncrpc_dtls_ndaemon) != 0 ||
+		    (u_int)time_uptime - atomic_load_relaxed(&oncrpc_dtls_seen)
+		    <= ONCRPC_TLS_GRACE;
 	mutex_enter(&svc->svc_lock);
 	if (xp->xp_tls != XT_NONE || ir->ir_dpeer != NULL)
 		why = ONCRPC_AUTH_BADCRED;
@@ -695,8 +703,7 @@ svc_tls_probe(struct oncrpc_ireq *ir, const struct oncrpc_call *c)
 	else if (xp->xp_so->so_type == SOCK_STREAM) {
 		xp->xp_tls = XT_PROBED;
 		ir->ir_starttls = true;
-	} else if (xp->xp_dtls != NULL && oncrpc_dtls_offer &&
-	    ir->ir_nam != NULL) {
+	} else if (xp->xp_dtls != NULL && ir->ir_nam != NULL) {
 		mutex_exit(&svc->svc_lock);
 		if (oncrpc_dtls_probed(xp->xp_dtls,
 		    mtod(ir->ir_nam, const struct sockaddr *)) == 0)
@@ -1647,7 +1654,7 @@ oncrpc_svc_addsock_tag(struct oncrpc_svc *svc, file_t *fp, struct mbuf *nam,
 	    (so->so_proto->pr_domain->dom_family == AF_INET ||
 	     so->so_proto->pr_domain->dom_family == AF_INET6) &&
 	    so->so_proto->pr_protocol == IPPROTO_UDP)
-		xp->xp_dtls = oncrpc_dtls_create(xprt_dtls_wake, xp);
+		xp->xp_dtls = oncrpc_dtls_create(so, xprt_dtls_wake, xp);
 
 	/*
 	 * All at once under the socket lock: the upcall may run as soon as
@@ -1816,13 +1823,45 @@ oncrpc_svc_nxprt(struct oncrpc_svc *svc)
 }
 
 /*
+ * A peer for the DTLS daemon, from softint: oncrpc_tls_wait() looks at
+ * oncrpc_dtls_take() again.  oncrpc_dtls_pending is under oncrpc_tls_lock
+ * and only a hint; a take that finds nothing waits again.
+ */
+static bool oncrpc_dtls_pending;
+
+static void
+tls_dtls_ready(void)
+{
+
+	mutex_enter(&oncrpc_tls_lock);
+	oncrpc_dtls_pending = true;
+	cv_broadcast(&oncrpc_tls_cv);
+	mutex_exit(&oncrpc_tls_lock);
+}
+
+/* A daemon leaves oncrpc_tls_wait(); under oncrpc_tls_lock. */
+static void
+tls_wait_leave(const struct oncrpc_tls_dgram *td)
+{
+
+	KASSERT(mutex_owned(&oncrpc_tls_lock));
+	oncrpc_tls_ndaemon--;
+	atomic_store_relaxed(&oncrpc_tls_seen, (u_int)time_uptime);
+	if (td->td_accept) {
+		oncrpc_dtls_ndaemon--;
+		atomic_store_relaxed(&oncrpc_dtls_seen, (u_int)time_uptime);
+	}
+}
+
+/*
  * For the TLS handshake daemon: wait for a connection whose STARTTLS
  * reply is out and take it as a new descriptor of the calling process,
  * with the cookie oncrpc_tls_done() is to name it by.  An alert sent or
  * received on a connection comes out instead, with *fdp -1.
  */
 int
-oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp)
+oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp,
+    struct oncrpc_tls_dgram *td)
 {
 	struct oncrpc_xprt *xp;
 	struct oncrpc_svc *svc;
@@ -1830,18 +1869,32 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp)
 	bool dead;
 	int error, fd;
 
+	td->td_is = false;
 	mutex_enter(&oncrpc_tls_lock);
 	oncrpc_tls_ndaemon++;
+	if (td->td_accept)
+		oncrpc_dtls_ndaemon++;
 	for (;;) {
 		while ((xp = TAILQ_FIRST(&oncrpc_tls_queue)) == NULL) {
+			if (td->td_accept && oncrpc_dtls_pending) {
+				oncrpc_dtls_pending = false;
+				tls_wait_leave(td);
+				mutex_exit(&oncrpc_tls_lock);
+				error = oncrpc_dtls_take(cookiep, fdp, td);
+				if (error == 0)
+					return 0;
+				/* Gone meanwhile, or no pair: wait on. */
+				mutex_enter(&oncrpc_tls_lock);
+				oncrpc_tls_ndaemon++;
+				oncrpc_dtls_ndaemon++;
+				continue;
+			}
 			if (oncrpc_tls_evcount != 0) {
 				*evp = oncrpc_tls_ev[oncrpc_tls_evhead];
 				oncrpc_tls_evhead = (oncrpc_tls_evhead + 1) %
 				    ONCRPC_TLS_NEVENTS;
 				oncrpc_tls_evcount--;
-				oncrpc_tls_ndaemon--;
-				atomic_store_relaxed(&oncrpc_tls_seen,
-				    (u_int)time_uptime);
+				tls_wait_leave(td);
 				mutex_exit(&oncrpc_tls_lock);
 				*cookiep = evp->te_cookie;
 				*fdp = -1;
@@ -1849,7 +1902,7 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp)
 			}
 			error = cv_wait_sig(&oncrpc_tls_cv, &oncrpc_tls_lock);
 			if (error != 0) {
-				oncrpc_tls_ndaemon--;
+				tls_wait_leave(td);
 				mutex_exit(&oncrpc_tls_lock);
 				return error;
 			}
@@ -1868,8 +1921,7 @@ oncrpc_tls_wait(uint64_t *cookiep, int *fdp, struct oncrpc_tls_event *evp)
 		mutex_enter(&oncrpc_tls_lock);
 	}
 	TAILQ_INSERT_TAIL(&oncrpc_tls_busy, xp, xp_tlsq);
-	oncrpc_tls_ndaemon--;
-	atomic_store_relaxed(&oncrpc_tls_seen, (u_int)time_uptime);
+	tls_wait_leave(td);
 	*cookiep = xp->xp_id;
 	mutex_exit(&oncrpc_tls_lock);
 
@@ -1901,6 +1953,8 @@ oncrpc_tls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
 	struct socket *so;
 	int rv = 0;
 
+	if (oncrpc_dtls_cookie(cookie))
+		return oncrpc_dtls_done(cookie, error, tp);
 	mutex_enter(&oncrpc_tls_lock);
 	TAILQ_FOREACH(xp, &oncrpc_tls_busy, xp_tlsq) {
 		if (xp->xp_id == cookie)
@@ -2045,12 +2099,14 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 		mutex_init(&oncrpc_named_lock, MUTEX_DEFAULT, IPL_NONE);
 		mutex_init(&oncrpc_tls_lock, MUTEX_DEFAULT, IPL_NONE);
 		cv_init(&oncrpc_tls_cv, "rpctls");
+		oncrpc_dtls_init(tls_dtls_ready);
 		return 0;
 	case MODULE_CMD_FINI:
 		if (atomic_load_relaxed(&oncrpc_nsvc) != 0 ||
 		    oncrpc_tls_fini() != 0)
 			return EBUSY;
 		oncrpc_gss_fini();
+		oncrpc_dtls_fini();
 		cv_destroy(&oncrpc_tls_cv);
 		mutex_destroy(&oncrpc_tls_lock);
 		mutex_destroy(&oncrpc_named_lock);

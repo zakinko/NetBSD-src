@@ -40,16 +40,22 @@ struct sockaddr;
 struct oncrpc_dtls;
 struct oncrpc_dtlspeer;
 
-struct oncrpc_dtls *oncrpc_dtls_create(void (*)(void *), void *);
+struct oncrpc_tls_dgram;
+struct oncrpc_tls_params;
+
+void	oncrpc_dtls_init(void (*)(void));
+void	oncrpc_dtls_fini(void);
+struct oncrpc_dtls *oncrpc_dtls_create(struct socket *, void (*)(void *),
+	    void *);
 void	oncrpc_dtls_destroy(struct oncrpc_dtls *);
 int	oncrpc_dtls_input(struct mbuf **, int, struct socket *,
 	    struct sockaddr *, void *);
 struct mbuf *oncrpc_dtls_getmsg(struct oncrpc_dtls *, struct mbuf **,
 	    struct oncrpc_dtlspeer **);
 int	oncrpc_dtls_probed(struct oncrpc_dtls *, const struct sockaddr *);
-int	oncrpc_dtls_establish(struct oncrpc_dtls *, const struct sockaddr *,
-	    const uint8_t *, const uint8_t *, const uint8_t *, size_t,
-	    const uint8_t *, size_t, const uint8_t *);
+int	oncrpc_dtls_take(uint64_t *, int *, struct oncrpc_tls_dgram *);
+bool	oncrpc_dtls_cookie(uint64_t);
+int	oncrpc_dtls_done(uint64_t, int, const struct oncrpc_tls_params *);
 int	oncrpc_dtls_output(struct oncrpc_dtlspeer *, struct mbuf *,
 	    struct mbuf **);
 void	oncrpc_dtls_exporter(const struct oncrpc_dtlspeer *, uint8_t *);

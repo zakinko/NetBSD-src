@@ -29,10 +29,13 @@
 #ifndef _ONCRPC_ONCRPC_TLS_H_
 #define _ONCRPC_ONCRPC_TLS_H_
 
+#include <sys/socket.h>	/* struct sockaddr_storage */
+
 /* RPC-with-TLS, RFC 9289: the record layer of a connection. */
 
 #define	ONCRPC_TLS_SECRETMAX	48	/* SHA-384, RFC 8446 s7.1 */
 #define	ONCRPC_TLS_EXPORTERLEN	32	/* "tls-exporter", RFC 9266 s2 */
+#define	ONCRPC_TLS_MAXCID	20	/* DTLS, ours; see DTLS13_MAXCID */
 
 /* RFC 8446 s6, AlertLevel and AlertDescription; those used here */
 #define	ONCRPC_TLS_WARNING		1
@@ -55,8 +58,25 @@ struct oncrpc_tls_params {
 	uint8_t		tp_csecret[ONCRPC_TLS_SECRETMAX];
 	uint8_t		tp_ssecret[ONCRPC_TLS_SECRETMAX];
 	uint8_t		tp_exporter[ONCRPC_TLS_EXPORTERLEN];
+	/* DTLS, RFC 9147 s9: ours, on what the peer sends, and its. */
+	uint8_t		tp_rcidlen;
+	uint8_t		tp_tcidlen;
+	uint8_t		tp_rcid[ONCRPC_TLS_MAXCID];
+	uint8_t		tp_tcid[ONCRPC_TLS_MAXCID];
 };
 #define	ONCRPC_TLS_PEERCERT	0x01
+
+/*
+ * A datagram association for the daemon, RFC 9289 s5.1.2: td_accept
+ * says the daemon can do DTLS; the rest says what it was given, the
+ * peer's address and the largest datagram payload toward it.
+ */
+struct oncrpc_tls_dgram {
+	bool		td_accept;
+	bool		td_is;
+	uint32_t	td_pmtu;
+	struct sockaddr_storage td_peer;
+};
 
 /* An alert, for rpc.tlsservd to hear of. */
 struct oncrpc_tls_event {

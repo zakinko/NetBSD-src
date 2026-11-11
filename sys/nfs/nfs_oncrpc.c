@@ -484,11 +484,14 @@ nfs_oncrpc_tls(int flag, void *argp)
 
 	struct oncrpc_tls_params tp;
 	struct oncrpc_tls_event ev;
+	struct oncrpc_tls_dgram dg;
 	uint64_t cookie;
 	int verdict;
 
 	CTASSERT(sizeof(tp.tp_csecret) == sizeof(nt.nt_csecret));
 	CTASSERT(sizeof(tp.tp_exporter) == sizeof(nt.nt_exporter));
+	CTASSERT(sizeof(tp.tp_rcid) == sizeof(nt.nt_rcid));
+	CTASSERT(sizeof(dg.td_peer) == sizeof(nt.nt_peer));
 
 	error = copyin(argp, &nt, sizeof(nt));
 	if (error != 0)
@@ -502,6 +505,10 @@ nfs_oncrpc_tls(int flag, void *argp)
 		memcpy(tp.tp_csecret, nt.nt_csecret, sizeof(tp.tp_csecret));
 		memcpy(tp.tp_ssecret, nt.nt_ssecret, sizeof(tp.tp_ssecret));
 		memcpy(tp.tp_exporter, nt.nt_exporter, sizeof(tp.tp_exporter));
+		tp.tp_rcidlen = MIN(nt.nt_rcidlen, sizeof(tp.tp_rcid));
+		tp.tp_tcidlen = MIN(nt.nt_tcidlen, sizeof(tp.tp_tcid));
+		memcpy(tp.tp_rcid, nt.nt_rcid, sizeof(tp.tp_rcid));
+		memcpy(tp.tp_tcid, nt.nt_tcid, sizeof(tp.tp_tcid));
 		cookie = nt.nt_cookie;
 		verdict = nt.nt_error;
 		explicit_memset(&nt, 0, sizeof(nt));
@@ -509,10 +516,17 @@ nfs_oncrpc_tls(int flag, void *argp)
 		explicit_memset(&tp, 0, sizeof(tp));
 		return error;
 	}
+	memset(&dg, 0, sizeof(dg));
+	dg.td_accept = (nt.nt_flags & NFSD_TLS_DGRAMOK) != 0;
 	memset(&nt, 0, sizeof(nt));
-	error = oncrpc_tls_wait(&nt.nt_cookie, &nt.nt_fd, &ev);
+	error = oncrpc_tls_wait(&nt.nt_cookie, &nt.nt_fd, &ev, &dg);
 	if (error != 0)
 		return error;
+	if (dg.td_is) {
+		nt.nt_flags = NFSD_TLS_DGRAM;
+		nt.nt_pmtu = dg.td_pmtu;
+		memcpy(&nt.nt_peer, &dg.td_peer, sizeof(nt.nt_peer));
+	}
 	if (nt.nt_fd == -1) {
 		nt.nt_flags = NFSD_TLS_EVENT |
 		    (ev.te_sent ? NFSD_TLS_ALERTSENT : 0);

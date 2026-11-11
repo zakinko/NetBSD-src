@@ -1,0 +1,20 @@
+name: rpctls-probe
+on:
+  push:
+    branches: [rpctls]
+    paths:
+      - '.github/workflows/rpctls-probe.yml'
+      - 'ci/rpctls/probe-runner.sh'
+  workflow_dispatch:
+concurrency:
+  group: rpctls-probe-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: ci/rpctls
+      - run: sh ci/rpctls/probe-runner.sh

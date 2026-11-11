@@ -71,7 +71,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 static char ds_netid[NFSV4_DS_NETID];
 static char ds_uaddr[NFSV4_DS_UADDR];
 static uint32_t ds_gen;		/* in the device ID; changes with the address */
-u_int nfsv4_layouts_given;	/* vfs.nfsv4.layouts_given, to be counted */
+int nfsv4_layouts_given;		/* vfs.nfsv4.layouts_given, to be counted */
 
 /* pNFS is on; under nfsv4_state_lock, or as a hint. */
 bool
@@ -429,7 +429,7 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = NFS4ERR_RESOURCE;
 	else {
 		c->c_curst = si;		/* s18.43.3 */
-		atomic_inc_uint(&nfsv4_layouts_given);
+		atomic_inc_uint((volatile u_int *)&nfsv4_layouts_given);
 	}
 	goto done;
 out:

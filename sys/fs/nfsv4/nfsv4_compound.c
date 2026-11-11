@@ -877,18 +877,21 @@ nfsv4_sysctl_addsock(SYSCTLFN_ARGS)
  * Not fault_inject() itself: that is global to the kernel, and pool_get
  * calls it too, so the nth would not be ours.
  */
-u_int nfsv4_fault_getattr = 0;
-u_int nfsv4_fault_renew = 0;
+int nfsv4_fault_getattr = 0;
+int nfsv4_fault_renew = 0;
 
+/* An int for CTLTYPE_INT; counted as unsigned, so negative is off. */
 bool
-nfsv4_fault(volatile u_int *n)
+nfsv4_fault(volatile int *n)
 {
+	volatile u_int *u = (volatile u_int *)n;
 	u_int v;
 
 	do {
-		if ((v = *n) == 0)
+		v = *u;
+		if (v == 0 || v > INT_MAX)
 			return false;
-	} while (atomic_cas_uint(n, v, v - 1) != v);
+	} while (atomic_cas_uint(u, v, v - 1) != v);
 	return v == 1;
 }
 

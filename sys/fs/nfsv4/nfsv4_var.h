@@ -311,13 +311,13 @@ uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 	    const struct nfsv4_name *);
 extern int nfsv4_utf8_only;
-extern u_int nfsv4_fault_getattr;
-extern u_int nfsv4_fault_renew;
-bool	nfsv4_fault(volatile u_int *);
+extern int nfsv4_fault_getattr;
+extern int nfsv4_fault_renew;
+bool	nfsv4_fault(volatile int *);
 bool	nfsv4_pnfs_on(void);
 uint32_t nfsv4_pnfs_flags(uint32_t, bool *);
 int	nfsv4_layout_setds(const char *);
-extern u_int nfsv4_layouts_given;
+extern int nfsv4_layouts_given;
 uint32_t nfsv4_layout_types(struct vnode *);
 uint32_t nfsv4_layout_blksize(void);
 extern int nfsv4_numeric_owner_sys;

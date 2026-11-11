@@ -330,7 +330,8 @@ xdr_args_exchange_id(XDR *x, struct nfsv4_args_exchange_id *a)
 	case SP4_NONE:
 		break;
 	case SP4_MACH_CRED:
-		if (!xdr_skip_spo(x))
+		if (!nfsv4_xdr_bitmap(x, &a->must_enforce) ||
+		    !nfsv4_xdr_bitmap(x, &a->must_allow))
 			return false;
 		break;
 	case SP4_SSV:

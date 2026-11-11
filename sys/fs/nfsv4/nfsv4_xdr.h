@@ -325,6 +325,8 @@ struct nfsv4_args_exchange_id {
 	uint8_t		id[NFS4_OPAQUE_LIMIT];
 	uint32_t	flags;
 	uint32_t	how;
+	struct nfsv4_bitmap must_enforce;	/* SP4_MACH_CRED, s18.35.1 */
+	struct nfsv4_bitmap must_allow;
 };
 
 /* channel_attrs4, RFC 8881 s18.36.1 */

@@ -333,6 +333,8 @@ uint32_t nfsv4_op_getfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookup(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_lookupp(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_lookupp(struct nfsv4_compound *);
+uint32_t nfsv4_mach_check(const struct nfsv4_compound *,
+	    const struct nfsv4_client *, uint32_t);
 uint32_t nfsv4_op_putfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putpubfh(struct nfsv4_compound *, union nfsv4_args *);
 uint32_t nfsv4_op_putrootfh(struct nfsv4_compound *, union nfsv4_args *);

@@ -139,6 +139,9 @@ struct nfsv4_client {
 	uint32_t	cl_cbservice;	/* RPCSEC_GSS: of SETCLIENTID */
 	char		cl_principal[NFSV4_PRINCIPAL_MAX];
 	uint32_t	cl_flavor;
+	uint32_t	cl_sp4;		/* SP4_*, RFC 8881 s18.35 */
+	struct nfsv4_bitmap cl_enforce;	/* SP4_MACH_CRED: spo_must_enforce */
+	struct nfsv4_bitmap cl_allow;	/* and spo_must_allow */
 	uint64_t	cl_connid;	/* last connection known to be its */
 	u_int		cl_cbstate;
 	uint32_t	cl_cbgen;	/* of cl_cb, for a call that returns */

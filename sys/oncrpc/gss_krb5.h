@@ -36,6 +36,7 @@
 #define	GSS_S_BAD_SIG		(6U << 16)
 #define	GSS_S_NO_CONTEXT	(8U << 16)
 #define	GSS_S_DEFECTIVE_TOKEN	(9U << 16)
+#define	GSS_S_CONTEXT_EXPIRED	(12U << 16)	/* RFC 2203 App. A */
 #define	GSS_S_FAILURE		(13U << 16)
 
 /* RFC 3961 s8 and RFC 8009 s3 */

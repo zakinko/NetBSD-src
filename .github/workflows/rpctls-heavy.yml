@@ -56,10 +56,10 @@ jobs:
         timeout-minutes: 10
       - run: |
           mkdir -p t.inc && ln -s "$PWD/sys/fs" t.inc/fs
-          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c "$PWD/tirpc/lib/libtirpc.a"
+          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc -o t tests/fs/nfsv4/t_nfsv4_xdr.c -L"$PWD/tirpc/lib" -Wl,-rpath,"$PWD/tirpc/lib" -ltirpc
           ./t
           mkdir -p t.inc2 && ln -s "$PWD/sys/oncrpc" t.inc2/oncrpc
-          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c "$PWD/tirpc/lib/libtirpc.a"
+          cc -g -fsanitize=address,undefined -w -I"$PWD/tirpc/include/tirpc" -It.inc2 -o t2 tests/oncrpc/t_gss_seq.c -L"$PWD/tirpc/lib" -Wl,-rpath,"$PWD/tirpc/lib" -ltirpc
           ./t2
           # libssl-dev is in the runner image; no apt here.
           test -f /usr/include/openssl/evp.h

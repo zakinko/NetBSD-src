@@ -7,14 +7,14 @@ set -eu
 prefix=$1
 ver=1.3.4
 sum=1e0b0c7231c5fa122e06c0609a76723664d068b0dba3b8219b63e6340b347860
-[ -f "$prefix/lib/libtirpc.a" ] && exit 0
+[ -f "$prefix/lib/libtirpc.so" ] && exit 0
 work=$(mktemp -d)
 curl -fsSL --retry 3 -o "$work/t.tar.bz2" \
     "https://downloads.sourceforge.net/project/libtirpc/libtirpc/$ver/libtirpc-$ver.tar.bz2"
 echo "$sum  $work/t.tar.bz2" | sha256sum -c -
 tar -C "$work" -xjf "$work/t.tar.bz2"
 cd "$work/libtirpc-$ver"
-./configure -q --prefix="$prefix" --disable-gssapi --disable-shared >/dev/null
+./configure -q --prefix="$prefix" --disable-gssapi >/dev/null
 make -s -j"$(nproc)" >/dev/null
 make -s install >/dev/null
 rm -rf "$work"

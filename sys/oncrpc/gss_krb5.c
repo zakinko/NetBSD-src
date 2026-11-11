@@ -52,6 +52,10 @@
 #ifdef _KERNEL
 __KERNEL_RCSID(0, "$NetBSD$");
 
+#ifdef _KERNEL_OPT
+#include "opt_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/atomic.h>
@@ -642,6 +646,25 @@ gk1_get_mic(struct gss_krb5_ctx *ctx, const void *msg, size_t msglen,
 	return GSS_S_COMPLETE;
 }
 
+/*
+ * The MIC token of RFC 1964 s1.2.1 has exactly the length of its fields.
+ * Heimdal frames a DES3 MIC for 2 bytes more than it fills, as measured
+ * with the base system's libgssapi, and is out of the RFC in doing so.
+ * options ONCRPC_GSS_HEIMDAL_DES3 takes such a token anyway, to serve
+ * that client; leave it out to refuse it as the RFC has it.
+ */
+static size_t
+gk1_mic_slack(const struct gss_krb5_ctx *ctx)
+{
+
+#ifdef ONCRPC_GSS_HEIMDAL_DES3
+	return gk_is_des(ctx->gc_et) ? 0 : 2;
+#else
+	return 0;
+#endif
+}
+
+
 static uint32_t
 gk1_verify_mic(struct gss_krb5_ctx *ctx, const void *msg, size_t msglen,
     const uint8_t *tok, size_t toklen)
@@ -654,13 +677,8 @@ gk1_verify_mic(struct gss_krb5_ctx *ctx, const void *msg, size_t msglen,
 	if (msglen > GK1_MAXINNER)
 		return GSS_S_FAILURE;
 	p = gk1_unframe(tok, toklen, &inner);
-	/*
-	 * Heimdal frames a DES3 MIC for 2 bytes more than it fills, measured
-	 * with the base system's libgssapi, so the rest is let be there.
-	 */
 	if (p == NULL || inner < GK1_HDRLEN + GK1_SEQLEN + maclen ||
-	    inner > GK1_HDRLEN + GK1_SEQLEN + maclen +
-	    (gk_is_des(ctx->gc_et) ? 0 : 2))
+	    inner > GK1_HDRLEN + GK1_SEQLEN + maclen + gk1_mic_slack(ctx))
 		return GSS_S_DEFECTIVE_TOKEN;
 	if (p[0] != GK1_TOK_MIC0 || p[1] != GK1_TOK_MIC1 ||
 	    p[2] != gk1_sgn_alg(ctx) || p[3] != 0 ||

@@ -70,6 +70,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #define	GSS_KRB5_PRIVATE
 #include <oncrpc/gss_krb5.h>
+#include <oncrpc/gss_mech.h>
 #else
 #include <errno.h>
 #include "gss_krb5_shim.h"
@@ -975,3 +976,58 @@ gss_krb5_selftest(void)
 			return -1;
 	return 0;
 }
+
+#ifdef _KERNEL
+static uint32_t
+krb5_get_mic(void *c, const void *m, size_t ml, void *t, size_t tmax,
+    size_t *tl)
+{
+
+	return gss_krb5_get_mic(c, m, ml, t, tmax, tl);
+}
+
+static uint32_t
+krb5_verify_mic(void *c, const void *m, size_t ml, const void *t, size_t tl)
+{
+
+	return gss_krb5_verify_mic(c, m, ml, t, tl);
+}
+
+static size_t
+krb5_wrap_size(const void *c, size_t len)
+{
+
+	return gss_krb5_wrap_size(c, len);
+}
+
+static uint32_t
+krb5_wrap(void *c, const void *m, size_t ml, void *t, size_t tmax, size_t *tl)
+{
+
+	return gss_krb5_wrap(c, m, ml, t, tmax, tl);
+}
+
+static uint32_t
+krb5_unwrap(void *c, void *t, size_t tl, void *out, void **mp, size_t *mlp,
+    bool *confp)
+{
+
+	return gss_krb5_unwrap(c, t, tl, out, mp, mlp, confp);
+}
+
+static void
+krb5_destroy(void *c)
+{
+
+	gss_krb5_ctx_destroy(c);
+}
+
+const struct oncrpc_gss_mech oncrpc_gss_krb5_mech = {
+	.gm_get_mic = krb5_get_mic,
+	.gm_verify_mic = krb5_verify_mic,
+	.gm_wrap_size = krb5_wrap_size,
+	.gm_wrap = krb5_wrap,
+	.gm_unwrap = krb5_unwrap,
+	.gm_destroy = krb5_destroy,
+};
+#endif /* _KERNEL */

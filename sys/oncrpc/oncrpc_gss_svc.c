@@ -60,6 +60,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/uio.h>
 
 #include <oncrpc/gss_krb5.h>
+#include <oncrpc/gss_mech.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_gssd.h>
 #include <oncrpc/oncrpc_var.h>
@@ -89,7 +90,7 @@ struct oncrpc_gss_ctx {
 	time_t		gx_expire;	/* time_uptime */
 	kmutex_t	gx_lock;	/* gx_seq */
 	struct oncrpc_gss_seq gx_seq;
-	struct gss_krb5_ctx *gx_krb;
+	struct oncrpc_gss_key gx_key;	/* the mechanism and its context */
 	kauth_cred_t	gx_cred;
 	char		gx_name[ONCRPC_GSSD_MAXNAME];
 	bool		gx_used;	/* gx_initres is not needed any more */
@@ -124,8 +125,7 @@ static void
 gss_ctx_free(struct oncrpc_gss_ctx *gx)
 {
 
-	if (gx->gx_krb != NULL)
-		gss_krb5_ctx_destroy(gx->gx_krb);
+	oncrpc_gssk_destroy(&gx->gx_key);
 	if (gx->gx_cred != NULL)	/* not one that never finished */
 		kauth_cred_free(gx->gx_cred);
 	if (gx->gx_initres != NULL)
@@ -222,12 +222,12 @@ gss_ctx_insert(struct oncrpc_gss_ctx *gx)
 /*
  * A finished context by its handle, held, for a session's backchannel:
  * RFC 8881 s2.10.8.2 has the server call the client with the client's
- * own context.  NULL if there is none.  *krbp is its key, good while
+ * own context.  NULL if there is none.  *keyp is its key, good while
  * the hold lasts.
  */
 struct oncrpc_gss_ctx *
 oncrpc_gss_ctx_hold(const uint8_t *handle, uint32_t len,
-    struct gss_krb5_ctx **krbp)
+    struct oncrpc_gss_key **keyp)
 {
 	struct oncrpc_gss_cred gc;
 	struct oncrpc_gss_ctx *gx;
@@ -243,7 +243,7 @@ oncrpc_gss_ctx_hold(const uint8_t *handle, uint32_t len,
 		gx = NULL;
 	}
 	if (gx != NULL)
-		*krbp = gx->gx_krb;
+		*keyp = &gx->gx_key;
 	return gx;
 }
 
@@ -356,12 +356,13 @@ gss_header(const struct oncrpc_call *c, uint8_t *buf)
 }
 
 static bool
-gss_mic_of32(struct oncrpc_gss_call *gg, struct gss_krb5_ctx *krb, uint32_t v)
+gss_mic_of32(struct oncrpc_gss_call *gg, const struct oncrpc_gss_key *key,
+    uint32_t v)
 {
 	size_t len;
 
 	v = htonl(v);
-	if (gss_krb5_get_mic(krb, &v, sizeof(v), gg->gg_verfbody,
+	if (oncrpc_gssk_get_mic(key, &v, sizeof(v), gg->gg_verfbody,
 	    sizeof(gg->gg_verfbody), &len) != GSS_S_COMPLETE)
 		return false;
 	gg->gg_verf = RPCSEC_GSS;
@@ -408,12 +409,17 @@ gss_init_res(const struct oncrpc_gss_ctx *gx, uint32_t major, uint32_t minor,
 static int
 gss_ctx_complete(struct oncrpc_gss_ctx *gx, struct oncrpc_gssd_accept_res *ar)
 {
+	struct gss_krb5_ctx *kc;
 	gid_t gids[ONCRPC_GSSD_MAXGROUPS];
 	kauth_cred_t cred;
 	uint32_t i;
 	int error;
 
-	error = gss_krb5_ctx_create(&ar->ar_import, &gx->gx_krb);
+	error = gss_krb5_ctx_create(&ar->ar_import, &kc);
+	if (error == 0) {
+		gx->gx_key.k_mech = &oncrpc_gss_krb5_mech;
+		gx->gx_key.k_ctx = kc;
+	}
 	explicit_memset(&ar->ar_import, 0, sizeof(ar->ar_import));
 	if (error != 0)
 		return error;
@@ -486,7 +492,7 @@ gss_create(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 		kmem_free(token, MAX(tlen, 1));
 		*resp = gss_mbufof(gx->gx_initres, gx->gx_initreslen);
 		if (gx->gx_complete &&
-		    !gss_mic_of32(gg, gx->gx_krb, RPCSEC_GSS_WINDOW)) {
+		    !gss_mic_of32(gg, &gx->gx_key, RPCSEC_GSS_WINDOW)) {
 			gss_ctx_rele(gx);
 			m_freem(*resp);
 			*resp = NULL;
@@ -535,7 +541,7 @@ gss_create(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 		*resp = gss_init_res(gx, major, minor, ar->ar_token,
 		    ar->ar_tokenlen, &save, &savelen);
 		if (major == GSS_S_COMPLETE && *resp != NULL &&
-		    !gss_mic_of32(gg, gx->gx_krb, RPCSEC_GSS_WINDOW)) {
+		    !gss_mic_of32(gg, &gx->gx_key, RPCSEC_GSS_WINDOW)) {
 			m_freem(*resp);
 			*resp = NULL;
 		}
@@ -596,7 +602,7 @@ gss_unwrap_integ(struct oncrpc_gss_call *gg, struct mbuf **msgp,
 	m_copydata(msg, off + 4, mlen, mic);
 	if (!gss_copyin(msg, pos + 4, blen, total, &body))
 		return false;
-	if (gss_krb5_verify_mic(gg->gg_ctx->gx_krb, body, blen, mic, mlen) !=
+	if (oncrpc_gssk_verify_mic(&gg->gg_ctx->gx_key, body, blen, mic, mlen) !=
 	    GSS_S_COMPLETE ||
 	    be32dec(body) != gg->gg_cred.gc_seq)
 		goto out;
@@ -629,7 +635,7 @@ gss_unwrap_priv(struct oncrpc_gss_call *gg, struct mbuf **msgp,
 	blen = gss_get32(msg, pos);
 	if (!gss_copyin(msg, pos + 4, blen, total, &body))
 		return false;
-	if (gss_krb5_unwrap(gg->gg_ctx->gx_krb, body, blen, NULL, &plain,
+	if (oncrpc_gssk_unwrap(&gg->gg_ctx->gx_key, body, blen, NULL, &plain,
 	    &plen, &conf) != GSS_S_COMPLETE || !conf || plen < 4 ||
 	    be32dec(plain) != gg->gg_cred.gc_seq)
 		goto out;
@@ -666,7 +672,7 @@ gss_bind_channel(struct oncrpc_gss_call *gg, struct mbuf **resp)
 	in[3] = 0;				/* rbcr_pref_list<0> */
 	v[0] = in[2];
 	v[1] = in[3];
-	if (gss_krb5_get_mic(gg->gg_ctx->gx_krb, in, sizeof(in), v + 3,
+	if (oncrpc_gssk_get_mic(&gg->gg_ctx->gx_key, in, sizeof(in), v + 3,
 	    sizeof(gg->gg_verfbody) - 3 * sizeof(*v), &len) != GSS_S_COMPLETE)
 		return ONCRPC_GSS_DROP;
 	v[2] = htonl(len);
@@ -743,7 +749,7 @@ oncrpc_gss_accept(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 		return ONCRPC_GSS_DENY;
 	}
 	hlen = gss_header(c, hdr);
-	if (gss_krb5_verify_mic(gx->gx_krb, hdr, hlen, c->c_verf.oa_body,
+	if (oncrpc_gssk_verify_mic(&gx->gx_key, hdr, hlen, c->c_verf.oa_body,
 	    c->c_verf.oa_len) != GSS_S_COMPLETE) {
 		*whyp = RPCSEC_GSS_CREDPROBLEM;
 		return ONCRPC_GSS_DENY;
@@ -801,7 +807,7 @@ oncrpc_gss_verifier(struct oncrpc_gss_call *gg)
 
 	if (gg->gg_verf == RPCSEC_GSS || gg->gg_ctx == NULL)
 		return true;
-	return gss_mic_of32(gg, gg->gg_ctx->gx_krb, gg->gg_cred.gc_seq);
+	return gss_mic_of32(gg, &gg->gg_ctx->gx_key, gg->gg_cred.gc_seq);
 }
 
 /*
@@ -812,7 +818,7 @@ oncrpc_gss_verifier(struct oncrpc_gss_call *gg)
 bool
 oncrpc_gss_wrap_results(struct oncrpc_gss_call *gg, struct mbuf **resp)
 {
-	struct gss_krb5_ctx *krb;
+	const struct oncrpc_gss_key *krb;
 	struct oncrpc_xdrmbuf x;
 	struct mbuf *res = *resp;
 	uint8_t mic[GSS_KRB5_MAXMIC], *plain, *tok = NULL;
@@ -825,7 +831,7 @@ oncrpc_gss_wrap_results(struct oncrpc_gss_call *gg, struct mbuf **resp)
 	    gg->gg_cred.gc_proc != RPCSEC_GSS_DATA ||
 	    gg->gg_cred.gc_service == RPCSEC_GSS_SVC_NONE)
 		return true;
-	krb = gg->gg_ctx->gx_krb;
+	krb = &gg->gg_ctx->gx_key;
 
 	rlen = res != NULL ? res->m_pkthdr.len : 0;
 	plen = (size_t)rlen + 4;
@@ -839,7 +845,7 @@ oncrpc_gss_wrap_results(struct oncrpc_gss_call *gg, struct mbuf **resp)
 	if (gg->gg_cred.gc_service == RPCSEC_GSS_SVC_INTEGRITY) {
 		size_t ml;
 
-		if (gss_krb5_get_mic(krb, plain, plen, mic, sizeof(mic), &ml) !=
+		if (oncrpc_gssk_get_mic(krb, plain, plen, mic, sizeof(mic), &ml) !=
 		    GSS_S_COMPLETE)
 			goto out;
 		len = plen;
@@ -849,11 +855,11 @@ oncrpc_gss_wrap_results(struct oncrpc_gss_call *gg, struct mbuf **resp)
 		    xdr_u_int32_t(&x.xm_xdr, &mlen) &&
 		    xdr_opaque(&x.xm_xdr, (char *)mic, mlen);
 	} else {
-		toksz = gss_krb5_wrap_size(krb, plen);
+		toksz = oncrpc_gssk_wrap_size(krb, plen);
 		if (toksz == SIZE_MAX)
 			goto out;
 		tok = kmem_alloc(toksz, KM_SLEEP);
-		if (gss_krb5_wrap(krb, plain, plen, tok, toksz, &tlen) !=
+		if (oncrpc_gssk_wrap(krb, plain, plen, tok, toksz, &tlen) !=
 		    GSS_S_COMPLETE)
 			goto out;
 		len = tlen;

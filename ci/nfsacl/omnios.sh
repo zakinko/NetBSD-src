@@ -1,0 +1,71 @@
+#!/bin/sh
+# In the OmniOS VM: the illumos client on versions 3 and 2 of NFS, which
+# carry NFSACL versions 3 and 2.  The server is the NetBSD VM behind
+# the runner, 192.168.122.2 to an anyvm guest.  Each ACL is printed in the form
+# of sacl.sh, after a line "=== LABEL SERVER-PATH [-d]", for
+# omnios-check.sh to compare.  omnios.sh
+S=192.168.122.2
+fails=0
+t() {
+	echo "\$ $*"
+	if "$@"; then echo ok; else echo "FAILED ($?)"; fails=$((fails + 1)); return 1; fi
+}
+n() {
+	echo "\$ ! $*"
+	if "$@"; then echo 'FAILED: it worked'; fails=$((fails + 1)); else echo "ok, refused ($?)"; fi
+}
+# illumos' getfacl: "mask:rw-", "other:r--", "#effective" comments and
+# "default:" before each entry of -d.
+norm() {
+	sed -e 's/#.*//' -e 's/[[:space:]]*$//' -e 's/^default://' \
+	    -e 's/^mask:\([^:]*\)$/mask::\1/' -e 's/^other:\([^:]*\)$/other::\1/' |
+	    grep -v '^$' | sort
+}
+# omnios-check.sh reads the server's ACL of each after this script is
+# done, so each file shown is one nothing changes later.  The names are
+# show's own: d and the rest are the callers'.
+show() {	# label server-path [-d] client-path
+	s_l=$1; s_sp=$2; s_d=$3; s_cp=$4
+	echo "=== $s_l $s_sp $s_d"
+	if [ "$s_d" = -d ]; then getfacl -d "$s_cp"; else getfacl -a "$s_cp"; fi | norm
+}
+uname -a
+for v in 3 2; do
+	m=/mnt/p$v
+	mkdir -p $m
+	t mount -F nfs -o vers=$v,proto=tcp,retry=2 $S:/export/pacl $m || continue
+	f=$m/o$v; d=$m/od$v
+	rm -rf $m/m$v $m/n$v $f $d
+	t touch $m/m$v $m/n$v $f
+	t chmod 640 $m/m$v $m/n$v $f
+	show v$v-mode /export/pacl/m$v "" $m/m$v
+	t setfacl -m user:2097:rw-,user:2098:r--,group:3001:r--,mask:rwx $m/n$v
+	show v$v-named /export/pacl/n$v "" $m/n$v
+	t setfacl -m user:2097:rw-,user:2098:r--,group:3001:r--,mask:rwx $f
+	t chmod 600 $f
+	show v$v-chmod /export/pacl/o$v "" $f
+	t mkdir $d
+	t setfacl -m default:user::rwx,default:group::r-x,default:other:---,default:user:2097:rwx,default:mask:rwx $d
+	show v$v-dfl /export/pacl/od$v -d $d
+	t sh -c "echo x >$d/new"
+	show v$v-inherit /export/pacl/od$v/new "" $d/new
+	echo '# no extended attributes: GETXATTRDIR is PROC_UNAVAIL'
+	n runat $f ls
+	echo '# and the ACLs are still there after it'
+	show v$v-after /export/pacl/o$v "" $f
+	t umount $m
+done
+for e in tmpfs acl; do
+	m=/mnt/$e
+	mkdir -p $m
+	t mount -F nfs -o vers=3,proto=tcp,retry=2 $S:/export/$e $m || continue
+	rm -f $m/o
+	t touch $m/o
+	t chmod 754 $m/o
+	show $e-mode /export/$e/o "" $m/o
+	n setfacl -m user:2097:rw-,mask:rw- $m/o
+	t sh -c "echo y >$m/o2"
+	rm -f $m/o2
+	t umount $m
+done
+echo "failures: $fails"

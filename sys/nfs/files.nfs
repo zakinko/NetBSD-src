@@ -20,6 +20,7 @@ defflag opt_nfs_oncrpc.h	NFSSERVER_ONCRPC: ONCRPC
 
 define	nfs: vfs, net
 file	nfs/krpc_subr.c		nfs
+file	nfs/nfs_acl.c		nfsserver_oncrpc
 file	nfs/nfs_bio.c		nfs
 file	nfs/nfs_boot.c		nfs
 file	nfs/nfs_bootdhcp.c	nfs & (nfs_boot_bootp | nfs_boot_dhcp)

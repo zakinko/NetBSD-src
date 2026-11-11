@@ -362,8 +362,19 @@ cb_getattr_decode(XDR *x, void *res)
 	if (!xdr_u_int32_t(x, &status) || !xdr_u_int32_t(x, &n) ||
 	    !nfsv4_xdr_skip(x, n) || !xdr_u_int32_t(x, &n))
 		return false;
-	if (status != NFS4_OK || n != 1)
+	/*
+	 * Version 4.1 has CB_SEQUENCE first, s20.9; its CB_SEQUENCE4resok
+	 * is a sessionid4 and four counters, s20.9.2.  Expecting one result
+	 * only, as before, failed every CB_GETATTR to such a client, and
+	 * the GETATTR that asked fell back to a recall.
+	 */
+	if (status != NFS4_OK || n != (ga->ga_ct->ct_sess != NULL ? 2 : 1))
 		return true;
+	if (ga->ga_ct->ct_sess != NULL &&
+	    (!xdr_u_int32_t(x, &op) || !xdr_u_int32_t(x, &opst) ||
+	    op != NFSV4_OP_CB_SEQUENCE || opst != NFS4_OK ||
+	    !nfsv4_xdr_skip(x, NFS4_SESSIONID_SIZE + 4 * 4)))
+		return false;
 	if (!xdr_u_int32_t(x, &op) || !xdr_u_int32_t(x, &opst) ||
 	    op != NFSV4_OP_CB_GETATTR || opst != NFS4_OK ||
 	    !nfsv4_xdr_bitmap(x, &bm) || !xdr_u_int32_t(x, &len))

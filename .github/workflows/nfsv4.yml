@@ -192,6 +192,7 @@ jobs:
             python3 ./more.py prev /export/pynfs
             python3 ./more.py moved /export/mig
             sh "$c/cbgetattr.sh"
+            VERS=4.1 sh "$c/cbgetattr.sh"
           } 2>&1 | tee "$o/more.txt" || true
       - name: Named attributes and fs_locations
         run: |

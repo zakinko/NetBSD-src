@@ -1,9 +1,12 @@
 #!/bin/sh
 # In pynfs's nfs4.0 directory: the Linux client writes under a write
-# delegation and holds the data back, and another client asks.
+# delegation and holds the data back, and another client asks.  VERS
+# is the client's minor version, 4.0 by default.  CB_GETATTR answering
+# means no DELEGRETURN while the other asks; a recall is the fallback.
+v=${VERS:-4.0}
 m=/mnt/nfsv4cg
 sudo mkdir -p "$m"
-sudo mount -t nfs -o vers=4.0,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/pynfs "$m" || exit 1
+sudo mount -t nfs -o vers=$v,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/pynfs "$m" || exit 1
 sudo sh -c ": >$m/cg; chmod 666 $m/cg"
 python3 -c "
 import os,time
@@ -14,8 +17,13 @@ time.sleep(1)
 os.write(f,b'x'*5000)
 time.sleep(25)" &
 sleep 8
+dr() { awk '$1 == "DELEGRETURN:" { n += $2 } END { print n + 0 }' /proc/self/mountstats; }
+b=$(dr)
 python3 ./more.py cbgetattr /export/pynfs/cg 5000
+a=$(dr)
 grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -6
+if [ "$a" = "$b" ]; then echo "ok     CB_GETATTR $v, no recall"
+else echo "FAILED CB_GETATTR $v: DELEGRETURN $b -> $a"; fi
 wait
 grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -6
 sudo umount "$m"

@@ -53,8 +53,19 @@ sudo timeout 25 tcpdump -n -i nb0 -c 40 -v >"$OUT/nb0-rpc.txt" 2>&1 &
 sleep 2
 p=$(ssh netbsd rpcinfo -p | awk '$1 == 100021 && $2 == 4 && $3 == "tcp" { print $4 }')
 echo "NLM 4 by TCP on the server's port $p"
-timeout -s KILL 10 rpcinfo -n "$p" -t 10.77.0.2 100021 4 || echo 'NLM 4: no answer'
-timeout -s KILL 10 rpcinfo -n "$p" -t 192.0.2.1 100021 4 || echo 'NLM 4 by 192.0.2.1: no answer'
+# rpcinfo -n still asks rpcbind for the address first (run 43082621096),
+# so a NULL call of NLM 4 by hand, on the port, by both addresses.
+for a in 10.77.0.2 192.0.2.1; do
+	timeout -s KILL 10 python3 -c '
+import socket, struct, sys
+s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
+c = struct.pack(">10I", 7, 0, 2, 100021, 4, 0, 0, 0, 0, 0)
+s.sendall(struct.pack(">I", 0x80000000 | len(c)) + c)
+r = s.recv(64)
+w = struct.unpack(">7I", r[4:32])
+print("NLM 4 NULL by", sys.argv[1], "accept_stat", w[5], "ok" if w[0] == 7 and w[5] == 0 else "FAILED")
+' "$a" "$p" || echo "NLM 4 NULL by $a: no answer"
+done
 sleep 3
 cat "$OUT/nb0-rpc.txt"
 sudo iptables -t nat -L -n -v

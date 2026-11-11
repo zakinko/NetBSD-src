@@ -68,6 +68,7 @@
 #define	ONCRPC_AUTH_BADCRED	1
 #define	ONCRPC_AUTH_REJECTEDCRED 2
 #define	ONCRPC_AUTH_BADVERF	3
+#define	ONCRPC_AUTH_TOOWEAK	5
 
 /* RFC 5531 s8.2, enum auth_flavor */
 #define	ONCRPC_AUTH_NONE	0

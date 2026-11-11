@@ -78,6 +78,7 @@ uint32_t gss_krb5_verify_mic(struct gss_krb5_ctx *, const void *, size_t,
 
 /* The most gss_krb5_wrap() can write for a message of this length. */
 size_t	gss_krb5_wrap_size(const struct gss_krb5_ctx *, size_t);
+size_t	gss_krb5_maclen(const struct gss_krb5_ctx *);
 /* Always with confidentiality.  in and out must not overlap. */
 uint32_t gss_krb5_wrap(struct gss_krb5_ctx *, const void *, size_t,
 	    void *, size_t, size_t *);

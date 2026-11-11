@@ -40,6 +40,10 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD$");
 
+#ifdef _KERNEL_OPT
+#include "opt_oncrpc.h"
+#endif
+
 #include <sys/param.h>
 #include <sys/errno.h>
 #include <sys/kmem.h>
@@ -61,9 +65,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 /*
  * RFC 8446 s5.5: no more than 2^24.5 full-size records under one AES-GCM
- * key.  The sender rekeys well before, at 2^24.
+ * key.  The sender rekeys well before, at 2^24 by default; a kernel may
+ * lower it with options ONCRPC_TLS_REKEY, as the CI kernel does to see it
+ * happen.  Raising it past 2^24.5 would break s5.5.
  */
-#define	TLS13_GCM_REKEY		(1ULL << 24)
+#ifndef ONCRPC_TLS_REKEY
+#define	ONCRPC_TLS_REKEY	(1ULL << 24)
+#endif
+CTASSERT(ONCRPC_TLS_REKEY <= (1ULL << 24));
+#define	TLS13_GCM_REKEY		((uint64_t)ONCRPC_TLS_REKEY)
 
 #define	TC_RECMAX	(TLS13_HDRLEN + TLS13_MAXCIPHER)
 

@@ -788,6 +788,14 @@ gss_krb5_verify_mic(struct gss_krb5_ctx *ctx, const void *msg, size_t msglen,
 	    gk1_verify_mic(ctx, msg, msglen, tok, toklen);
 }
 
+/* The length of the checksum in a MIC, h of RFC 3961 s5.3 and RFC 8009 s5. */
+size_t
+gss_krb5_maclen(const struct gss_krb5_ctx *ctx)
+{
+
+	return ctx->gc_et->ge_maclen;
+}
+
 /* SIZE_MAX for a message that no token can hold. */
 size_t
 gss_krb5_wrap_size(const struct gss_krb5_ctx *ctx, size_t msglen)

@@ -648,6 +648,15 @@ static const uint8_t gss_oid_sha1[] = { 0x2b, 0x0e, 0x03, 0x02, 0x1a };
 #endif
 #define	GSS_ASN1_OID	0x06	/* X.690 s8.19, the OBJECT IDENTIFIER tag */
 #define	GSS_CB_MAXPREFIX 64	/* not from the RFC */
+/*
+ * RFC 5403 s9 SHOULD: a BIND_CHANNEL MIC as wide as the mechanism has,
+ * and log2 N bits wider than DATA needs for N calls on the context.  The
+ * widest Kerberos checksum is the 192 bits of
+ * aes256-cts-hmac-sha384-192, RFC 8009 s5; against the 96 of the
+ * RFC 3962 enctypes that leaves 96 bits, more than any context lives
+ * for.  Narrower contexts are refused BIND_CHANNEL with AUTH_TOOWEAK.
+ */
+#define	GSS_CB_MINMAC	24
 #define	GSS_CB_MAXOID	32	/* not from the RFC */
 
 /*
@@ -762,6 +771,17 @@ gss_bind_channel(struct oncrpc_gss_call *gg, const struct oncrpc_call *c,
 			be32enc(res + rlen, 0);
 			rlen += 4;
 		}
+	} else if (gss_krb5_maclen(gx->gx_krb) < GSS_CB_MINMAC
+#ifdef ONCRPC_GSS_CB_ANYMIC
+	    /*
+	     * Out of RFC 5403 s9 on purpose, by option: any checksum width
+	     * binds.  Remove "options ONCRPC_GSS_CB_ANYMIC" to go back.
+	     */
+	    && false
+#endif
+	    ) {
+		*whyp = ONCRPC_AUTH_TOOWEAK;
+		return ONCRPC_GSS_DENY;
 	} else if (gss_oid_is(oid, olen, gss_oid_sha256,
 	    sizeof(gss_oid_sha256), &tagged)
 #ifdef ONCRPC_GSS_CB_SHA1

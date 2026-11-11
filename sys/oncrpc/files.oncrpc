@@ -6,6 +6,11 @@ defflag				ONCRPC: xdr, aes, des
 # Out of RFC 5403 on purpose: take SHA-1 for the hash of RPCSEC_GSS
 # channel bindings.  Without it only SHA-256 is.
 defflag	opt_oncrpc.h		ONCRPC_GSS_CB_SHA1
+# Out of RFC 5403 s9 on purpose: bind contexts whose MIC is narrower
+# than the widest Kerberos checksum.
+defflag	opt_oncrpc.h		ONCRPC_GSS_CB_ANYMIC
+# Records sent under one TLS key before our KeyUpdate; at most 2^24.
+defparam opt_oncrpc.h		ONCRPC_TLS_REKEY
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc

@@ -48,6 +48,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/callout.h>
 #include <sys/condvar.h>
 #include <sys/domain.h>
 #include <sys/errno.h>
@@ -155,6 +156,7 @@ struct oncrpc_svc {
 #define	XC_ALERT	0x02	/* the alert in xp_tlsalert */
 #define	XC_CLOSE	0x04	/* then shut the connection */
 #define	XC_ALERTSENT	0x08	/* no close_notify after an error alert */
+#define	XC_SHUT		0x10	/* the xprt is gone; shut the socket after */
 
 struct oncrpc_xprt {
 	struct oncrpc_svc	*xp_svc;
@@ -174,6 +176,7 @@ struct oncrpc_xprt {
 	u_int			 xp_tlsctl;	/* XC_*, under svc_lock */
 	uint8_t			 xp_tlsalert;
 	struct oncrpc_tlsconn	*xp_tc;		/* XT_TLS */
+	callout_t		 xp_closeto;	/* XT_TLS, see xprt_zap() */
 	TAILQ_ENTRY(oncrpc_xprt) xp_tlsq;	/* under oncrpc_tls_lock */
 	TAILQ_ENTRY(oncrpc_xprt) xp_pending;
 	LIST_ENTRY(oncrpc_xprt)	 xp_list;
@@ -212,6 +215,8 @@ static volatile u_int oncrpc_tls_seen;	/* time_uptime a daemon last left it */
  * is back within this long; until then a probe is still offered STARTTLS.
  */
 #define	ONCRPC_TLS_GRACE	2
+/* Not from the RFC: how long a close waits for a sender, xprt_zap(). */
+#define	ONCRPC_TLS_CLOSEWAIT	5
 
 /* Not from the RFC: alerts kept for rpc.tlsservd until it reads them. */
 #define	ONCRPC_TLS_NEVENTS	64
@@ -220,6 +225,7 @@ static u_int oncrpc_tls_evhead, oncrpc_tls_evcount;
 
 static void svc_tls_purge(struct oncrpc_svc *);
 static void xprt_zap(struct oncrpc_xprt *);
+static void xprt_shut(struct socket *);
 static void xprt_tls_ctl(struct oncrpc_xprt *, u_int, uint8_t);
 static kmutex_t oncrpc_named_lock;
 static LIST_HEAD(, oncrpc_svc) oncrpc_named =
@@ -275,7 +281,11 @@ xprt_rele(struct oncrpc_xprt *xp)
 	if (xp->xp_ctx != NULL)
 		(*xp->xp_ctxdtor)(xp->xp_ctx);
 	oncrpc_rm_fini(&xp->xp_rm);
-	oncrpc_tlsconn_destroy(xp->xp_tc);
+	if (xp->xp_tc != NULL) {
+		callout_halt(&xp->xp_closeto, NULL);
+		callout_destroy(&xp->xp_closeto);
+		oncrpc_tlsconn_destroy(xp->xp_tc);
+	}
 	m_freem(xp->xp_nam);
 	closef(xp->xp_fp);
 	kmem_free(xp, sizeof(*xp));
@@ -388,7 +398,7 @@ static void
 xprt_tls_ctl(struct oncrpc_xprt *xp, u_int ctl, uint8_t desc)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
-	bool close = false;
+	bool close = false, shut;
 
 	mutex_enter(&svc->svc_lock);
 	if ((xp->xp_flags & XP_DEAD) != 0 || xp->xp_tc == NULL) {
@@ -412,11 +422,42 @@ xprt_tls_ctl(struct oncrpc_xprt *xp, u_int ctl, uint8_t desc)
 		mutex_enter(&svc->svc_lock);
 	}
 	close |= (xp->xp_tlsctl & XC_CLOSE) != 0;
+	shut = (xp->xp_tlsctl & XC_SHUT) != 0;
+	xp->xp_tlsctl &= ~XC_SHUT;
 	xp->xp_flags &= ~XP_SENDING;
 	mutex_exit(&svc->svc_lock);
+	if (shut)
+		xprt_shut(xp->xp_so);
 	if (close)
 		xprt_zap(xp);
 	xprt_rele(xp);
+}
+
+static void
+xprt_shut(struct socket *so)
+{
+
+	solock(so);
+	so->so_upcall = NULL;
+	so->so_upcallarg = NULL;
+	so->so_rcv.sb_flags &= ~SB_UPCALL;
+	soshutdown(so, SHUT_RDWR);
+	sounlock(so);
+}
+
+/*
+ * A close deferred to a sender at work, xprt_zap(), that it has not done:
+ * end what it is sending, so that it fails and closes the connection.
+ */
+static void
+xprt_tls_closeto(void *arg)
+{
+	struct oncrpc_xprt *xp = arg;
+	struct socket *so = xp->xp_so;
+
+	solock(so);
+	socantsendmore(so);
+	sounlock(so);
 }
 
 /*
@@ -429,20 +470,31 @@ xprt_zap(struct oncrpc_xprt *xp)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct socket *so = xp->xp_so;
-	bool notify = false;
+	bool notify = false, defer = false;
 
 	/*
 	 * RFC 8446 s6.1: close_notify MUST go before the write side closes,
-	 * unless an error alert went.  A sender at work would have to be
-	 * waited for; then the connection closes without it.
+	 * unless an error alert went.  A sender at work is left to send it
+	 * after its reply and then shut the socket, XC_SHUT; the xprt goes
+	 * now.  Should the sender be stuck behind a peer that does not read,
+	 * xprt_tls_closeto() ends its send after ONCRPC_TLS_CLOSEWAIT, and
+	 * the connection closes without close_notify.
 	 */
 	mutex_enter(&svc->svc_lock);
-	if ((xp->xp_flags & (XP_DEAD | XP_SENDING)) == 0 &&
-	    xp->xp_tc != NULL && (xp->xp_tlsctl & XC_ALERTSENT) == 0) {
-		xp->xp_flags |= XP_SENDING;
-		xp->xp_tlsctl |= XC_ALERT;
-		xp->xp_tlsalert = ONCRPC_TLS_CLOSE_NOTIFY;
-		notify = true;
+	if ((xp->xp_flags & XP_DEAD) == 0 && xp->xp_tc != NULL &&
+	    (xp->xp_tlsctl & XC_ALERTSENT) == 0) {
+		if ((xp->xp_flags & XP_SENDING) != 0) {
+			xp->xp_tlsctl |= XC_ALERT | XC_SHUT;
+			xp->xp_tlsalert = ONCRPC_TLS_CLOSE_NOTIFY;
+			callout_schedule(&xp->xp_closeto,
+			    ONCRPC_TLS_CLOSEWAIT * hz);
+			defer = true;
+		} else {
+			xp->xp_flags |= XP_SENDING;
+			xp->xp_tlsctl |= XC_ALERT;
+			xp->xp_tlsalert = ONCRPC_TLS_CLOSE_NOTIFY;
+			notify = true;
+		}
 	}
 	mutex_exit(&svc->svc_lock);
 	if (notify) {
@@ -466,13 +518,8 @@ xprt_zap(struct oncrpc_xprt *xp)
 	svc->svc_nxprt--;
 	mutex_exit(&svc->svc_lock);
 
-	solock(so);
-	so->so_upcall = NULL;
-	so->so_upcallarg = NULL;
-	so->so_rcv.sb_flags &= ~SB_UPCALL;
-	soshutdown(so, SHUT_RDWR);
-	sounlock(so);
-
+	if (!defer)
+		xprt_shut(so);
 	xprt_rele(xp);
 }
 
@@ -657,7 +704,7 @@ xprt_tls_handoff(struct oncrpc_xprt *xp)
 {
 	struct oncrpc_svc *svc = xp->xp_svc;
 	struct socket *so = xp->xp_so;
-	bool discard;
+	bool discard, spurious;
 
 	solock(so);
 	if (so->so_upcallarg == xp) {
@@ -682,8 +729,20 @@ xprt_tls_handoff(struct oncrpc_xprt *xp)
 	/* A receiver in progress empties it itself; see svc_loop(). */
 	discard = (xp->xp_flags & XP_RECEIVING) == 0;
 	mutex_exit(&svc->svc_lock);
-	if (discard)
+	if (discard) {
+		/*
+		 * Bytes taken behind the probe are no ClientHello, which
+		 * the client sends only after reading STARTTLS: RFC 9289
+		 * s5.1.1, discard and SHOULD drop the connection.
+		 */
+		spurious = xp->xp_rm.rm_raw != NULL || xp->xp_rm.rm_frag != NULL;
 		xprt_rm_discard(xp);
+		if (spurious) {
+			xprt_zap(xp);
+			xprt_rele(xp);
+			return;
+		}
+	}
 
 	mutex_enter(&oncrpc_tls_lock);
 	TAILQ_INSERT_TAIL(&oncrpc_tls_queue, xp, xp_tlsq);
@@ -705,7 +764,7 @@ xprt_send(struct oncrpc_ireq *ir)
 	struct sockaddr *to;
 	struct mbuf *m, *n;
 	uint32_t *rm;
-	bool zap = false, handoff = false;
+	bool zap = false, handoff = false, shut;
 	u_int len;
 	int error;
 
@@ -797,7 +856,10 @@ next:
 		SIMPLEQ_REMOVE_HEAD(&xp->xp_sendq, ir_sendq);
 		mutex_exit(&svc->svc_lock);
 	}
-	/* What the receiver left for a sender at work; see xprt_tls_ctl(). */
+	/*
+	 * What the receiver or xprt_zap() left for a sender at work; see
+	 * xprt_tls_ctl().
+	 */
 	while (xp->xp_tc != NULL &&
 	    (xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT | XC_CLOSE)) != 0) {
 		mutex_exit(&svc->svc_lock);
@@ -807,8 +869,12 @@ next:
 		if ((xp->xp_tlsctl & (XC_KEYUPDATE | XC_ALERT)) == 0)
 			break;
 	}
+	shut = (xp->xp_tlsctl & XC_SHUT) != 0;
+	xp->xp_tlsctl &= ~XC_SHUT;
 	xp->xp_flags &= ~XP_SENDING;
 	mutex_exit(&svc->svc_lock);
+	if (shut)
+		xprt_shut(so);
 	if (zap)
 		xprt_zap(xp);
 	else if (handoff)
@@ -1209,6 +1275,8 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 				kmem_free(ir, sizeof(*ir));
 			ir = NULL;
 			xprt_rm_discard(xp);
+			/* ... and then SHOULD drop the connection, s5.1.1. */
+			xprt_zap(xp);
 			mutex_enter(&svc->svc_lock);
 		}
 		xp->xp_flags &= ~XP_RECEIVING;
@@ -1781,6 +1849,8 @@ oncrpc_tls_done(uint64_t cookie, int error, const struct oncrpc_tls_params *tp)
 		if ((xp->xp_flags & XP_DEAD) != 0)
 			error = rv = ECONNRESET;
 		else {
+			callout_init(&xp->xp_closeto, CALLOUT_MPSAFE);
+			callout_setfunc(&xp->xp_closeto, xprt_tls_closeto, xp);
 			xp->xp_tc = tc;
 			tc = NULL;
 			xp->xp_tls = XT_TLS;

@@ -151,7 +151,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #ifdef ONCRPC_DTLS_DEBUG
 #define	DTLS_DPRINTF(...)	printf("rpcdtls: " __VA_ARGS__)
 #else
-#define	DTLS_DPRINTF(...)	do { } while (0)
+#define	DTLS_DPRINTF(...)	do { if (0) printf(__VA_ARGS__); } while (0)
 #endif
 
 /* The top bit tells a datagram association's cookie from a stream's. */

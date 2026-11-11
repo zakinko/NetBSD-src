@@ -12,8 +12,10 @@ on:
       - '.github/workflows/nfsbridge.yml'
   workflow_dispatch:
 concurrency:
-  group: nfsbridge-${{ github.ref }}
-  cancel-in-progress: true
+  # By hand it is the heavy stage of another branch: its own group, so
+  # that no push cancels it.
+  group: nfsbridge-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -29,9 +31,13 @@ jobs:
       - name: The option off leaves sys/nfs as it was
         run: |
           sudo apt-get install -y -q unifdef >/dev/null
-          sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsbridge/base)"
+          B=$(cat ci/nfsbridge/base)
+          if [ "$GITHUB_REF_NAME" = nfsacl ]; then B=$(cat ci/nfsacl/base); fi
+          sh ci/nfsbridge/off-is-unchanged.sh "$B"
       - run: sh ci/nfsbridge/build.sh "$PWD/nb" "$PWD/out"
+      # From its own base; nfsacl builds its series in nfsacl.yml.
       - name: Every commit on its own
+        if: github.ref_name == 'nfsbridge'
         run: cp ci/nfsbridge/each-commit.sh nb/ && sh nb/each-commit.sh "$(cat ci/nfsbridge/base)" "$PWD/nb"
       - uses: actions/upload-artifact@v4
         if: always()

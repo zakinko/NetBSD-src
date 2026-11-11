@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+# NFSACL version 3 by hand, against the published XDR (illumos
+# usr/src/head/rpcsvc/nfs_acl.x) and the Linux server's behaviour
+# (fs/nfsd/nfs3acl.c, fs/nfs_common/nfsacl.c).  Every reply is decoded
+# to its last byte, so that a word too many or too few is a failure.
+# probe.py HOST MOUNTPORT
+import os
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+HOST = sys.argv[1]
+MPORT = int(sys.argv[2])
+PROG, NFS, MOUNT = 100227, 100003, 100005
+# nfs_acl.x:45-51, 58-60, 83-86.
+USER_OBJ, USER, GROUP_OBJ, GROUP, CLASS_OBJ, OTHER_OBJ = 1, 2, 4, 8, 0x10, 0x20
+DEFAULT = 0x1000
+NA_ACL, NA_ACLCNT, NA_DFACL, NA_DFACLCNT = 1, 2, 4, 8
+# RFC 5531 s9: accept_stat.
+SUCCESS, PROG_UNAVAIL, PROG_MISMATCH, PROC_UNAVAIL, GARBAGE_ARGS = 0, 1, 2, 3, 4
+# RFC 1813 s2.6.
+OK, PERM, ACCES, INVAL, STALE, BADHANDLE, NOTSUPP = 0, 1, 13, 22, 70, 10001, 10004
+
+fails = 0
+xid = int(time.time()) & 0xffffff
+
+
+def check(what, cond, detail=''):
+    global fails
+    print('%s: %s %s' % ('ok' if cond else 'FAILED', what, detail))
+    if not cond:
+        fails += 1
+
+
+def ssh(cmd):
+    return subprocess.run(['ssh', 'netbsd', cmd], check=True,
+                          capture_output=True, text=True).stdout
+
+
+class R:
+    """A cursor over a reply that must be read to the end."""
+    def __init__(self, b):
+        self.b, self.p = b, 0
+
+    def u(self):
+        v, = struct.unpack('>I', self.b[self.p:self.p + 4])
+        self.p += 4
+        return v
+
+    def opaque(self, n):
+        v = self.b[self.p:self.p + n]
+        self.p += (n + 3) & ~3
+        return v
+
+    def done(self):
+        return self.p == len(self.b)
+
+
+def u32(*v):
+    return b''.join(struct.pack('>I', x & 0xffffffff) for x in v)
+
+
+def opq(b):
+    return u32(len(b)) + b + b'\0' * ((4 - len(b) % 4) % 4)
+
+
+def authsys(uid=0, gid=0):
+    body = u32(0) + opq(b'probe') + u32(uid, gid, 0)
+    return u32(1) + opq(body)
+
+
+def call(port, prog, vers, proc, args=b'', cred=None):
+    global xid
+    xid += 1
+    if cred is None:
+        cred = authsys()
+    msg = u32(xid, 0, 2, prog, vers, proc) + cred + u32(0, 0) + args
+    s = socket.create_connection((HOST, port), timeout=30)
+    s.sendall(u32(0x80000000 | len(msg)) + msg)
+    data = b''
+    while True:
+        hdr = b''
+        while len(hdr) < 4:
+            c = s.recv(4 - len(hdr))
+            if not c:
+                raise IOError('closed')
+            hdr += c
+        n, = struct.unpack('>I', hdr)
+        frag = b''
+        while len(frag) < (n & 0x7fffffff):
+            c = s.recv((n & 0x7fffffff) - len(frag))
+            if not c:
+                raise IOError('closed')
+            frag += c
+        data += frag
+        if n & 0x80000000:
+            break
+    s.close()
+    r = R(data)
+    assert r.u() == xid and r.u() == 1        # REPLY
+    assert r.u() == 0                         # MSG_ACCEPTED
+    r.u(); r.opaque(r.u())                    # verifier
+    return r.u(), r
+
+
+def mnt(path):
+    st, r = call(MPORT, MOUNT, 3, 1, opq(path.encode()))
+    assert st == SUCCESS and r.u() == 0, path
+    fh = r.opaque(r.u())
+    return fh
+
+
+def lookup(dfh, name):
+    st, r = call(2049, NFS, 3, 3, opq(dfh) + opq(name.encode()))
+    assert st == SUCCESS and r.u() == 0, name
+    return r.opaque(r.u())
+
+
+def post_op_attr(r):
+    if r.u():
+        return r.opaque(84)
+    return None
+
+
+def getacl(fh, mask, cred=None):
+    st, r = call(2049, PROG, 3, 1, opq(fh) + u32(mask), cred)
+    assert st == SUCCESS, st
+    out = {'status': r.u()}
+    out['attr'] = post_op_attr(r)
+    if out['status'] == OK:
+        out['mask'] = r.u()
+        for k in ('acl', 'dfacl'):
+            cnt = r.u()
+            n = r.u()
+            ents = [(r.u(), r.u(), r.u()) for _ in range(n)]
+            out[k + 'cnt'], out[k] = cnt, ents
+    out['end'] = r.done()
+    return out
+
+
+def ents(lst, flag=0):
+    return u32(len(lst), len(lst)) + b''.join(
+        u32(t | flag, i, p) for t, i, p in lst)
+
+
+def setacl(fh, mask, acl, dfacl, raw=None):
+    body = raw if raw is not None else \
+        opq(fh) + u32(mask) + ents(acl) + ents(dfacl, DEFAULT)
+    st, r = call(2049, PROG, 3, 2, body)
+    if st != SUCCESS:
+        return st, None, None
+    status = r.u()
+    attr = post_op_attr(r)
+    return st, status, r.done()
+
+
+def lines(path, d=''):
+    out = ssh('getfacl -n -q %s %s' % (d, path))
+    return [l for l in out.splitlines() if l.strip() and not l.startswith('#')]
+
+
+def mode_uid_gid(attr):
+    t, mode, nlink, uid, gid = struct.unpack('>5I', attr[:20])
+    return mode, uid, gid
+
+
+print('=== the program, its versions and procedures')
+st, r = call(2049, PROG, 3, 0)
+check('NULL v3 is SUCCESS with no results', st == SUCCESS and r.done())
+st, r = call(2049, PROG, 3, 0, cred=u32(0, 0))
+check('NULL v3 under AUTH_NONE', st == SUCCESS and r.done())
+for v in (1, 2, 4):
+    st, r = call(2049, PROG, v, 0)
+    lo, hi = (r.u(), r.u()) if st == PROG_MISMATCH else (None, None)
+    check('version %d is PROG_MISMATCH 3..3' % v,
+          st == PROG_MISMATCH and (lo, hi) == (3, 3) and r.done(),
+          '(%s %s %s)' % (st, lo, hi))
+for p in (3, 4, 5, 100):
+    st, r = call(2049, PROG, 3, p)
+    check('procedure %d is PROC_UNAVAIL' % p, st == PROC_UNAVAIL and r.done(),
+          '(%s)' % st)
+st, r = call(2049, 100099, 1, 0)
+check('another program is PROG_UNAVAIL', st == PROG_UNAVAIL)
+
+print('=== GETACL on FFS with POSIX.1e ACLs')
+ssh('cd /export/pacl && rm -rf pf pm pd && touch pf pm && mkdir pd && '
+    'chown 1:2 pf pm pd && chmod 640 pf pm && chmod 750 pd && '
+    'setfacl -m u:2097:rw,g:3001:r,m::rw pf && '
+    'setfacl -d -m u::rwx,g::rx,o::-,u:2098:rx,m::rx pd')
+root = mnt('/export/pacl')
+pf, pm, pd = lookup(root, 'pf'), lookup(root, 'pm'), lookup(root, 'pd')
+
+g = getacl(pf, NA_ACL | NA_ACLCNT | NA_DFACL | NA_DFACLCNT)
+check('status and the end of the reply', g['status'] == OK and g['end'], str(g['status']))
+check('post_op_attr follows', g['attr'] is not None)
+check('the mask is the call\'s', g['mask'] == 0xf)
+want = {(USER_OBJ, 1, 6), (USER, 2097, 6), (GROUP_OBJ, 2, 4),
+        (GROUP, 3001, 4), (CLASS_OBJ, 0, 6), (OTHER_OBJ, 0, 0)}
+check('entries, with the owner and group in the _OBJ ids',
+      g['aclcnt'] == 6 and set(g['acl']) == want, str(g['acl']))
+check('no default ACL on a file', (g['dfaclcnt'], g['dfacl']) == (0, []))
+
+g = getacl(pf, NA_ACLCNT)
+check('ACLCNT alone: the count and an empty array',
+      g['status'] == OK and g['aclcnt'] == 6 and g['acl'] == [] and
+      g['dfaclcnt'] == 0 and g['end'], str(g))
+
+g = getacl(pm, NA_ACL)
+check('a file with no ACL: four entries, the mask of the group, in order',
+      g['acl'] == [(USER_OBJ, 1, 6), (GROUP_OBJ, 2, 4), (CLASS_OBJ, 0, 4),
+                   (OTHER_OBJ, 0, 0)] and g['end'], str(g['acl']))
+
+g = getacl(pd, NA_ACL | NA_DFACL)
+check('a directory: the default entries carry 0x1000',
+      g['status'] == OK and g['dfaclcnt'] == 5 and
+      all(t & DEFAULT for t, i, p in g['dfacl']) and
+      set((t & ~DEFAULT, i, p) for t, i, p in g['dfacl']) ==
+      {(USER_OBJ, 1, 7), (GROUP_OBJ, 2, 5), (USER, 2098, 5),
+       (CLASS_OBJ, 0, 5), (OTHER_OBJ, 0, 0)}, str(g['dfacl']))
+check('a directory: the access ACL of mode 750',
+      g['acl'] == [(USER_OBJ, 1, 7), (GROUP_OBJ, 2, 5), (CLASS_OBJ, 0, 5),
+                   (OTHER_OBJ, 0, 0)], str(g['acl']))
+
+g = getacl(pf, 0x10)
+check('a mask over the four is NFS3ERR_INVAL with attributes',
+      g['status'] == INVAL and g['attr'] is not None and g['end'], str(g['status']))
+g = getacl(b'\x01' * 32, NA_ACL)
+check('a handle of no export', g['status'] in (STALE, BADHANDLE, ACCES) and
+      g['end'], str(g['status']))
+g = getacl(pf, NA_ACL, cred=u32(0, 0))
+check('AUTH_NONE is NFS3ERR_ACCES', g['status'] == ACCES and g['end'], str(g['status']))
+st, r = call(2049, PROG, 3, 1, u32(65) + b'\0' * 68 + u32(1))
+check('a handle longer than 64 is GARBAGE_ARGS', st == GARBAGE_ARGS)
+
+print('=== SETACL on FFS with POSIX.1e ACLs')
+acl5 = [(USER_OBJ, 1, 6), (USER, 2097, 4), (GROUP_OBJ, 2, 4),
+        (CLASS_OBJ, 0, 6), (OTHER_OBJ, 0, 0)]
+st, status, end = setacl(pm, NA_ACL, acl5, [])
+check('set five entries', status == OK and end, str(status))
+g = getacl(pm, NA_ACL)
+check('read back', set(g['acl']) == set(acl5), str(g['acl']))
+check('the server agrees',
+      'user:2097:r--' in ssh('getfacl -n /export/pacl/pm'))
+check('the mode has the mask', ssh('ls -ln /export/pacl/pm').startswith('-rw-rw----'))
+
+st, status, end = setacl(pm, NA_ACL, [(USER_OBJ, 99, 7), (GROUP_OBJ, 99, 5),
+                                      (CLASS_OBJ, 99, 5), (OTHER_OBJ, 99, 1)], [])
+check('a Solaris minimal ACL, mask equal to the group', status == OK, str(status))
+check('stored as three entries', len(lines('/export/pacl/pm')) == 3,
+      str(lines('/export/pacl/pm')))
+g = getacl(pm, NA_ACL)
+check('and sent as four', g['acl'] == [(USER_OBJ, 1, 7), (GROUP_OBJ, 2, 5),
+                                       (CLASS_OBJ, 0, 5), (OTHER_OBJ, 0, 1)],
+      str(g['acl']))
+
+st, status, end = setacl(pm, NA_ACL, [(USER_OBJ, 0, 6), (USER, 2097, 4),
+                                      (GROUP_OBJ, 0, 4), (OTHER_OBJ, 0, 0)], [])
+check('a named entry and no mask is NFS3ERR_INVAL', status == INVAL, str(status))
+st, status, end = setacl(pm, NA_ACL, [(USER_OBJ, 0, 6), (USER, 2097, 0x8),
+                                      (GROUP_OBJ, 0, 4), (CLASS_OBJ, 0, 4),
+                                      (OTHER_OBJ, 0, 0)], [])
+check('ACL_USER with a bit over rwx is NFS3ERR_INVAL', status == INVAL, str(status))
+st, status, end = setacl(pm, NA_ACL, [(USER_OBJ, 0, 6), (USER, 2097, 4),
+                                      (GROUP_OBJ, 0, 4), (CLASS_OBJ, 0, 0xff),
+                                      (OTHER_OBJ, 0, 0)], [])
+check('extra bits of the mask are dropped, as Solaris sends them', status == OK,
+      str(status))
+st, status, end = setacl(pm, NA_ACL, [(USER_OBJ, 0, 8), (GROUP_OBJ, 0, 4),
+                                      (OTHER_OBJ, 0, 0)], [])
+check('USER_OBJ with a bit over rwx is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+st, status, end = setacl(pm, NA_ACL, [(0x40, 0, 4)], [])
+check('an unknown tag in a list asked for is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+st, status, end = setacl(pm, 0, [(0x40, 0, 4)], [])
+check('in a list not asked for it is skipped', status == OK, str((st, status)))
+st, status, end = setacl(pm, NA_ACL, [(USER, 0xffffffff, 4)], [])
+check('ACL_USER of id -1 is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+st, status, end = setacl(pm, 0x10, [], [])
+check('a mask over the four is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+raw = opq(pm) + u32(NA_ACL, 1025, 1025) + u32(1, 0, 6) * 1025 + u32(0, 0)
+st, status, end = setacl(pm, 0, [], [], raw=raw)
+check('1025 entries is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+raw = opq(pm) + u32(NA_ACL, 4, 3) + u32(1, 0, 6, 4, 0, 4, 0x20, 0, 0) + u32(0, 0)
+st, status, end = setacl(pm, 0, [], [], raw=raw)
+check('a count that is not the array\'s is GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
+st, status, end = setacl(pm, NA_DFACL, [], [(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 5),
+                                            (OTHER_OBJ, 0, 0)])
+check('a default ACL on a file is NFS3ERR_ACCES', status == ACCES, str(status))
+st, status, end = setacl(pm, NA_DFACL, [], [])
+check('removing the default ACL of a file is NFS3_OK', status == OK, str(status))
+st, status, end = setacl(pm, NA_ACL, [], [])
+check('an empty access ACL leaves the ACL of the mode', status == OK and
+      len(lines('/export/pacl/pm')) == 3, str(status))
+
+st, status, end = setacl(pd, NA_ACL | NA_DFACL,
+                         [(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 5), (OTHER_OBJ, 0, 0)],
+                         [(USER_OBJ, 0, 7), (USER, 2097, 7), (GROUP_OBJ, 0, 5),
+                          (CLASS_OBJ, 0, 7), (OTHER_OBJ, 0, 0)])
+check('both lists of a directory', status == OK, str(status))
+check('the server has the default', 'user:2097:rwx' in
+      ssh('getfacl -n -d /export/pacl/pd'))
+st, status, end = setacl(pd, NA_ACL | NA_DFACL,
+                         [(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 5), (OTHER_OBJ, 0, 0)], [])
+check('an empty default removes it', status == OK and
+      lines('/export/pacl/pd', '-d') == [], str(status))
+
+ssh('chmod 640 /export/pacl/pm && chown 2098 /export/pacl/pm')
+st, r = call(2049, PROG, 3, 2, opq(pm) + u32(NA_ACL) +
+             ents([(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 7), (OTHER_OBJ, 0, 7)]) +
+             u32(0, 0), cred=authsys(2097, 2097))
+st2 = r.u() if st == SUCCESS else None
+check('not the owner: NFS3ERR_PERM or NFS3ERR_ACCES', st2 in (PERM, ACCES), str(st2))
+
+
+def noposix(export, name):
+    print('=== %s, no POSIX.1e ACLs' % export)
+    ssh('cd %s && rm -rf %s && touch %s && chmod 754 %s' % (export, name, name, name))
+    fh = lookup(mnt(export), name)
+    g = getacl(fh, NA_ACL | NA_DFACL)
+    mode, uid, gid = mode_uid_gid(g['attr'])
+    check('GETACL makes the ACL of the mode', g['status'] == OK and g['end'] and
+          g['acl'] == [(USER_OBJ, uid, 7), (GROUP_OBJ, gid, 5),
+                       (CLASS_OBJ, 0, 5), (OTHER_OBJ, 0, 4)] and
+          (g['dfaclcnt'], g['dfacl']) == (0, []), str(g))
+    st, status, end = setacl(fh, NA_ACL, [(USER_OBJ, 0, 7), (GROUP_OBJ, 0, 5),
+                                          (OTHER_OBJ, 0, 4)], [])
+    check('SETACL is NFS3ERR_NOTSUPP', status == NOTSUPP and end, str(status))
+    st, status, end = setacl(fh, 0, [], [])
+    check('SETACL that asks for nothing is NFS3_OK', status == OK, str(status))
+    ssh('rm -f %s/%s' % (export, name))
+
+
+noposix('/export/tmpfs', 'nf')
+noposix('/export/acl', 'nf')
+if ssh('test -d /tank/x && echo y || :').strip() == 'y':
+    noposix('/tank/x', 'nf')
+else:
+    print('(no /tank/x)')
+ssh('rm -rf /export/pacl/pf /export/pacl/pm /export/pacl/pd')
+print('failures: %d' % fails)
+sys.exit(1 if fails else 0)

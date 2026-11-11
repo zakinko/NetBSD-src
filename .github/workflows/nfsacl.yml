@@ -33,12 +33,10 @@ jobs:
           key: nfsv4-tools-${{ hashFiles('ci/nfsv4/base') }}
       - name: The option off leaves sys/nfs as it was
         run: |
-          # The mirror has failed to resolve; the index and a retry.
-          for i in 1 2 3; do
-            sudo apt-get update -q >/dev/null 2>&1
-            sudo apt-get install -y -q unifdef >/dev/null && break
-            sleep 30
-          done
+          # The tree's own: the Ubuntu mirror has failed to resolve.
+          mkdir -p "$HOME/bin"
+          cc -w -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
+          export PATH="$HOME/bin:$PATH"
           # From this series' base: the GSS series before it already
           # changes nfs.h, nfs_socket.c and nfs_srvsubs.c with it off.
           sh ci/nfsbridge/off-is-unchanged.sh "$(cat ci/nfsacl/base)"

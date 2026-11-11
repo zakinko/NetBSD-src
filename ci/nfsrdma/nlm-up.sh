@@ -7,8 +7,9 @@ OUT=$1
 F=$OUT/tun.in
 rm -f "$F"
 mkfifo "$F"
-sudo sh -c "exec python3 ci/nfsrdma/tun.py nb0 <$F" | \
-    ssh -o ServerAliveInterval=15 netbsd /var/tmp/tunpipe >"$F" &
+# Off the step's output, or the step waits on the pipe for ever.
+sudo sh -c "exec python3 ci/nfsrdma/tun.py nb0 <$F" 2>>"$OUT/tun.err" | \
+    ssh -o ServerAliveInterval=15 netbsd /var/tmp/tunpipe >"$F" 2>>"$OUT/tun.err" &
 sleep 3
 ssh netbsd 'ifconfig tun0 10.77.0.2 10.77.0.1 netmask 255.255.255.255 up'
 sudo ip addr add 10.77.0.1 peer 10.77.0.2 dev nb0
@@ -22,4 +23,8 @@ sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p udp -j DNAT --to-destination 10.7
 sudo iptables -t nat -A POSTROUTING -o nb0 -j MASQUERADE
 sudo apt-get install -y -q rpcbind nfs-common >/dev/null 2>&1
 sudo systemctl start rpcbind rpc-statd
-rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen'
+# Both ways, to tell the link from the redirection when one fails.
+timeout 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
+timeout 20 rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 192.0.2.1'
+sudo iptables -t nat -L -n -v
+ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\.111 "'

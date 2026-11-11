@@ -33,6 +33,12 @@
  * kernel, with NFSSVC_TLSDONE, the traffic secrets for its record layer
  * and the "tls-exporter" channel binding.  OpenSSL never sees a byte of
  * application data, and the child leaves without closing the session.
+ *
+ * On UDP, RFC 9289 s5.1.2, the descriptor is one end of an AF_LOCAL
+ * datagram pair the kernel carries the peer's datagrams over, and the
+ * handshake is DTLS 1.3, RFC 9147.  That needs OpenSSL 4.1; built with
+ * an older one, the daemon does not tell the kernel it can, and the
+ * kernel offers no UDP client STARTTLS.
  */
 
 #include <sys/cdefs.h>
@@ -48,8 +54,15 @@ __RCSID("$NetBSD$");
 #include <nfs/nfs.h>
 
 #include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
+
+#if OPENSSL_VERSION_NUMBER >= 0x40100000L
+#define	HAVE_DTLS13
+#endif
 
 #include <err.h>
 #include <errno.h>
@@ -74,6 +87,12 @@ static const char exporter_label[] = "EXPORTER-Channel-Binding";
 static bool debug;
 static struct nfsd_tlsarg nt;		/* the one connection of a child */
 static bool have_csecret, have_ssecret;
+
+#ifdef HAVE_DTLS13
+static struct nfsd_tlsarg dw;		/* a child's: the peer, the MTU */
+static uint8_t cookie_key[32];		/* for the HelloRetryRequest */
+static bool hs_txany, hs_rxany;
+#endif
 
 static void
 logssl(const char *what)
@@ -158,14 +177,95 @@ verify_anonymous(int ok, X509_STORE_CTX *xs)
 	return 1;
 }
 
+#ifdef HAVE_DTLS13
+/*
+ * RFC 9147 s5.1: the cookie of a HelloRetryRequest, bound to the peer's
+ * address the kernel gave, as AF_LOCAL does not show it: HMAC-SHA256 of
+ * it under a key of this daemon's.
+ */
+static int
+cookie_make(SSL *ssl, unsigned char *cookie, unsigned int *len)
+{
+	unsigned int n = EVP_MAX_MD_SIZE;
+
+	if (HMAC(EVP_sha256(), cookie_key, sizeof(cookie_key), dw.nt_peer,
+	    sizeof(dw.nt_peer), cookie, &n) == NULL)
+		return 0;
+	*len = n;
+	return 1;
+}
+
+static int
+cookie_check(SSL *ssl, const unsigned char *cookie, unsigned int len)
+{
+	unsigned char want[EVP_MAX_MD_SIZE];
+	unsigned int n;
+
+	return cookie_make(ssl, want, &n) && n == len &&
+	    CRYPTO_memcmp(want, cookie, n) == 0;
+}
+
+/*
+ * What the kernel's record layer goes on from, RFC 9147: the next
+ * message_seq of each side, s5.2, and the records of epoch 3 sent and
+ * read, s4, which OpenSSL keeps to itself.  The DTLSHandshake header is
+ * taken to come with each message here, and the unified header with
+ * each record, its low epoch bits in the first byte, s4.
+ */
+static void
+dtls_msg(int write_p, int version, int type, const void *buf, size_t len,
+    SSL *ssl, void *arg)
+{
+	const uint8_t *p = buf;
+	uint16_t seq;
+
+	if (type == SSL3_RT_HANDSHAKE && len >= 12) {
+		seq = (uint16_t)(p[4] << 8 | p[5]);
+		if (write_p && (!hs_txany || seq >= nt.nt_hstxseq)) {
+			nt.nt_hstxseq = seq + 1;
+			hs_txany = true;
+		} else if (!write_p && (!hs_rxany || seq >= nt.nt_hsrxseq)) {
+			nt.nt_hsrxseq = seq + 1;
+			hs_rxany = true;
+		}
+	} else if (type == SSL3_RT_HEADER && len >= 1 &&
+	    (p[0] & 0xe3) == 0x23) {	/* 001, epoch 3 */
+		if (write_p)
+			nt.nt_txseq++;
+		else
+			nt.nt_rxseq++;
+	}
+}
+
+static void
+dtls_setup(SSL_CTX *ctx)
+{
+
+	SSL_CTX_set_cookie_generate_cb(ctx, cookie_make);
+	SSL_CTX_set_cookie_verify_cb(ctx, cookie_check);
+	SSL_CTX_set_options(ctx, SSL_OP_COOKIE_EXCHANGE |
+	    SSL_OP_NO_QUERY_MTU);
+	SSL_CTX_set_msg_callback(ctx, dtls_msg);
+}
+#endif
+
 static SSL_CTX *
-mkctx(const char *cert, const char *key, const char *ca, bool mutual)
+mkctx(const char *cert, const char *key, const char *ca, bool mutual,
+    bool dgram)
 {
 	SSL_CTX *ctx;
 
-	if ((ctx = SSL_CTX_new(TLS_server_method())) == NULL)
+	if ((ctx = SSL_CTX_new(dgram ? DTLS_server_method() :
+	    TLS_server_method())) == NULL)
 		errx(1, "SSL_CTX_new");
-	/* RFC 9289 s5: nothing before TLS 1.3. */
+	/* RFC 9289 s5: nothing before TLS 1.3; s5.1.2, DTLS 1.3. */
+#ifdef HAVE_DTLS13
+	if (dgram) {
+		if (!SSL_CTX_set_min_proto_version(ctx, DTLS1_3_VERSION))
+			errx(1, "DTLS 1.3");
+		dtls_setup(ctx);
+	} else
+#endif
 	if (!SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION))
 		errx(1, "TLS 1.3");
 	/*
@@ -216,7 +316,7 @@ mkctx(const char *cert, const char *key, const char *ca, bool mutual)
  * its own, which exits after.
  */
 static void
-handshake(SSL_CTX *ctx, int fd)
+handshake(SSL_CTX *ctx, int fd, bool dgram)
 {
 	const unsigned char *alpn;
 	unsigned int alpnlen;
@@ -225,8 +325,27 @@ handshake(SSL_CTX *ctx, int fd)
 	int error = ECONNABORTED;
 
 	alarm(HANDSHAKE_TIMEOUT);
-	if ((ssl = SSL_new(ctx)) == NULL || !SSL_set_fd(ssl, fd)) {
+	if ((ssl = SSL_new(ctx)) == NULL) {
 		logssl("SSL_new");
+		goto done;
+	}
+#ifdef HAVE_DTLS13
+	if (dgram) {
+		BIO *bio;
+
+		/* The pair is connected and keeps datagram boundaries. */
+		if ((bio = BIO_new_dgram(fd, BIO_NOCLOSE)) == NULL) {
+			logssl("BIO_new_dgram");
+			goto done;
+		}
+		SSL_set_bio(ssl, bio, bio);
+		/* RFC 9147 s4.4: the path's, which the kernel knows. */
+		if (dw.nt_pmtu != 0)
+			SSL_set_mtu(ssl, dw.nt_pmtu);
+	} else
+#endif
+	if (!SSL_set_fd(ssl, fd)) {
+		logssl("SSL_set_fd");
 		goto done;
 	}
 	if (SSL_accept(ssl) != 1) {
@@ -239,8 +358,13 @@ handshake(SSL_CTX *ctx, int fd)
 		/* s5 makes it the client's MUST; it is not refused here. */
 		syslog(LOG_NOTICE, "conn %ju: client offered no ALPN",
 		    (uintmax_t)nt.nt_cookie);
-	if (SSL_version(ssl) != TLS1_3_VERSION ||
-	    !have_csecret || !have_ssecret) {
+	if (SSL_version(ssl) != (dgram ?
+#ifdef HAVE_DTLS13
+	    DTLS1_3_VERSION
+#else
+	    -1
+#endif
+	    : TLS1_3_VERSION) || !have_csecret || !have_ssecret) {
 		syslog(LOG_WARNING, "conn %ju: no TLS 1.3 secrets",
 		    (uintmax_t)nt.nt_cookie);
 		goto done;
@@ -266,8 +390,14 @@ handshake(SSL_CTX *ctx, int fd)
 	if ((peer = SSL_get0_peer_certificate(ssl)) != NULL &&
 	    SSL_get_verify_result(ssl) == X509_V_OK)
 		nt.nt_flags |= NFSD_TLS_PEERCERT;
-	syslog(LOG_INFO, "conn %ju: TLS 1.3, suite 0x%04x, ALPN %.*s, %s",
-	    (uintmax_t)nt.nt_cookie, nt.nt_suite, (int)alpnlen, alpn,
+	/*
+	 * RFC 9147 s9: OpenSSL negotiates no connection ID, so nt_rcidlen
+	 * and nt_tcidlen stay 0, which the kernel takes only with options
+	 * ONCRPC_DTLS_NOCID.
+	 */
+	syslog(LOG_INFO, "conn %ju: %s 1.3, suite 0x%04x, ALPN %.*s, %s",
+	    (uintmax_t)nt.nt_cookie, dgram ? "DTLS" : "TLS", nt.nt_suite,
+	    (int)alpnlen, alpn,
 	    peer == NULL ? "anonymous client" :
 	    (nt.nt_flags & NFSD_TLS_PEERCERT) != 0 ? "client verified" :
 	    "client unverified");
@@ -310,7 +440,7 @@ main(int argc, char **argv)
 	const char *cert = NULL, *key = NULL, *ca = NULL;
 	struct nfsd_tlsarg w;
 	bool mutual = false;
-	SSL_CTX *ctx;
+	SSL_CTX *ctx, *dctx = NULL;
 	pid_t pid;
 	int c;
 
@@ -341,7 +471,12 @@ main(int argc, char **argv)
 		errx(1, "-m needs -A");
 
 	openlog(getprogname(), LOG_PID | (debug ? LOG_PERROR : 0), LOG_DAEMON);
-	ctx = mkctx(cert, key, ca, mutual);
+	ctx = mkctx(cert, key, ca, mutual, false);
+#ifdef HAVE_DTLS13
+	dctx = mkctx(cert, key, ca, mutual, true);
+	if (RAND_bytes(cookie_key, sizeof(cookie_key)) != 1)
+		errx(1, "RAND_bytes");
+#endif
 	if (!debug && daemon(0, 0) == -1)
 		err(1, "daemon");
 	signal(SIGCHLD, SIG_IGN);	/* no zombies */
@@ -349,6 +484,8 @@ main(int argc, char **argv)
 
 	for (;;) {
 		memset(&w, 0, sizeof(w));
+		if (dctx != NULL)
+			w.nt_flags = NFSD_TLS_DGRAMOK;
 		if (nfssvc(NFSSVC_TLSWAIT, &w) == -1) {
 			if (errno == EINTR)
 				continue;
@@ -374,7 +511,18 @@ main(int argc, char **argv)
 		case 0:
 			nt.nt_cookie = w.nt_cookie;
 			signal(SIGALRM, timeout);
-			handshake(ctx, w.nt_fd);
+			if ((w.nt_flags & NFSD_TLS_DGRAM) != 0) {
+#ifdef HAVE_DTLS13
+				dw = w;
+				handshake(dctx, w.nt_fd, true);
+#else
+				/* Not asked for; refused all the same. */
+				w.nt_error = EPROTONOSUPPORT;
+				(void)nfssvc(NFSSVC_TLSDONE, &w);
+				_exit(1);
+#endif
+			}
+			handshake(ctx, w.nt_fd, false);
 			/* NOTREACHED */
 		default:
 			break;

@@ -808,6 +808,15 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
 
 	if (rcidlen > DTLS13_MAXCID || tcidlen > DTLS13_MAXCID)
 		return EINVAL;
+#ifndef ONCRPC_DTLS_NOCID
+	/*
+	 * RFC 9289 s5.1.2: "each DTLS handshake MUST include the
+	 * connection_id(54) extension ... and RPC-with-DTLS peer endpoints
+	 * MUST provide a ConnectionID with a nonzero length."
+	 */
+	if (rcidlen == 0 || tcidlen == 0)
+		return EPROTONOSUPPORT;
+#endif
 	mutex_enter(&d->d_lock);
 	if (!p->dp_hashed || dtls_expired(p) || p->dp_state != DP_HANDSHAKE) {
 		mutex_exit(&d->d_lock);

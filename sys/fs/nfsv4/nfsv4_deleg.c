@@ -444,13 +444,20 @@ nfsv4_deleg_offer(struct nfsv4_owner_s *sw, struct vnode *vp,
     struct nfsv4_open_deleg *od)
 {
 	struct nfsv4_client *cl = sw->sw_client;
-	struct nfsv4_state *st;
+	struct nfsv4_state *st = NULL;
 	bool write = (access & OPEN4_SHARE_ACCESS_WRITE) != 0;
+	uint32_t why;
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
-	if (!sw->sw_confirmed || deleg_refused(cl, vp, write, ds, &st) != 0 ||
-	    st != NULL)
+	why = sw->sw_confirmed ? deleg_refused(cl, vp, write, ds, &st) : 0;
+	if (nfsv4_cb_trace)
+		log(LOG_DEBUG, "nfsv4 cbtrace: offer minor %u write %d "
+		    "confirmed %d cbstate %d spare %d writecount %d "
+		    "refused %u held %d\n", cl->cl_minor, write,
+		    sw->sw_confirmed, cl->cl_cbstate, ds->ds_st != NULL,
+		    (int)vp->v_writecount, why, sw->sw_confirmed && st != NULL);
+	if (!sw->sw_confirmed || why != 0 || st != NULL)
 		return;
 	nfsv4_deleg_add(cl, vp, fh, write ? OPEN_DELEGATE_WRITE :
 	    OPEN_DELEGATE_READ, ds, od);

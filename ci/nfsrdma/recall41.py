@@ -265,32 +265,21 @@ while rp.recall is None and time.time() < end:
 check('CB_RECALL came as a reverse Call', rp.recall is not None,
       (rp.calls, rp.recall and rp.recall.hex(), dsid and dsid.hex()))
 if rp.recall is not None:
-    # The Linux client asked GETATTR of the file twice, a second apart,
-    # between answering the recall and returning the delegation, and the
-    # second got no answer (run 43007424174, the capture).
-    for i in range(2):
+    # The Linux client's return: SEQUENCE PUTFH GETATTR DELEGRETURN in
+    # one COMPOUND, and again a second later, the second never answered
+    # (run 43007424174, the capture, ops 53 22 9 of a COMPOUND of four).
+    # No OPEN moves off the delegation first.
+    for i in range(3):
         try:
-            r = a.seqd([u32(OP_PUTFH) + opq(fh), u32(9) + u32(1) + u32(0x18)])
-            check('GETATTR %d during the recall' % i, True, a.last)
+            a.seqd([u32(OP_PUTFH) + opq(fh), u32(9) + u32(1) + u32(0x18),
+                    u32(OP_DELEGRETURN) + dsid])
+            check('GETATTR and DELEGRETURN %d' % i, True, a.last)
         except Exception as e:
-            check('GETATTR %d during the recall' % i, False, repr(e))
+            check('GETATTR and DELEGRETURN %d' % i, False, repr(e))
+            break
+        if a.last != 10008:         # NFS4ERR_DELAY: the client tries again
             break
         time.sleep(1)
-    # As the Linux client does with the file still open: the open is
-    # moved off the delegation first, OPEN with CLAIM_DELEG_CUR_FH (5),
-    # RFC 8881 s18.16.3, and the delegation is then returned.
-    try:
-        a.seqd([u32(OP_PUTFH) + opq(fh),
-                u32(OP_OPEN) + u32(0) + u32(1) + u32(0) + u64(a.clid) +
-                opq(b'o' + name) + u32(0) + u32(5) + dsid])
-        check('OPEN by CLAIM_DELEG_CUR_FH answered', a.last == 0, a.last)
-    except Exception as e:
-        check('OPEN by CLAIM_DELEG_CUR_FH answered', False, repr(e))
-    try:
-        a.seqd([u32(OP_PUTFH) + opq(fh), u32(OP_DELEGRETURN) + dsid])
-        check('DELEGRETURN answered', a.last == 0, a.last)
-    except Exception as e:
-        check('DELEGRETURN answered', False, repr(e))
 t.join(30)
 check('the second open went through', done.get('st') in (0, 10008), done)
 # The forward channel afterwards, which is where the Linux client stopped.

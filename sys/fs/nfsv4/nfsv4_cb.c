@@ -474,12 +474,8 @@ cb_do_probe(struct nfsv4_client *cl)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL, NULL);
-	/*
-	 * RFC 8881 s18.36.3 says version 4, and is what is tried, but the
-	 * XDR of RFC 5662 has "version NFS_CB = 1": a client may have
-	 * followed that, and refuse the other with PROG_MISMATCH.
-	 */
-	if (error == EPROTO && ct.ct_sess != NULL) {
+	/* RFC 8881 s18.36.3: version 4, and what is tried first. */
+	if (error == EPROTO && ct.ct_sess != NULL && nfsv4_cb_vers1) {
 		ct.ct_vers = NFSV4_CB_VERSION;
 		error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL,
 		    NULL);
@@ -491,6 +487,21 @@ cb_do_probe(struct nfsv4_client *cl)
 	cb_target_put(&ct, EAGAIN);
 	cb_path(&ct, error == 0);
 }
+
+/*
+ * vfs.nfsv4.cb_vers1, from the option NFSV4_CB_VERS1 (see the module's
+ * Makefile).  Deliberately on: s18.36.3 has the server call back with
+ * version 4 and nothing else, but the XDR of RFC 5662 has "version NFS_CB
+ * = 1", and a client that followed it refuses 4 with PROG_MISMATCH and
+ * would never get a callback.  On, that refusal makes the session use 1
+ * from then on.  Without the option, or with 0 here, only 4 is sent, and
+ * such a client has no backchannel, as the RFC has it.
+ */
+#ifdef NFSV4_CB_VERS1
+int nfsv4_cb_vers1 = 1;
+#else
+int nfsv4_cb_vers1 = 0;
+#endif
 
 static void
 cb_do_recall(struct nfsv4_state *st)

@@ -243,6 +243,34 @@ if res.status == NFS4_OK:
     t("s11.18 fs_status", a[FATTR4_FS_STATUS].fss_type, STATUS4_WRITABLE)
     t("s14.4 fs_charset_cap", a[FATTR4_FS_CHARSET_CAP], FSCHARSET_CAP4_ALLOWS_ONLY_UTF8)
 
+# s18.36.3: callbacks of version 4, and the fallback to 1 of NFSV4_CB_VERS1.
+# pynfs's callback server takes 1 only unless told otherwise.
+sc = lambda v: subprocess.call(["ssh", "netbsd", "sudo sysctl -w %s || sysctl -w %s" % (v, v)])
+def cbvers(name, fallback, vers):
+    sc("vfs.nfsv4.cb_vers1=%d" % fallback)
+    saved = c.versions
+    c.versions = vers
+    try:
+        sx = sess_of(b"cbv" + name)
+        time.sleep(3)		# the probe
+        res = create_file(sx, stamp + b"cbv" + name, path=P(b"cbv" + name))
+        check(res)
+        fx, sidx = res.resarray[-1].object, res.resarray[-2].stateid
+        close_file(sx, fx, sidx)
+        res = sx.compound(nofh(fx, op.want_delegation(OPEN4_SHARE_ACCESS_WANT_READ_DELEG,
+                                                       deleg_claim4(CLAIM_FH))))
+        dx = res.resarray[-1].wdr_resok4 if res.status == 0 else None
+        got = dx.delegation_type if dx is not None else res.status
+        if got == OPEN_DELEGATE_READ:
+            sx.compound(nofh(fx, op.delegreturn(dx.read.stateid)))
+        return got
+    finally:
+        c.versions = saved
+        sc("vfs.nfsv4.cb_vers1=1")
+t("s18.36.3 version 4 taken", cbvers(b"a", 0, [4]), OPEN_DELEGATE_READ)
+t("s18.36.3 a client of 1 only, no backchannel", cbvers(b"b", 0, [1]), OPEN_DELEGATE_NONE_EXT)
+t("option: falls back to 1", cbvers(b"c", 1, [1]), OPEN_DELEGATE_READ)
+
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
 res = create_file(s3, stamp + b"exp", path=P(b"exp"))

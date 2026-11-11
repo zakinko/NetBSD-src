@@ -872,11 +872,10 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
- * Owners on the way in.  Numbers are the only form understood, s5.9, and
- * a string that is not one has no translation here.
+ * Owners on the way in: name@domain by nfsv4_idmap.c, or a number, s5.9.
  */
 static uint32_t
-attr_parse_id(XDR *x, bool group, uint32_t *idp)
+attr_parse_id(XDR *x, bool group, uint32_t flavor, uint32_t *idp)
 {
 	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len;
@@ -891,11 +890,29 @@ attr_parse_id(XDR *x, bool group, uint32_t *idp)
 	}
 	if (!xdr_opaque(x, buf, len))
 		return NFS4ERR_BADXDR;
-	return nfsv4_attr_strid(group, buf, len, idp);
+	return nfsv4_attr_strid(group, buf, len, flavor, idp);
 }
 
+/*
+ * vfs.nfsv4.numeric_owner_sys, from the option NFSV4_NUMERIC_OWNER_SYS
+ * (see the module's Makefile).  Deliberately on: RFC 8881 s5.9 (RFC 7530
+ * s5.9 alike) says a number SHOULD be NFS4ERR_BADOWNER when the id it
+ * names has a translation, but under AUTH_SYS the credential of every
+ * call is that same number, so refusing it in an attribute guards against
+ * nothing, and clients that send numbers (Linux with nfs4_disable_idmapping)
+ * would lose chown.  On, numbers are taken under AUTH_SYS only; under any
+ * other flavour, RPCSEC_GSS above all, the RFC's refusal stands either way.
+ * Without the option, or with 0 here, the refusal holds for AUTH_SYS too.
+ */
+#ifdef NFSV4_NUMERIC_OWNER_SYS
+int nfsv4_numeric_owner_sys = 1;
+#else
+int nfsv4_numeric_owner_sys = 0;
+#endif
+
 uint32_t
-nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t *idp)
+nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t flavor,
+    uint32_t *idp)
 {
 	const char *at;
 	uint64_t v;
@@ -912,6 +929,10 @@ nfsv4_attr_strid(bool group, const char *buf, u_int len, uint32_t *idp)
 		v = v * 10 + (buf[i] - '0');
 	}
 	if (v > UINT32_MAX)
+		return NFS4ERR_BADOWNER;
+	/* s5.9: "a valid translation for the user or owner" */
+	if ((flavor != ONCRPC_AUTH_SYS || !nfsv4_numeric_owner_sys) &&
+	    nfsv4_idmap_has(group, (uint32_t)v))
 		return NFS4ERR_BADOWNER;
 	*idp = (uint32_t)v;
 	return NFS4_OK;
@@ -1016,7 +1037,8 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				st = NFS4ERR_FBIG;
 			break;
 		case FATTR4_ACL:
-			st = nfsv4_acl_parse(x, &c->c_setacl);
+			st = nfsv4_acl_parse(x, c->c_rq->rq_flavor,
+			    &c->c_setacl);
 			break;
 		case FATTR4_ARCHIVE:
 		case FATTR4_HIDDEN:
@@ -1059,12 +1081,12 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 				va->va_mode = v;
 			break;
 		case FATTR4_OWNER:
-			st = attr_parse_id(x, false, &id);
+			st = attr_parse_id(x, false, c->c_rq->rq_flavor, &id);
 			if (st == NFS4_OK)
 				va->va_uid = id;
 			break;
 		case FATTR4_OWNER_GROUP:
-			st = attr_parse_id(x, true, &id);
+			st = attr_parse_id(x, true, c->c_rq->rq_flavor, &id);
 			if (st == NFS4_OK)
 				va->va_gid = id;
 			break;

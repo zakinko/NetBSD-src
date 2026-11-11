@@ -228,6 +228,7 @@ void	nfsv4_idmap_fini(void);
 int	nfsv4_idmap_line(const char *);
 int	nfsv4_idmap_setdomain(const char *);
 u_int	nfsv4_idmap_out(bool, uint32_t, char *);
+bool	nfsv4_idmap_has(bool, uint32_t);
 uint32_t nfsv4_idmap_in(bool, const char *, u_int, u_int, uint32_t *);
 
 void	nfsv4_referral_init(void);
@@ -257,12 +258,16 @@ uint32_t nfsv4_xattr_op(struct nfsv4_compound *, uint32_t, union nfsv4_args *,
 bool	nfsv4_acl_supported(struct vnode *);
 uint32_t nfsv4_acl_get(struct vnode *, kauth_cred_t, struct acl **);
 bool	nfsv4_acl_put(XDR *, const struct acl *);
-uint32_t nfsv4_acl_parse(XDR *, struct acl **);
+uint32_t nfsv4_acl_parse(XDR *, uint32_t, struct acl **);
 uint32_t nfsv4_acl_set(struct nfsv4_compound *, struct vnode *, kauth_cred_t);
-uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t *);
+uint32_t nfsv4_acl_noattr(struct vnode *, struct vnode *, bool, kauth_cred_t);
+extern int nfsv4_excl_inherit;
+extern int nfsv4_create_mode_mask;
+uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 	    const struct nfsv4_name *);
 extern int nfsv4_utf8_only;
+extern int nfsv4_numeric_owner_sys;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
 uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);

@@ -94,6 +94,7 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 	enum vtype vt;
 	uint64_t set;
 	uint32_t st;
+	bool noattr;
 	int error;
 
 	vt = create_vtype(ca->type);
@@ -140,6 +141,10 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 
 	vattr_null(&va);
 	va.va_type = vt;
+	/* s6.4.3, case 4: nfsv4_acl_noattr() below for an ACL. */
+	noattr = sva.va_mode == (mode_t)VNOVAL && c->c_setacl == NULL &&
+	    (vt == VDIR || vt == VSOCK || vt == VFIFO || vt == VBLK ||
+	    vt == VCHR);
 	va.va_mode = sva.va_mode;
 	sva.va_mode = VNOVAL;
 	error = nfsv4_dir_change(nd.ni_dvp, cf->cf_cred, &ci.ci_before);
@@ -200,6 +205,8 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 		}
 	}
 	st = nfsv4_acl_set(c, vp, cf->cf_cred);
+	if (st == NFS4_OK && noattr)
+		st = nfsv4_acl_noattr(cf->cf_vp, vp, false, cf->cf_cred);
 	if (st != NFS4_OK) {
 		vrele(vp);
 		return st;

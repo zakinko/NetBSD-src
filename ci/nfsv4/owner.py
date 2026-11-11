@@ -3,7 +3,7 @@
 owner.py EXPORT, with the table loaded: u 1234 alice, g 5678 staff, domain
 example.org.  Exit status 1 means something went wrong.
 """
-import os, sys
+import os, subprocess, sys
 sys.path.insert(0, os.getcwd())
 import use_local
 sys.path.insert(0, os.path.join(os.getcwd(), 'lib'))
@@ -44,6 +44,15 @@ setattr_('number', FATTR4_OWNER, b'1234', NFS4_OK)
 get(FATTR4_OWNER, b'alice@example.org')
 setattr_('unmapped number', FATTR4_OWNER, b'4321', NFS4_OK)
 get(FATTR4_OWNER, b'4321')
+# The option NFSV4_NUMERIC_OWNER_SYS off: s5.9's SHOULD under AUTH_SYS too.
+subprocess.call(['ssh', 'netbsd', 'sysctl -w vfs.nfsv4.numeric_owner_sys=0'])
+setattr_('number with a name, s5.9', FATTR4_OWNER, b'1234', NFS4ERR_BADOWNER)
+setattr_('group number with a name, s5.9', FATTR4_OWNER_GROUP, b'5678', NFS4ERR_BADOWNER)
+setattr_('number without a name, s5.9', FATTR4_OWNER, b'4322', NFS4_OK)
+get(FATTR4_OWNER, b'4322')
+subprocess.call(['ssh', 'netbsd', 'sysctl -w vfs.nfsv4.numeric_owner_sys=1'])
+setattr_('option: number with a name', FATTR4_OWNER_GROUP, b'5678', NFS4_OK)
+get(FATTR4_OWNER_GROUP, b'staff@example.org')
 setattr_('unknown name', FATTR4_OWNER, b'bob@example.org', NFS4ERR_BADOWNER)
 setattr_('other domain', FATTR4_OWNER, b'alice@example.com', NFS4ERR_BADOWNER)
 setattr_('bad label', FATTR4_OWNER, b'alice@-bad.org', NFS4ERR_INVAL)

@@ -175,6 +175,11 @@ jobs:
           ssh netbsd "sysctl -w vfs.nfsv4.domain=example.org; sysctl -w 'vfs.nfsv4.idmap=u 1234 alice'; sysctl -w 'vfs.nfsv4.idmap=g 5678 staff'"
           python3 ./owner.py /export/pynfs 2>&1 | tee "$OLDPWD/out/owner.txt" || true
           ssh netbsd "sysctl -w vfs.nfsv4.domain=; sysctl -w vfs.nfsv4.idmap=clear"
+      - name: Inheritance on a create with no attributes
+        run: |
+          cp ci/nfsv4/aclcreate.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          python3 ./aclcreate.py /export/acl 2>&1 | tee "$OLDPWD/out/aclcreate.txt" || true
       - name: The rest of the options
         run: |
           cp ci/nfsv4/more.py "$HOME/pynfs/nfs4.0/"
@@ -236,6 +241,7 @@ jobs:
             out/t41.txt
             out/t41b.txt
             out/t40rm.txt
+            out/aclcreate.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

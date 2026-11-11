@@ -144,6 +144,7 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	struct timespec ts;
 	uint64_t set = 0;
 	uint32_t st;
+	bool noattr = false;
 	int error;
 
 	*createdp = false;
@@ -236,7 +237,8 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 
 	vattr_null(&va);
 	va.va_type = VREG;
-	/* s6.4.3: without attributes, nothing until SETATTR says so. */
+	/* s6.4.3, case 4: nfsv4_acl_noattr() below for an ACL. */
+	noattr = sva.va_mode == (mode_t)VNOVAL && c->c_setacl == NULL;
 	va.va_mode = sva.va_mode != (mode_t)VNOVAL ? sva.va_mode :
 	    oa->createmode == EXCLUSIVE4 ? 0 : NFSV4_CREATE_MODE;
 	sva.va_mode = VNOVAL;
@@ -275,6 +277,9 @@ open_vnode(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 	}
 	if (*createdp) {
 		st = nfsv4_acl_set(c, vp, cf->cf_cred);
+		if (st == NFS4_OK && noattr)
+			st = nfsv4_acl_noattr(dvp, vp,
+			    oa->createmode == EXCLUSIVE4, cf->cf_cred);
 		if (st != NFS4_OK) {
 			vrele(vp);
 			return st;

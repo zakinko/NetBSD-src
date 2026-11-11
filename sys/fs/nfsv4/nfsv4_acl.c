@@ -188,7 +188,7 @@ nfsv4_acl_put(XDR *x, const struct acl *acl)
 }
 
 static uint32_t
-acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
+acl_parse_who(XDR *x, struct acl_entry *ae, bool group, uint32_t flavor)
 {
 	char buf[NFSV4_IDSTR_MAX];
 	uint32_t len, id, st;
@@ -216,7 +216,7 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 	if (buf[len - 1] == '@')
 		return NFS4ERR_ATTRNOTSUPP;
 
-	st = nfsv4_attr_strid(group, buf, len, &id);
+	st = nfsv4_attr_strid(group, buf, len, flavor, &id);
 	if (st != NFS4_OK)
 		return st;
 	ae->ae_tag = group ? ACL_GROUP : ACL_USER;
@@ -226,7 +226,7 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group)
 
 /* An fattr4_acl to *aclp, which the compound frees if nothing else does. */
 uint32_t
-nfsv4_acl_parse(XDR *x, struct acl **aclp)
+nfsv4_acl_parse(XDR *x, uint32_t flavor, struct acl **aclp)
 {
 	struct acl *acl;
 	struct acl_entry *ae;
@@ -258,7 +258,7 @@ nfsv4_acl_parse(XDR *x, struct acl **aclp)
 			return NFS4ERR_ATTRNOTSUPP;
 		}
 		st = acl_parse_who(x, ae,
-		    (flag & ACE4_IDENTIFIER_GROUP) != 0);
+		    (flag & ACE4_IDENTIFIER_GROUP) != 0, flavor);
 		if (st != NFS4_OK)
 			return st;
 		/* RFC 8881 s6.2.1.4.1: it would apply to nothing, ever. */
@@ -284,6 +284,119 @@ nfsv4_acl_parse(XDR *x, struct acl **aclp)
 			return NFS4ERR_ATTRNOTSUPP;
 	}
 	return NFS4_OK;
+}
+
+/*
+ * vfs.nfsv4.excl_inherit, from the option NFSV4_EXCL_INHERIT (see the
+ * module's Makefile).  Off, an OPEN with EXCLUSIVE4, which carries no
+ * attributes, makes a file that inherits nothing and that denies all
+ * access, as RFC 8881 s6.4.3 SHOULD, case 4: the trivial ACL of mode 0,
+ * which still lets the owner SETATTR the attributes meant.  On, it is
+ * deliberately left to the file system, which inherits the parent's ACEs
+ * with their rights masked by mode 0, as for a local open(2) with that
+ * mode.  The file system's way is kept as the option for whoever wants
+ * NFS and local creation to agree; nothing is known to need it.
+ */
+#ifdef NFSV4_EXCL_INHERIT
+int nfsv4_excl_inherit = 1;
+#else
+int nfsv4_excl_inherit = 0;
+#endif
+
+/*
+ * vfs.nfsv4.create_mode_mask, from the option NFSV4_CREATE_MODE_MASK (see
+ * the module's Makefile).  Off, a file or directory made with neither mode
+ * nor ACL in the call, other than by EXCLUSIVE4, gets the parent's
+ * inheritable ACEs as they are, s6.4.3, case 4: "inheritance SHOULD take
+ * place, and no modifications to the ACL will happen".  On, it is
+ * deliberately left to the file system, which is given the server's
+ * default mode (0644, 0755 for a directory) and masks the inherited rights
+ * by its group bits and takes WRITE_ACL, WRITE_OWNER and the attribute
+ * writes away, as for a local creat(2).  Where the parent has nothing
+ * inheritable the RFC leaves the result to the implementation, and the
+ * default mode stands either way.
+ */
+#ifdef NFSV4_CREATE_MODE_MASK
+int nfsv4_create_mode_mask = 1;
+#else
+int nfsv4_create_mode_mask = 0;
+#endif
+
+/*
+ * s6.4.3, case 4, for vp just made in dvp with neither mode nor ACL given;
+ * excl for EXCLUSIVE4.  Whatever the file system inherited is replaced.
+ */
+uint32_t
+nfsv4_acl_noattr(struct vnode *dvp, struct vnode *vp, bool excl,
+    kauth_cred_t cred)
+{
+	struct acl *pacl, *acl;
+	struct acl_entry *ae;
+	struct vattr va;
+	bool isdir = vp->v_type == VDIR;
+	acl_flag_t flags;
+	uint32_t st;
+	u_int i;
+	int error;
+
+	if (excl ? nfsv4_excl_inherit : nfsv4_create_mode_mask)
+		return NFS4_OK;
+	if (!nfsv4_acl_supported(dvp) || !nfsv4_acl_supported(vp))
+		return NFS4_OK;
+	acl = acl_alloc(KM_SLEEP);
+	acl->acl_maxcnt = ACL_MAX_ENTRIES;
+	if (excl) {
+		vn_lock(vp, LK_SHARED | LK_RETRY);
+		error = VOP_GETATTR(vp, &va, cred);
+		VOP_UNLOCK(vp);
+		if (error != 0) {
+			acl_free(acl);
+			return nfsv4_errno(error);
+		}
+		acl_nfs4_sync_acl_from_mode(acl, 0, va.va_uid);
+	} else {
+		st = nfsv4_acl_get(dvp, cred, &pacl);
+		if (st != NFS4_OK) {
+			acl_free(acl);
+			return st;
+		}
+		/*
+		 * RFC 8881 s6.2.1.4.1.  FILE_INHERIT reaches files in
+		 * subdirectories too, so a new directory carries it as
+		 * INHERIT_ONLY unless NO_PROPAGATE stops it there; the
+		 * flags are the same as subr_acl_nfs4.c gives them.
+		 */
+		for (i = 0; i < pacl->acl_cnt; i++) {
+			ae = &pacl->acl_entry[i];
+			flags = ae->ae_flags;
+			if (isdir ? (flags & ACL_ENTRY_DIRECTORY_INHERIT) == 0 &&
+			    ((flags & ACL_ENTRY_FILE_INHERIT) == 0 ||
+			    (flags & ACL_ENTRY_NO_PROPAGATE_INHERIT) != 0) :
+			    (flags & ACL_ENTRY_FILE_INHERIT) == 0)
+				continue;
+			acl->acl_entry[acl->acl_cnt] = *ae;
+			ae = &acl->acl_entry[acl->acl_cnt++];
+			ae->ae_flags &= ~ACL_ENTRY_INHERIT_ONLY;
+			ae->ae_flags |= ACL_ENTRY_INHERITED;
+			if (!isdir || (flags & ACL_ENTRY_NO_PROPAGATE_INHERIT) != 0)
+				ae->ae_flags &= ~(ACL_ENTRY_FILE_INHERIT |
+				    ACL_ENTRY_DIRECTORY_INHERIT |
+				    ACL_ENTRY_NO_PROPAGATE_INHERIT);
+			else if ((flags & ACL_ENTRY_DIRECTORY_INHERIT) == 0)
+				ae->ae_flags |= ACL_ENTRY_INHERIT_ONLY;
+		}
+		acl_free(pacl);
+		/* Nothing inheritable: the implementation's choice. */
+		if (acl->acl_cnt == 0) {
+			acl_free(acl);
+			return NFS4_OK;
+		}
+	}
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	error = VOP_SETACL(vp, ACL_TYPE_NFS4, acl, cred);
+	VOP_UNLOCK(vp);
+	acl_free(acl);
+	return nfsv4_errno(error);
 }
 
 /*

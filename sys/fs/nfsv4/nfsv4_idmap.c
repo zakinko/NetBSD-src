@@ -35,8 +35,9 @@
  *
  * and vfs.nfsv4.domain says the dns_domain.  Without a domain, or for
  * an id not in the table, a number goes out, s5.9 having that mean no
- * translation.  Numbers are always taken, which s5.9 asks for outside
- * Kerberos.  Only the one domain has valid translations, as s5.9
+ * translation.  A number coming in is refused when the id has a
+ * translation, as s5.9 SHOULD, except under AUTH_SYS while
+ * vfs.nfsv4.numeric_owner_sys is on (nfsv4_attr.c).  Only the one domain has valid translations, as s5.9
  * allows; another is NFS4ERR_BADOWNER, and one that is no domain is
  * NFS4ERR_INVAL, s12.6, whose first method compares them as U-labels.
  */
@@ -209,6 +210,26 @@ nfsv4_idmap_out(bool group, uint32_t id, char *buf)
 	}
 	mutex_exit(&idmap_lock);
 	return n != 0 ? n : (u_int)snprintf(buf, NFSV4_IDSTR_MAX, "%u", id);
+}
+
+/* Whether nfsv4_idmap_out() would give name@domain for id, s5.9. */
+bool
+nfsv4_idmap_has(bool group, uint32_t id)
+{
+	struct idmap_ent *ie;
+	bool has = false;
+
+	mutex_enter(&idmap_lock);
+	if (idmap_domlen != 0) {
+		LIST_FOREACH(ie, &idmap_id[id % IDMAP_HASH], ie_byid) {
+			if (ie->ie_id == id && ie->ie_group == group) {
+				has = true;
+				break;
+			}
+		}
+	}
+	mutex_exit(&idmap_lock);
+	return has;
 }
 
 /* RFC 3492 s5 */

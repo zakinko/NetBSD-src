@@ -23,6 +23,30 @@ CPPFLAGS+=	-DNFSV4_GDD_UNAVAIL_OK
 # name that an open denying writes is on, against RFC 7530 s16.26.5's
 # SHOULD NOT, for pynfs's RM1r and RLOWN2.  See nfsv4_deleg.c.
 CPPFLAGS+=	-DNFSV4_REMOVE_PAST_DENY
+#
+# NFSV4_NUMERIC_OWNER_SYS: under AUTH_SYS, take a numeric owner or group
+# even when the id has a name@domain, against RFC 8881 s5.9's SHOULD.
+# The credential under AUTH_SYS is that number already, and the client
+# of Linux sends numbers by default.  Under RPCSEC_GSS the RFC's
+# NFS4ERR_BADOWNER stands either way.  See nfsv4_attr.c.
+CPPFLAGS+=	-DNFSV4_NUMERIC_OWNER_SYS
+#
+# NFSV4_CB_VERS1: when a client of version 4.1 refuses callback version
+# 4, use 1, the version in the XDR of RFC 5662, against RFC 8881
+# s18.36.3's MUST of 4.  Without it that client has no callbacks.  See
+# nfsv4_cb.c.
+CPPFLAGS+=	-DNFSV4_CB_VERS1
+#
+# NFSV4_EXCL_INHERIT: let the file system inherit ACEs, masked by mode 0,
+# into a file made by OPEN with EXCLUSIVE4, against RFC 8881 s6.4.3's
+# SHOULD NOT.  Not set: nothing is known to need it.  See nfsv4_acl.c.
+#CPPFLAGS+=	-DNFSV4_EXCL_INHERIT
+#
+# NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
+# file system mask the inherited ACEs by the server's default mode,
+# against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not
+# set: nothing is known to need it.  See nfsv4_acl.c.
+#CPPFLAGS+=	-DNFSV4_CREATE_MODE_MASK
 
 WARNS=	3
 

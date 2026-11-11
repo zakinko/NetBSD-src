@@ -867,6 +867,22 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_gdd_unavail_ok, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "numeric_owner_sys", SYSCTL_DESCR("Take numeric owners under AUTH_SYS"),
+	    NULL, 0, &nfsv4_numeric_owner_sys, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_vers1", SYSCTL_DESCR("Fall back to callback version 1"),
+	    NULL, 0, &nfsv4_cb_vers1, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "excl_inherit", SYSCTL_DESCR("Inherit ACEs on EXCLUSIVE4 create"),
+	    NULL, 0, &nfsv4_excl_inherit, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "create_mode_mask", SYSCTL_DESCR("Mask inherited ACEs by a default mode on create"),
+	    NULL, 0, &nfsv4_create_mode_mask, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "utf8only", SYSCTL_DESCR("Version 4.1 takes only UTF-8 names"),
 	    NULL, 0, &nfsv4_utf8_only, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

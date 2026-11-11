@@ -7,6 +7,9 @@ X=$(mktemp -d)
 fail=0
 for f in $(git diff --name-only "$B" HEAD -- sys/nfs | grep -E '\.[ch]$'); do
 	case $f in sys/nfs/nfs_oncrpc.c|sys/nfs/nfs_acl.c) continue ;; esac
+	# A file the base does not have is built only with the option, or
+	# by a module: nfs_xattr.c, nfs_srvxattr.c.
+	git cat-file -e "$B:$f" 2>/dev/null || { echo "new: $f"; continue; }
 	git show "$B:$f" >"$X/old"
 	unifdef -UNFSSERVER_ONCRPC -U_KERNEL_OPT "$f" >"$X/new" || [ $? -eq 1 ]
 	# The base may have the option already, as the base of nfsacl does.

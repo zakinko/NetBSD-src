@@ -171,16 +171,18 @@ st, r = call(2049, PROG, 3, 0)
 check('NULL v3 is SUCCESS with no results', st == SUCCESS and r.done())
 st, r = call(2049, PROG, 3, 0, cred=u32(0, 0))
 check('NULL v3 under AUTH_NONE', st == SUCCESS and r.done())
-for v in (1, 2, 4):
+st, r = call(2049, PROG, 2, 0)
+check('NULL v2 is SUCCESS with no results', st == SUCCESS and r.done())
+for v in (1, 4):
     st, r = call(2049, PROG, v, 0)
     lo, hi = (r.u(), r.u()) if st == PROG_MISMATCH else (None, None)
-    check('version %d is PROG_MISMATCH 3..3' % v,
-          st == PROG_MISMATCH and (lo, hi) == (3, 3) and r.done(),
+    check('version %d is PROG_MISMATCH 2..3' % v,
+          st == PROG_MISMATCH and (lo, hi) == (2, 3) and r.done(),
           '(%s %s %s)' % (st, lo, hi))
-for p in (3, 4, 5, 100):
-    st, r = call(2049, PROG, 3, p)
-    check('procedure %d is PROC_UNAVAIL' % p, st == PROC_UNAVAIL and r.done(),
-          '(%s)' % st)
+for v, p in ((3, 3), (3, 4), (3, 100), (2, 5), (2, 6)):
+    st, r = call(2049, PROG, v, p)
+    check('v%d procedure %d is PROC_UNAVAIL' % (v, p),
+          st == PROC_UNAVAIL and r.done(), '(%s)' % st)
 st, r = call(2049, 100099, 1, 0)
 check('another program is PROG_UNAVAIL', st == PROG_UNAVAIL)
 
@@ -313,6 +315,26 @@ st2 = r.u() if st == SUCCESS else None
 check('not the owner: NFS3ERR_PERM or NFS3ERR_ACCES', st2 in (PERM, ACCES), str(st2))
 
 
+def mnt2(path):
+    # MOUNT version 1, RFC 1094 Appendix A: fhstatus, a 32-byte fhandle.
+    st, r = call(MPORT, MOUNT, 1, 1, opq(path.encode()))
+    assert st == SUCCESS and r.u() == 0, path
+    return r.opaque(32)
+
+
+def lookup2(dfh, name):
+    # NFS version 2 LOOKUP, RFC 1094 s2.2.5: diropres.
+    st, r = call(2049, NFS, 2, 4, dfh + opq(name.encode()))
+    assert st == SUCCESS and r.u() == 0, name
+    return r.opaque(32)
+
+
+def v2(proc, args, cred=None):
+    st, r = call(2049, PROG, 2, proc, args, cred)
+    assert st == SUCCESS, st
+    return r
+
+
 def noposix(export, name):
     print('=== %s, no POSIX.1e ACLs' % export)
     ssh('cd %s && rm -rf %s && touch %s && chmod 754 %s' % (export, name, name, name))
@@ -330,6 +352,69 @@ def noposix(export, name):
     check('SETACL that asks for nothing is NFS3_OK', status == OK, str(status))
     ssh('rm -f %s/%s' % (export, name))
 
+
+print('=== version 2')
+ssh('cd /export/pacl && rm -rf pf pm pd && touch pf pm && mkdir pd && '
+    'chown 1:2 pf pm pd && chmod 640 pf pm && chmod 750 pd && '
+    'setfacl -m u:2097:rw,g:3001:r,m::rw pf')
+root2 = mnt2('/export/pacl')
+pf2, pm2, pd2 = lookup2(root2, 'pf'), lookup2(root2, 'pm'), lookup2(root2, 'pd')
+r = v2(1, pf2 + u32(0xf))
+st = r.u()
+fa = r.opaque(68) if st == OK else None
+if st == OK:
+    mask = r.u()
+    lists = []
+    for _ in range(2):
+        cnt, n = r.u(), r.u()
+        lists.append((cnt, [(r.u(), r.u(), r.u()) for _ in range(n)]))
+check('GETACL2: NFS_OK, fattr, the mask and the lists, to the end',
+      st == OK and r.done() and mask == 0xf and
+      set(lists[0][1]) == {(USER_OBJ, 1, 6), (USER, 2097, 6), (GROUP_OBJ, 2, 4),
+                           (GROUP, 3001, 4), (CLASS_OBJ, 0, 6), (OTHER_OBJ, 0, 0)}
+      and lists[1] == (0, []), str((st, lists if st == OK else None)))
+check('GETACL2: the fattr is of a regular file, mode 0100640 with the mask',
+      fa is not None and struct.unpack('>2I', fa[:8])[0] == 1, '')
+r = v2(1, pf2 + u32(0x10))
+st = r.u()
+check('GETACL2: a mask over the four is NFSERR_IO, status alone', st == 5 and r.done(),
+      str(st))
+r = v2(1, b'\x01' * 32 + u32(1))
+st = r.u()
+check('GETACL2: a handle of no export', st in (STALE, ACCES) and r.done(), str(st))
+r = v2(2, pm2 + u32(NA_ACL) + ents(acl5) + ents([], DEFAULT))
+st = r.u()
+ok2 = st == OK and len(r.opaque(68)) == 68 and r.done()
+check('SETACL2: attrstat', ok2, str(st))
+check('SETACL2: the server has it', 'user:2097:r--' in ssh('getfacl -n /export/pacl/pm'))
+r = v2(3, pf2)
+st = r.u()
+check('GETATTR2: attrstat', st == OK and len(r.opaque(68)) == 68 and r.done(), str(st))
+r = v2(4, pf2 + u32(0x3f))
+st = r.u()
+got = (r.opaque(68), r.u())[1] if st == OK else None
+check('ACCESS2 of root on a file of 0640: READ MODIFY EXTEND',
+      st == OK and got == 0x1 | 0x4 | 0x8 and r.done(), str((st, got)))
+r = v2(4, pd2 + u32(0x3f))
+st = r.u()
+got = (r.opaque(68), r.u())[1] if st == OK else None
+check('ACCESS2 of root on a directory: all six', st == OK and got == 0x3f, str((st, got)))
+r = v2(4, pf2 + u32(0x3f), cred=authsys(2097, 2097))
+st = r.u()
+got = (r.opaque(68), r.u())[1] if st == OK else None
+check('ACCESS2 of a named user with rw- in the ACL',
+      st == OK and got == 0x1 | 0x4 | 0x8, str((st, got)))
+r = v2(4, pf2 + u32(0x3f), cred=authsys(2098, 2098))
+st = r.u()
+got = (r.opaque(68), r.u())[1] if st == OK else None
+check('ACCESS2 of another user: nothing', st == OK and got == 0, str((st, got)))
+ssh('cd /export/tmpfs && rm -f n2 && touch n2')
+t2 = lookup2(mnt2('/export/tmpfs'), 'n2')
+r = v2(2, t2 + u32(NA_ACL) + ents([(USER_OBJ, 0, 6), (GROUP_OBJ, 0, 4),
+                                   (OTHER_OBJ, 0, 4)]) + ents([], DEFAULT))
+st = r.u()
+check('SETACL2 on tmpfs is 45, illumos\' NFSERR_OPNOTSUPP', st == 45 and r.done(), str(st))
+ssh('rm -f /export/tmpfs/n2')
 
 noposix('/export/tmpfs', 'nf')
 noposix('/export/acl', 'nf')

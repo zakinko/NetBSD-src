@@ -6,6 +6,8 @@ on:
       - 'sys/nfs/**'
       - 'sys/oncrpc/**'
       - 'sys/modules/nfsserver/**'
+      - 'usr.sbin/nfsd/**'
+      - 'etc/rpc'
       - 'ci/nfsacl/**'
       - 'ci/nfsbridge/off-is-unchanged.sh'
       - 'tests/oncrpc/**'
@@ -73,6 +75,7 @@ jobs:
             sys/nfs/nfs.h
             usr.sbin/mountd
             usr.sbin/gssd
+            usr.sbin/nfsd
       - uses: actions/download-artifact@v4
         with:
           name: out
@@ -99,10 +102,11 @@ jobs:
           ssh netbsd 'sysctl -w ddb.onpanic=1 ddb.tee_msgbuf=1; sysctl -w ddb.commandonenter="bt;show all locks;reboot"' || :
       - name: The KDC, the daemons, and the exports with POSIX.1e ACLs
         run: |
-          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
-          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
+          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd usr.sbin/nfsd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/vm-nfsd.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/vm-acl.sh'
           ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-nfsd.sh'
           ssh netbsd 'showmount -e 127.0.0.1'
       - name: getfacl and setfacl over version 3, AUTH_SYS and Kerberos, and the probe
         run: sh ci/nfsacl/linux.sh "$PWD/out"

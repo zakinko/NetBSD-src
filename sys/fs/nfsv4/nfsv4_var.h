@@ -305,6 +305,9 @@ uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 	    const struct nfsv4_name *);
 extern int nfsv4_utf8_only;
+extern u_int nfsv4_fault_getattr;
+extern u_int nfsv4_fault_renew;
+bool	nfsv4_fault(volatile u_int *);
 extern int nfsv4_numeric_owner_sys;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);

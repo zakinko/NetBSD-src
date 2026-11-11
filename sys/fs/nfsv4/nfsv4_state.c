@@ -1186,5 +1186,14 @@ nfsv4_op_renew(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = NFS4ERR_CB_PATH_DOWN;
 	}
 	mutex_exit(&nfsv4_state_lock);
+	/*
+	 * s16.28.5: a lease on locks and shares that cannot be renewed is
+	 * an error other than CB_PATH_DOWN, even if the path is down.
+	 * Nothing here fails to renew one; vfs.nfsv4.fault_renew makes the
+	 * nth RENEW act as if it had, to test that path.
+	 */
+	if ((st == NFS4_OK || st == NFS4ERR_CB_PATH_DOWN) &&
+	    nfsv4_fault(&nfsv4_fault_renew))
+		st = NFS4ERR_RESOURCE;	/* s13.1.3.4 */
 	return st;
 }

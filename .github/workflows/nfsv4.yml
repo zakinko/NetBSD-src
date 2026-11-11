@@ -249,6 +249,12 @@ jobs:
           c="$PWD/ci/nfsv4"
           cd "$HOME/pynfs/nfs4.0"
           { sh "$c/cbgetattr.sh"; VERS=4.1 sh "$c/cbgetattr.sh"; } 2>&1 | tee "$OLDPWD/out/cbgetattr.txt" || true
+      - name: Errors made on purpose (vfs.nfsv4.fault_*)
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' fault '))
+        run: |
+          cp ci/nfsv4/fault.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          timeout 120 python3 ./fault.py /export/pynfs 2>&1 | tee "$OLDPWD/out/fault.txt" || true
       - name: Named attributes and fs_locations
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' named '))
         run: |
@@ -303,6 +309,7 @@ jobs:
             out/t40rm.txt
             out/aclcreate.txt
             out/cbgetattr.txt
+            out/fault.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

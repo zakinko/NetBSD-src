@@ -19,8 +19,9 @@ for f in $(git diff --name-only "$base" "$head"); do
 	sys/fs/nfsv4/nfsv4_acl.c)	add aclcreate dacl t41b;;
 	sys/fs/nfsv4/nfsv4_open.c|sys/fs/nfsv4/nfsv4_change.c)
 					add aclcreate retention t41b t40rm;;
-	sys/fs/nfsv4/nfsv4_attr.c)	add owner retention named dacl t41b;;
+	sys/fs/nfsv4/nfsv4_attr.c)	add owner retention named dacl fault t41b;;
 	sys/fs/nfsv4/nfsv4_idmap.c)	add owner;;
+	sys/fs/nfsv4/nfsv4_state.c)	add fault t41b;;
 	sys/fs/nfsv4/nfsv4_xattr.c)	add named retention;;
 	sys/fs/nfsv4/nfsv4_cb.c|sys/fs/nfsv4/nfsv4_deleg.c)
 					add cbgetattr t41b t40rm;;
@@ -37,6 +38,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/named-attr.py)		add named;;
 	ci/nfsv4/cbgetattr.sh|ci/nfsv4/more.py)	add cbgetattr;;
 	ci/nfsv4/edge.py)		add edge;;
+	ci/nfsv4/fault.py)		add fault;;
 	ci/nfsv4/t41b.py)		add t41b;;
 	ci/nfsv4/t40rm.py)		add t40rm;;
 	ci/nfsv4/each-commit.sh)	add each;;

@@ -45,6 +45,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/acl.h>
+#include <sys/atomic.h>
 #include <sys/errno.h>
 #include <sys/file.h>
 #include <sys/filedesc.h>
@@ -825,6 +826,27 @@ nfsv4_sysctl_addsock(SYSCTLFN_ARGS)
 	return error;
 }
 
+/*
+ * Errors made on purpose, in the manner of fault(4)'s NTH_ONESHOT: a
+ * counter set to n fires on the nth call and is then 0, which is off.
+ * Not fault_inject() itself: that is global to the kernel, and pool_get
+ * calls it too, so the nth would not be ours.
+ */
+u_int nfsv4_fault_getattr = 0;
+u_int nfsv4_fault_renew = 0;
+
+bool
+nfsv4_fault(volatile u_int *n)
+{
+	u_int v;
+
+	do {
+		if ((v = *n) == 0)
+			return false;
+	} while (atomic_cas_uint(n, v, v - 1) != v);
+	return v == 1;
+}
+
 static void
 nfsv4_sysctl_init(void)
 {
@@ -880,6 +902,14 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_trace", SYSCTL_DESCR("Log GETATTR under write delegations"),
 	    NULL, 0, &nfsv4_cb_trace, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_getattr", SYSCTL_DESCR("Fail the nth GETATTR as if a value could not be had"),
+	    NULL, 0, &nfsv4_fault_getattr, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_renew", SYSCTL_DESCR("Fail the nth RENEW as if the lease could not be renewed"),
+	    NULL, 0, &nfsv4_fault_renew, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "excl_inherit", SYSCTL_DESCR("Inherit ACEs on EXCLUSIVE4 create"),

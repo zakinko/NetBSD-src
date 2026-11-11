@@ -1056,6 +1056,13 @@ nfsv4_op_getattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_attr_fill(c, &c->c_cur, &a->getattr.mask, NFS4_OK, buf,
 	    NFSV4_ATTRBUF, &got, &len);
 	c->c_ov.ao_valid = false;
+	/*
+	 * RFC 7530 s16.7.4: an attribute supported whose value cannot be
+	 * had is an error, with no values.  vfs.nfsv4.fault_getattr makes
+	 * the nth GETATTR such a one, to test that path.
+	 */
+	if (st == NFS4_OK && nfsv4_fault(&nfsv4_fault_getattr))
+		st = NFS4ERR_IO;
 	if (st == NFS4_OK && (!nfsv4_xdr_bitmap(c->c_rx, &got) ||
 	    !xdr_u_int32_t(c->c_rx, &len) ||
 	    !XDR_PUTBYTES(c->c_rx, buf, len)))

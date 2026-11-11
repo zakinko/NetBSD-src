@@ -34,8 +34,21 @@ sleep 8
 dr() { awk '$1 == "DELEGRETURN:" { n += $2 } END { print n + 0 }' /proc/self/mountstats; }
 b=$(dr)
 echo "GETATTR sent $(date +%s)"
-python3 ./more.py cbgetattr /export/pynfs/cg 5000
+out=$(python3 ./more.py cbgetattr /export/pynfs/cg 5000)
+echo "$out"
 a=$(dr)
+# RFC 7530 s10.4.3: the time the server constructed and reported is to
+# be written to the file (df1e26e44bb).  The holder still holds its data
+# back (it sleeps 25 s), so the file's mtime on the server is what the
+# server wrote, and should equal the reported time_modify.
+rep=$(echo "$out" | awk '$1 == "time_modify" { printf "%d.%09d", $2, $3 }')
+srv=$(ssh -o LogLevel=ERROR netbsd 'stat -f %Fm /export/pynfs/cg')
+echo "reported time_modify $rep, server mtime $srv"
+if [ -n "$rep" ] && [ "$rep" = "$srv" ]; then
+	echo "ok     CB_GETATTR $v time stored in the file"
+else
+	echo "FAILED CB_GETATTR $v time stored in the file: $rep vs $srv"
+fi
 ssh netbsd 'sysctl -w vfs.nfsv4.cb_trace=0 >/dev/null; dmesg | grep cbtrace | tail -12' 
 grep -E 'DELEGRETURN|OPEN:' /proc/self/mountstats | tail -6
 if [ "$a" = "$b" ]; then echo "ok     CB_GETATTR $v, no recall"

@@ -141,12 +141,18 @@ elif what == 'cbgetattr':
     path = export
     c = client(b'cg', export[:-1])
     c.homedir = export[:-1]
-    r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE]))])
+    # time_modify too: cbgetattr.sh compares it with the server's stat,
+    # as the constructed time is to be written to the file (s10.4.3).
+    bm = nfs4lib.list2bitmap([FATTR4_SIZE, FATTR4_TIME_MODIFY])
+    r = c.compound(c.use_obj(path) + [op.getattr(bm)])
     print('status', r.status)
     while r.status == NFS4ERR_DELAY:
         time.sleep(1)
-        r = c.compound(c.use_obj(path) + [op.getattr(nfs4lib.list2bitmap([FATTR4_SIZE]))])
+        r = c.compound(c.use_obj(path) + [op.getattr(bm)])
     want('GETATTR', r.status, NFS4_OK)
-    want('size the holder has', r.resarray[-1].switch.switch.obj_attributes[FATTR4_SIZE], size)
+    a = r.resarray[-1].switch.switch.obj_attributes
+    want('size the holder has', a[FATTR4_SIZE], size)
+    print('time_modify %d %d' % (a[FATTR4_TIME_MODIFY].seconds,
+                                 a[FATTR4_TIME_MODIFY].nseconds))
 print('failures: %d' % fails)
 sys.exit(1 if fails else 0)

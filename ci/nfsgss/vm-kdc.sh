@@ -43,12 +43,19 @@ kadmin -l add --password=ghost-pw --use-defaults ghost
 kadmin -l add --random-key --use-defaults nfs/nfsgss-server.test
 kadmin -l add --random-key --use-defaults host/nfsgss-client.test
 kadmin -l add --random-key --use-defaults nfs/nfsgss-client.test
+kadmin -l add --random-key --use-defaults host/nfsgss-freebsd.test
 rm -f /etc/krb5.keytab "$D/client.keytab"
 kadmin -l ext_keytab -k /etc/krb5.keytab nfs/nfsgss-server.test
 kadmin -l ext_keytab -k "$D/client.keytab" host/nfsgss-client.test
 kadmin -l ext_keytab -k "$D/client.keytab" nfs/nfsgss-client.test
-chmod 644 "$D/client.keytab"
-kdc --detach --addresses=127.0.0.1 --ports=8888/tcp
+kadmin -l ext_keytab -k "$D/freebsd.keytab" host/nfsgss-freebsd.test
+# alice for FreeBSD, whose kinit wants a terminal for a password
+kadmin -l ext_keytab -k "$D/alice.keytab" alice
+chmod 644 "$D/client.keytab" "$D/freebsd.keytab" "$D/alice.keytab"
+# On every address: the FreeBSD VM comes in through QEMU's port forward,
+# which delivers to the guest's own address, not 127.0.0.1; bound to
+# 127.0.0.1 alone, its kinit found no KDC in run 43074193624.
+kdc --detach --ports=8888/tcp
 sleep 2
 netstat -an -f inet | grep 8888
 tail -5 "$D/kdc.log" || :

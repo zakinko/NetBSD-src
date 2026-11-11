@@ -80,11 +80,20 @@ jobs:
         with:
           name: out
           path: out
+      # For the OmniOS VM: it reaches the NetBSD one through the runner.
+      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'
           cpu: 2
           mem: 4096
+          nat: |
+            "2049": "2049"
+            udp:"2049": "2049"
+            "4002": "4002"
+            udp:"4002": "4002"
+            "111": "111"
+            udp:"111": "111"
           sync: rsync
           copyback: false
           run: uname -a
@@ -110,6 +119,20 @@ jobs:
           ssh netbsd 'showmount -e 127.0.0.1'
       - name: getfacl and setfacl over version 3, AUTH_SYS and Kerberos, and the probe
         run: sh ci/nfsacl/linux.sh "$PWD/out"
+      - name: The illumos client
+        id: omnios
+        uses: vmactions/omnios-vm@v1
+        with:
+          release: r151060
+          cpu: 2
+          mem: 2048
+          sync: rsync
+          copyback: false
+          run: uname -a
+      - name: getfacl and setfacl of illumos over versions 3 and 2
+        run: |
+          sudo systemctl stop rpcbind rpcbind.socket 2>/dev/null || :
+          sh ci/nfsacl/omnios-check.sh "$PWD/out"
       - name: Wireshark reads it
         if: always()
         run: sh ci/nfsacl/tshark.sh out/nfsacl.pcap out | tee out/nfsacl-tshark.txt; test "${PIPESTATUS[0]}" = 0

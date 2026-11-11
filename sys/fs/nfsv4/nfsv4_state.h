@@ -133,6 +133,7 @@ struct nfsv4_client {
 	uint32_t	cl_cbprog;
 	uint32_t	cl_cbident;
 	uid_t		cl_uid;		/* the principal */
+	uint32_t	cl_pflavor;	/* and its flavour, 4.1 */
 	gid_t		cl_gid;		/* and for callbacks, s3.3.3 */
 	uint32_t	cl_flavor;
 	uint64_t	cl_connid;	/* last connection known to be its */

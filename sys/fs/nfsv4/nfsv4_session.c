@@ -563,7 +563,14 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
 	same_verf = conf != NULL && memcmp(&conf->cl_verf, &ea->verifier,
 	    sizeof(ea->verifier)) == 0;
-	same_uid = conf != NULL && conf->cl_uid == uid;
+	/*
+	 * s18.35.4: the principal is the flavour as well as the id.  By the
+	 * id alone AUTH_NONE, AUTH_SYS and a GSS name mapped to the same uid
+	 * were one, and an EXCHANGE_ID in another flavour took over a client
+	 * with state instead of meeting NFS4ERR_CLID_INUSE.
+	 */
+	same_uid = conf != NULL && conf->cl_uid == uid &&
+	    conf->cl_pflavor == c->c_rq->rq_flavor;
 
 	if ((ea->flags & EXCHGID4_FLAG_UPD_CONFIRMED_REC_A) != 0) {
 		if (conf == NULL)
@@ -606,6 +613,7 @@ existing:
 	n->cl_id = id = nfsv4_clientid_new();
 	n->cl_verf = ea->verifier;
 	n->cl_uid = uid;
+	n->cl_pflavor = c->c_rq->rq_flavor;
 	n->cl_idlen = ea->idlen;
 	memcpy(n->cl_idstr, ea->id, ea->idlen);
 	seq = 1;

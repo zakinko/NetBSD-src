@@ -340,6 +340,17 @@ if res.status == NFS4_OK:
        for i in li.fli_items],
       [[([b"srv1", b"srv2"], [0, 0]), ([b"srv3"], [0])]])
 
+# s18.35.4 case 3: the same owner from another flavour, with state, is
+# CLID_INUSE (ESXi counts on this when it mixes sec= on one server).
+from rpc.security import AuthNone
+sf = sess_of(b"flv")
+res = create_file(sf, stamp + b"flv", path=P(b"flv"))
+check(res)
+res = c.compound([op.exchange_id(client_owner4(c.verifier, stamp + b"flv"), 0,
+                                 state_protect4_a(SP4_NONE), [c.impl_id])],
+                 AuthNone().init_cred())
+t("s18.35.4 another flavour, CLID_INUSE", res.status, NFS4ERR_CLID_INUSE)
+
 # s8.4.3: a lock of an expired lease does not stand in the way
 s3 = sess_of(b"gone")
 res = create_file(s3, stamp + b"exp", path=P(b"exp"))

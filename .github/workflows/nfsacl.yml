@@ -35,7 +35,7 @@ jobs:
         run: |
           # The tree's own: the Ubuntu mirror has failed to resolve.
           mkdir -p "$HOME/bin"
-          cc -w -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
+          cc -w -D'__RCSID(x)=' -D'__COPYRIGHT(x)=' -D'__printflike(a,b)=' -D'__dead=' -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
           export PATH="$HOME/bin:$PATH"
           # From this series' base: the GSS series before it already
           # changes nfs.h, nfs_socket.c and nfs_srvsubs.c with it off.

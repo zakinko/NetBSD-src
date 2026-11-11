@@ -18,7 +18,7 @@ sysctl vfs.nfsv4
 mkdir -p /export/x
 mount_mfs -s 1g swap /export/x
 chmod 1777 /export/x
-echo '/export/x -maproot=root -noresvport' >/etc/exports
+echo '/export/x -maproot=root -noresvport -noresvmnt' >/etc/exports
 grep -q '^rpcbind=YES' /etc/rc.conf || echo rpcbind=YES >>/etc/rc.conf
 /etc/rc.d/rpcbind onestart || :
 # MOUNT on a port the tunnel knows, RFC 8267 s5.1.

@@ -27,8 +27,16 @@ sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p udp -j DNAT --to-destination 10.7
 sudo iptables -t nat -A POSTROUTING -o nb0 -j MASQUERADE
 sudo apt-get install -y -q rpcbind nfs-common >/dev/null 2>&1
 sudo systemctl start rpcbind rpc-statd
+# TCP across the link, seen at both ends, as ping alone went through in
+# run 43007424174 and rpcinfo did not.
+ssh netbsd 'timeout 15 tcpdump -n -i tun0 -c 20 -v 2>&1' >"$OUT/tun0.txt" &
+sudo timeout 15 tcpdump -n -i nb0 -c 20 -v >"$OUT/nb0.txt" 2>&1 &
+sleep 2
+timeout 8 bash -c 'exec 3<>/dev/tcp/10.77.0.2/111' && echo 'tcp 111 connects' || echo 'tcp 111 does not connect'
+sleep 14
+cat "$OUT/nb0.txt" "$OUT/tun0.txt"
 # Both ways, to tell the link from the redirection when one fails.
-timeout 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
-timeout 20 rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 192.0.2.1'
+timeout -s KILL 20 rpcinfo -p 10.77.0.2 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 10.77.0.2'
+timeout -s KILL 20 rpcinfo -p 192.0.2.1 | grep -E 'nlockmgr|status' || echo 'no NLM seen on 192.0.2.1'
 sudo iptables -t nat -L -n -v
 ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\.111 "'

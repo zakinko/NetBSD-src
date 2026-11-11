@@ -14,6 +14,7 @@ defparam opt_oncrpc.h		ONCRPC_TLS_REKEY
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc
+file	oncrpc/oncrpc_dtls.c		oncrpc
 file	oncrpc/gss_krb5.c		oncrpc
 file	oncrpc/gss_krb5_crypto.c	oncrpc
 file	oncrpc/oncrpc_gss.c		oncrpc

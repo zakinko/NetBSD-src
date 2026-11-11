@@ -50,6 +50,7 @@
 #define	TLS13_CT_ALERT		21
 #define	TLS13_CT_HANDSHAKE	22
 #define	TLS13_CT_APPDATA	23
+#define	TLS13_CT_ACK		26	/* RFC 9147 s7 */
 
 /* RFC 8446 s5.1 and s5.2 */
 #define	TLS13_MAXPLAIN		(1U << 14)
@@ -112,5 +113,11 @@ int	dtls13_seal(struct dtls13_dir *, uint8_t, const uint8_t *, size_t,
 	    const uint8_t *, size_t, uint8_t *, size_t *);
 int	dtls13_open(struct dtls13_dir *, size_t, uint8_t *, size_t, size_t *,
 	    uint8_t *, uint8_t **, size_t *);
+
+/* What dtls13_demux() makes of the first byte of a record, s4.1. */
+#define	DTLS13_PLAINTEXT	1
+#define	DTLS13_CIPHERTEXT	2
+#define	DTLS13_REJECT		3
+int	dtls13_demux(uint8_t);
 
 #endif /* !_ONCRPC_TLS13_CRYPTO_H_ */

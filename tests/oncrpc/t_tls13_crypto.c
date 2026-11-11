@@ -428,7 +428,8 @@ test_dtls(void)
 	memcpy(buf, rec[1], len[1]);
 	buf[len[1] - 1] ^= 1;
 	check(dtls13_open(&r, 4, buf, len[1], &used, &type, &content,
-	    &clen) == EBADMSG, "forged tag, s4.5.2");
+	    &clen) == EBADMSG && used == len[1],
+	    "forged tag, s4.5.2, with the length to skip it by");
 
 	/* Far ahead and back across the 16-bit wrap, s4.2.2. */
 	w.dd_seq = 65530;
@@ -459,6 +460,25 @@ test_dtls(void)
 	    &clen) == EAGAIN, "another epoch's record");
 }
 
+/* RFC 9147 s4.1, every first byte. */
+static void
+test_demux(void)
+{
+	int b, bad = 0, want;
+
+	for (b = 0; b < 256; b++) {
+		if (b == 21 || b == 22 || b == 26)
+			want = DTLS13_PLAINTEXT;
+		else if (b >= 32 && b <= 63)
+			want = DTLS13_CIPHERTEXT;
+		else
+			want = DTLS13_REJECT;
+		if (dtls13_demux((uint8_t)b) != want)
+			bad++;
+	}
+	check(bad == 0, "s4.1 demultiplexing of all 256 first bytes");
+}
+
 int
 main(void)
 {
@@ -473,6 +493,7 @@ main(void)
 	test_padding();
 	test_keyupdate();
 	test_dtls();
+	test_demux();
 	check(tls13_selftest() == 0, "tls13_selftest");
 	printf("%d passed, %d failed\n", passed, failed);
 	return failed != 0;

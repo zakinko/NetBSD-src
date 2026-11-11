@@ -509,6 +509,24 @@ tls13_selftest(void)
 #define	DTLS13_L		0x04	/* a length */
 #define	DTLS13_E		0x03	/* the low bits of the epoch */
 
+/*
+ * RFC 9147 s4.1, Figure 5: alert, handshake and ack are DTLSPlaintext,
+ * 001 in the top bits is DTLSCiphertext, and anything else MUST be
+ * rejected as a record failing deprotection, s4.5.2.  The DTLS 1.2
+ * types of the figure are rejected too: only 1.3 is spoken here.
+ */
+int
+dtls13_demux(uint8_t b0)
+{
+
+	if (b0 == TLS13_CT_ALERT || b0 == TLS13_CT_HANDSHAKE ||
+	    b0 == TLS13_CT_ACK)
+		return DTLS13_PLAINTEXT;
+	if ((b0 & DTLS13_FIXEDMASK) == DTLS13_FIXED)
+		return DTLS13_CIPHERTEXT;
+	return DTLS13_REJECT;
+}
+
 static void
 dtls_keys(struct dtls13_dir *d)
 {
@@ -687,7 +705,9 @@ dtls_seen(struct dtls13_dir *d, uint64_t seq)
  * the record's length within the datagram; the content is at *contentp,
  * *clenp bytes of type *typep.  Any error means the record is to be
  * dropped without an answer, s4.5.2; EALREADY is a replay, EAGAIN an
- * epoch other than this direction's.
+ * epoch other than this direction's.  On an error *usedp is still the
+ * record's length once the header could be read, so that the records
+ * behind it in the datagram, s4.3, are not lost with it, and 0 if not.
  */
 int
 dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
@@ -700,6 +720,7 @@ dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
 	uint64_t seq;
 	int error;
 
+	*usedp = 0;
 	if (len < 1)
 		return EBADMSG;
 	b0 = p[0];
@@ -725,6 +746,7 @@ dtls13_open(struct dtls13_dir *d, size_t cidlen, uint8_t *p, size_t len,
 			return EBADMSG;
 	} else
 		clen = len - hlen;	/* the rest of the datagram, s4 */
+	*usedp = hlen + clen;
 	if (clen > TLS13_MAXCIPHER)
 		return EMSGSIZE;
 	if (clen < 16 + 1)	/* s4.2.3 needs 16; content type and tag */

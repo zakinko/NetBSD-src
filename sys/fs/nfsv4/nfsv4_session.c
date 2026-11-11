@@ -593,6 +593,29 @@ op_in(const struct nfsv4_bitmap *bm, uint32_t op)
 	    (bm->bm_w[op / 32] & (1U << (op % 32))) != 0;
 }
 
+/* s18.35.3: the part of spo_must_allow the server grants; see the caller. */
+static void
+allow_grant(struct nfsv4_bitmap *bm)
+{
+	static const uint32_t ok[] = {
+		NFSV4_OP_CLOSE, NFSV4_OP_OPEN_DOWNGRADE, NFSV4_OP_LOCKU,
+		NFSV4_OP_DELEGRETURN, NFSV4_OP_TEST_STATEID,
+		NFSV4_OP_FREE_STATEID, NFSV4_OP_SECINFO,
+		NFSV4_OP_SECINFO_NO_NAME, NFSV4_OP_EXCHANGE_ID,
+	};
+	struct nfsv4_bitmap g;
+	size_t i;
+
+	memset(&g, 0, sizeof(g));
+	for (i = 0; i < __arraycount(ok); i++)
+		if (op_in(bm, ok[i])) {
+			g.bm_w[ok[i] / 32] |= 1U << (ok[i] % 32);
+			if (g.bm_n <= ok[i] / 32)
+				g.bm_n = ok[i] / 32 + 1;
+		}
+	*bm = g;
+}
+
 /*
  * s18.35.3: an operation of spo_must_enforce under another credential.
  * The error is NFS4ERR_WRONG_CRED, s15.1.6.4, which s15.2 lists for most
@@ -907,12 +930,18 @@ existing:
 	/*
 	 * s18.35.3: the server's lists.  Every operation asked to be
 	 * enforced is, which includes those of the set the RFC says MUST
-	 * be; spo_must_allow is granted as asked, there being no binding
-	 * of stateids to principals here for it to relax.
+	 * be.  spo_must_allow is a subset of what was asked, which the
+	 * server may return.  A client sends an operation of the set under
+	 * its machine credential in place of the user's, and here that
+	 * credential maps to uid 0 and then -maproot, so WRITE and COMMIT,
+	 * which are checked against the file's permissions, failed with
+	 * EACCES on a Linux 4.1 mount once granted.  Only the operations
+	 * whose authority is the stateid or the client record are granted.
 	 */
 	n->cl_sp4 = ea->how;
 	n->cl_enforce = ea->must_enforce;
 	n->cl_allow = ea->must_allow;
+	allow_grant(&n->cl_allow);
 	if (ea->how == SP4_SSV) {
 		n->cl_ssv = gs;			/* the reference passes */
 		gs = NULL;

@@ -220,6 +220,20 @@ nfsv4_deleg_break_dir(const struct nfsv4_compound *c,
 }
 
 /*
+ * vfs.nfsv4.remove_past_deny, from the option NFSV4_REMOVE_PAST_DENY (see
+ * the module's Makefile).  Deliberately on, for version 4.0 only: RFC 7530
+ * s16.26.5 says SHOULD NOT remove a name that an open denying writes is
+ * on, and pynfs's RM1r and RLOWN2, and its cleaning of a test directory,
+ * expect the name to go.  Without the option, or with 0 here, 4.0 refuses
+ * as 4.1 always does.
+ */
+#ifdef NFSV4_REMOVE_PAST_DENY
+int nfsv4_remove_past_deny = 1;
+#else
+int nfsv4_remove_past_deny = 0;
+#endif
+
+/*
  * rfc8881bis-11 s36.25.4 (RFC 8881 s18.25.4 has a SHOULD NOT): an open
  * that denies writing keeps its name from being removed, by REMOVE or by
  * a RENAME over it.  Racing the VOP as above.

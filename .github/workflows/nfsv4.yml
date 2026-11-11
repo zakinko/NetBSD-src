@@ -132,6 +132,11 @@ jobs:
             echo "=== $e"
             python3 ./edge.py "$e" || echo "edge $e: $?"
           done 2>&1 | tee "$OLDPWD/out/edge.txt"
+      - name: REMOVE under DENY_WRITE in version 4.0, both ways
+        run: |
+          cp ci/nfsv4/t40rm.py "$HOME/pynfs/nfs4.0/"
+          cd "$HOME/pynfs/nfs4.0"
+          timeout 120 python3 ./t40rm.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t40rm.txt" || true
       - name: The Linux client
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: The Linux client, version 4.1
@@ -230,6 +235,7 @@ jobs:
             out/linux-client-*.txt
             out/t41.txt
             out/t41b.txt
+            out/t40rm.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

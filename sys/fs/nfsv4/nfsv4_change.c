@@ -235,7 +235,7 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = NFS4ERR_GRACE;
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(cf, nm->nm_str);	/* s10.4.4 */
-	if (st == NFS4_OK && c->c_minor != 0)
+	if (st == NFS4_OK && (c->c_minor != 0 || !nfsv4_remove_past_deny))
 		st = nfsv4_open_denies_remove(cf, nm->nm_str);
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_dir(c, cf);
@@ -335,7 +335,7 @@ nfsv4_op_rename(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_deleg_break_name(sf, ra->oldname.nm_str);
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_name(tf, ra->newname.nm_str);
-	if (st == NFS4_OK && c->c_minor != 0)
+	if (st == NFS4_OK && (c->c_minor != 0 || !nfsv4_remove_past_deny))
 		st = nfsv4_open_denies_remove(tf, ra->newname.nm_str);
 	if (st == NFS4_OK)
 		st = nfsv4_deleg_break_dir(c, sf);

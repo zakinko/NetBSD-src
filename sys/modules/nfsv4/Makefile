@@ -18,6 +18,11 @@ SRCS+=	nfsv4_cb.c nfsv4_change.c nfsv4_deleg.c nfsv4_drc.c nfsv4_idmap.c nfsv4_r
 # RFC 8881 s18.39.3's NFS4ERR_DIRDELEG_UNAVAIL, which the client of Linux
 # turns into EIO.  See nfsv4_deleg.c.
 CPPFLAGS+=	-DNFSV4_GDD_UNAVAIL_OK
+#
+# NFSV4_REMOVE_PAST_DENY: under version 4.0, REMOVE and RENAME take away a
+# name that an open denying writes is on, against RFC 7530 s16.26.5's
+# SHOULD NOT, for pynfs's RM1r and RLOWN2.  See nfsv4_deleg.c.
+CPPFLAGS+=	-DNFSV4_REMOVE_PAST_DENY
 
 WARNS=	3
 

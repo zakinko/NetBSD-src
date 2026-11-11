@@ -859,6 +859,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_dirdeleg, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "remove_past_deny", SYSCTL_DESCR("Version 4.0 removes names under DENY_WRITE"),
+	    NULL, 0, &nfsv4_remove_past_deny, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "gdd_unavail_ok", SYSCTL_DESCR("Refuse GET_DIR_DELEGATION with GDD4_UNAVAIL"),
 	    NULL, 0, &nfsv4_gdd_unavail_ok, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

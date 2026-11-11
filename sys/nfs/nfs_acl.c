@@ -769,7 +769,7 @@ nfsacl_set_access(struct vnode *vp, struct acl *acl, kauth_cred_t cred)
 	int error;
 
 	if (acl->acl_cnt == 0) {
-		error = nfsacl_getattr(vp, cred, &nn, &va);
+		error = VOP_GETATTR(vp, &va, cred);
 		if (error != 0)
 			return error;
 		nfsacl_acl_from_mode(va.va_mode, acl);

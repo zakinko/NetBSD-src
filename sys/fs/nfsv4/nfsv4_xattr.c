@@ -273,6 +273,25 @@ nfsv4_xstore_bool(struct vnode *vp, const char *name)
 	return xs_get(vp, name, &v, 1, &got) == 0 && got == 1 && v != 0;
 }
 
+/* A word kept for another file of this module; 0 if none is. */
+uint32_t
+nfsv4_xstore_u32(struct vnode *vp, const char *name)
+{
+	uint32_t v = 0;
+	size_t got;
+
+	if (xs_get(vp, name, &v, sizeof(v), &got) != 0 || got != sizeof(v))
+		return 0;
+	return v;
+}
+
+int
+nfsv4_xstore_set_u32(struct vnode *vp, const char *name, uint32_t v)
+{
+
+	return xs_set(vp, name, &v, sizeof(v));
+}
+
 u_int
 nfsv4_xstore_mime(struct vnode *vp, char *buf)
 {

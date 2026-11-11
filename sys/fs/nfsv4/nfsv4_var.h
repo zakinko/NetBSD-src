@@ -102,6 +102,9 @@ struct nfsv4_xstore {
 	uint64_t	xs_hold;
 	/* mode_set_masked, RFC 8881 s6.2.5: the value, then the mask. */
 	uint32_t	xs_mmode, xs_mmask;
+	/* dacl, RFC 8881 s6.2.2: given, and its aclflag4 */
+	bool		xs_dacl;
+	uint32_t	xs_daclflags;
 };
 #define	NFSV4_RET		0	/* retention_set */
 #define	NFSV4_RETEVT		1	/* retentevt_set */
@@ -236,6 +239,8 @@ bool	nfsv4_xstore_ok(struct vnode *);
 uint32_t nfsv4_xstore_apply(struct nfsv4_compound *, struct vnode *,
 	    kauth_cred_t);
 bool	nfsv4_xstore_bool(struct vnode *, const char *);
+uint32_t nfsv4_xstore_u32(struct vnode *, const char *);
+int	nfsv4_xstore_set_u32(struct vnode *, const char *, uint32_t);
 u_int	nfsv4_xstore_mime(struct vnode *, char *);
 void	nfsv4_xstore_time(struct vnode *, struct timespec *);
 uint32_t nfsv4_retention_check(struct nfsv4_compound *, struct vnode *,
@@ -283,7 +288,11 @@ uint32_t nfsv4_xattr_op(struct nfsv4_compound *, uint32_t, union nfsv4_args *,
 bool	nfsv4_acl_supported(struct vnode *);
 uint32_t nfsv4_acl_get(struct vnode *, kauth_cred_t, struct acl **);
 bool	nfsv4_acl_put(XDR *, const struct acl *);
+bool	nfsv4_dacl_put(XDR *, const struct acl *, uint32_t);
 uint32_t nfsv4_acl_parse(XDR *, uint32_t, struct acl **);
+uint32_t nfsv4_dacl_parse(XDR *, uint32_t, struct acl **, uint32_t *);
+bool	nfsv4_dacl_supported(struct vnode *);
+uint32_t nfsv4_dacl_flags(struct vnode *);
 uint32_t nfsv4_acl_set(struct nfsv4_compound *, struct vnode *, kauth_cred_t);
 uint32_t nfsv4_acl_noattr(struct vnode *, struct vnode *, bool, kauth_cred_t);
 extern int nfsv4_excl_inherit;

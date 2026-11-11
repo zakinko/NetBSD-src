@@ -142,19 +142,32 @@ acl_put_who(XDR *x, const struct acl_entry *ae)
 	return xdr_u_int32_t(x, &len) && xdr_opaque(x, __UNCONST(who), len);
 }
 
-/* An fattr4_acl.  False if it does not fit. */
-bool
-nfsv4_acl_put(XDR *x, const struct acl *acl)
+/*
+ * The nfsace4 array of an fattr4_acl, or of the dacl, which has only the
+ * ALLOW and DENY ACEs and keeps ACE4_INHERITED_ACE; the acl has it
+ * cleared (RFC 8881 s6.4.3.2).  False if it does not fit.
+ */
+static bool
+acl_put_aces(XDR *x, const struct acl *acl, bool dacl)
 {
 	const struct acl_entry *ae;
 	uint32_t cnt, type, flag, mask;
 	u_int i, j;
 
-	cnt = acl->acl_cnt;
+	cnt = 0;
+	for (i = 0; i < acl->acl_cnt; i++) {
+		if (!dacl ||
+		    acl->acl_entry[i].ae_entry_type == ACL_ENTRY_TYPE_ALLOW ||
+		    acl->acl_entry[i].ae_entry_type == ACL_ENTRY_TYPE_DENY)
+			cnt++;
+	}
 	if (!xdr_u_int32_t(x, &cnt))
 		return false;
 	for (i = 0; i < acl->acl_cnt; i++) {
 		ae = &acl->acl_entry[i];
+		if (dacl && ae->ae_entry_type != ACL_ENTRY_TYPE_ALLOW &&
+		    ae->ae_entry_type != ACL_ENTRY_TYPE_DENY)
+			continue;
 		switch (ae->ae_entry_type) {
 		case ACL_ENTRY_TYPE_ALLOW:
 			type = ACE4_ACCESS_ALLOWED_ACE_TYPE;
@@ -175,6 +188,8 @@ nfsv4_acl_put(XDR *x, const struct acl *acl)
 			if ((ae->ae_flags & acl_flags[j].af_flag) != 0)
 				flag |= acl_flags[j].af_ace4;
 		}
+		if (dacl && (ae->ae_flags & ACL_ENTRY_INHERITED) != 0)
+			flag |= ACE4_INHERITED_ACE;
 		mask = 0;
 		for (j = 0; j < __arraycount(acl_masks); j++) {
 			if ((ae->ae_perm & acl_masks[j].am_perm) != 0)
@@ -185,6 +200,22 @@ nfsv4_acl_put(XDR *x, const struct acl *acl)
 			return false;
 	}
 	return true;
+}
+
+/* An fattr4_acl.  False if it does not fit. */
+bool
+nfsv4_acl_put(XDR *x, const struct acl *acl)
+{
+
+	return acl_put_aces(x, acl, false);
+}
+
+/* An fattr4_dacl, nfsacl41 of RFC 8881 s6.4.3.2. */
+bool
+nfsv4_dacl_put(XDR *x, const struct acl *acl, uint32_t flags)
+{
+
+	return xdr_u_int32_t(x, &flags) && acl_put_aces(x, acl, true);
 }
 
 static uint32_t
@@ -224,9 +255,12 @@ acl_parse_who(XDR *x, struct acl_entry *ae, bool group, uint32_t flavor)
 	return NFS4_OK;
 }
 
-/* An fattr4_acl to *aclp, which the compound frees if nothing else does. */
-uint32_t
-nfsv4_acl_parse(XDR *x, uint32_t flavor, struct acl **aclp)
+/*
+ * The nfsace4 array of an fattr4_acl, or of a dacl, to *aclp, which the
+ * compound frees if nothing else does.
+ */
+static uint32_t
+acl_parse_aces(XDR *x, uint32_t flavor, struct acl **aclp, bool dacl)
 {
 	struct acl *acl;
 	struct acl_entry *ae;
@@ -267,6 +301,11 @@ nfsv4_acl_parse(XDR *x, uint32_t flavor, struct acl **aclp)
 			return NFS4ERR_ATTRNOTSUPP;
 		flag &= ~ACE4_IDENTIFIER_GROUP;
 		ae->ae_flags = 0;
+		/* s6.4.3.2: in a dacl, not in the acl. */
+		if (dacl && (flag & ACE4_INHERITED_ACE) != 0) {
+			ae->ae_flags |= ACL_ENTRY_INHERITED;
+			flag &= ~ACE4_INHERITED_ACE;
+		}
 		for (j = 0; j < __arraycount(acl_flags); j++) {
 			if ((flag & acl_flags[j].af_ace4) != 0) {
 				ae->ae_flags |= acl_flags[j].af_flag;
@@ -284,6 +323,88 @@ nfsv4_acl_parse(XDR *x, uint32_t flavor, struct acl **aclp)
 			return NFS4ERR_ATTRNOTSUPP;
 	}
 	return NFS4_OK;
+}
+
+uint32_t
+nfsv4_acl_parse(XDR *x, uint32_t flavor, struct acl **aclp)
+{
+
+	return acl_parse_aces(x, flavor, aclp, false);
+}
+
+/*
+ * An fattr4_dacl, RFC 8881 s6.2.2: ALLOW and DENY only, which is all
+ * acl_parse_aces() takes; aclflag4 bits that s6.4.3.2 does not define
+ * "must be cleared", so are NFS4ERR_INVAL.
+ */
+uint32_t
+nfsv4_dacl_parse(XDR *x, uint32_t flavor, struct acl **aclp,
+    uint32_t *flagsp)
+{
+
+	if (!xdr_u_int32_t(x, flagsp))
+		return NFS4ERR_BADXDR;
+	if ((*flagsp & ~ACL4_FLAGS) != 0)
+		return NFS4ERR_INVAL;
+	return acl_parse_aces(x, flavor, aclp, true);
+}
+
+/*
+ * The dacl, RFC 8881 s6.2.2: its ACEs are the ACL's, and its aclflag4 is
+ * kept in the extended attributes as archive is, so it is had only where
+ * both are.  No sacl (s6.2.3): no AUDIT or ALARM ACE is supported (see
+ * aclsupport), and s6.4.3.2 lets a server have the one without the other.
+ */
+#define	DACL_FLAGS	"nfsv4.daclflags"
+
+bool
+nfsv4_dacl_supported(struct vnode *vp)
+{
+
+	return nfsv4_acl_supported(vp) && nfsv4_xstore_ok(vp);
+}
+
+uint32_t
+nfsv4_dacl_flags(struct vnode *vp)
+{
+
+	return nfsv4_xstore_u32(vp, DACL_FLAGS) & ACL4_FLAGS;
+}
+
+/*
+ * s6.4.3.2, for vp made in dvp with no ACL given: ACL4_PROTECTED clear,
+ * ACL4_AUTO_INHERIT as the parent's, and ACL4_DEFAULTED where the ACL
+ * was the server's choice (nothing to inherit, or EXCLUSIVE4's).  Only
+ * case 4 of s6.4.3 comes here; a file made with a mode keeps no flags.
+ */
+static void
+dacl_created(struct vnode *dvp, struct vnode *vp, bool defaulted)
+{
+	uint32_t f;
+
+	if (!nfsv4_dacl_supported(dvp) || !nfsv4_dacl_supported(vp))
+		return;
+	f = (nfsv4_dacl_flags(dvp) & ACL4_AUTO_INHERIT) |
+	    (defaulted ? ACL4_DEFAULTED : 0);
+	if (f != 0)
+		(void)nfsv4_xstore_set_u32(vp, DACL_FLAGS, f);
+}
+
+/*
+ * After an ACL is set: a dacl's flags as given; for the acl attribute,
+ * ACL4_PROTECTED, which s6.4.3.2 SHOULD, as such a client "may not
+ * understand automatic inheritance".
+ */
+static void
+dacl_after_set(struct nfsv4_compound *c, struct vnode *vp)
+{
+	uint32_t f;
+
+	if (!nfsv4_dacl_supported(vp))
+		return;
+	f = c->c_xs.xs_dacl ? c->c_xs.xs_daclflags :
+	    nfsv4_dacl_flags(vp) | ACL4_PROTECTED;
+	(void)nfsv4_xstore_set_u32(vp, DACL_FLAGS, f);
 }
 
 /*
@@ -389,6 +510,7 @@ nfsv4_acl_noattr(struct vnode *dvp, struct vnode *vp, bool excl,
 		/* Nothing inheritable: the implementation's choice. */
 		if (acl->acl_cnt == 0) {
 			acl_free(acl);
+			dacl_created(dvp, vp, true);
 			return NFS4_OK;
 		}
 	}
@@ -396,6 +518,8 @@ nfsv4_acl_noattr(struct vnode *dvp, struct vnode *vp, bool excl,
 	error = VOP_SETACL(vp, ACL_TYPE_NFS4, acl, cred);
 	VOP_UNLOCK(vp);
 	acl_free(acl);
+	if (error == 0)
+		dacl_created(dvp, vp, excl);
 	return nfsv4_errno(error);
 }
 
@@ -422,6 +546,8 @@ nfsv4_acl_set(struct nfsv4_compound *c, struct vnode *vp, kauth_cred_t cred)
 	error = VOP_SETACL(vp, ACL_TYPE_NFS4, acl, cred);
 	VOP_UNLOCK(vp);
 	acl_free(acl);
+	if (error == 0)
+		dacl_after_set(c, vp);
 	/* An ACL that cannot be stored, s6.2.1.2. */
 	if (error == EINVAL || error == EOPNOTSUPP)
 		return NFS4ERR_ATTRNOTSUPP;

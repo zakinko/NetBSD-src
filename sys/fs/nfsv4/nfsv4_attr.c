@@ -87,7 +87,7 @@ static const uint64_t attr_supported =
 
 /* Of those, the ones that version 4.0 has no number for. */
 static const uint64_t attr_v41 =
-    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS);
+    BIT(FATTR4_CHANGE_POLICY) | BIT(FATTR4_FS_STATUS) | BIT(FATTR4_DACL);
 
 /* RFC 7530 s5.7, those with access W */
 static const uint64_t attr_setonly =
@@ -153,8 +153,11 @@ attr_supported_full(struct vnode *vp)
 
 	if (vp == NULL)
 		return m;
-	if (nfsv4_xstore_ok(vp))
+	if (nfsv4_xstore_ok(vp)) {
 		m |= attr_stored;
+		if (nfsv4_acl_supported(vp))
+			m |= BIT(FATTR4_DACL);		/* nfsv4_dacl_supported() */
+	}
 	if (vfs_quotactl_stat(vp->v_mount, &qs) == 0)
 		m |= attr_quota;
 	return m;
@@ -750,7 +753,7 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		}
 	}
 
-	if ((m & BIT(FATTR4_ACL)) != 0) {
+	if ((m & (BIT(FATTR4_ACL) | BIT(FATTR4_DACL))) != 0) {
 		st = nfsv4_acl_get(vp, cf->cf_cred, &acl);
 		if (st != NFS4_OK) {
 			if (sb != NULL)
@@ -776,6 +779,9 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 			break;
 		case FATTR4_ACL:
 			ok = nfsv4_acl_put(&x, acl);
+			break;
+		case FATTR4_DACL:
+			ok = nfsv4_dacl_put(&x, acl, nfsv4_dacl_flags(vp));
 			break;
 		case FATTR4_ACLSUPPORT:
 			/* s6.2.1.2 */
@@ -1182,7 +1188,7 @@ static const uint64_t attr_settable =
     BIT(FATTR4_SIZE) | BIT(FATTR4_ACL) | BIT(FATTR4_MODE) |
     BIT(FATTR4_OWNER) | BIT(FATTR4_OWNER_GROUP) |
     BIT(FATTR4_TIME_ACCESS_SET) | BIT(FATTR4_TIME_CREATE) |
-    BIT(FATTR4_TIME_MODIFY_SET) | attr_stored;
+    BIT(FATTR4_TIME_MODIFY_SET) | BIT(FATTR4_DACL) | attr_stored;
 
 /*
  * Read the fattr4 in the arguments into va, and the mask of what was
@@ -1208,6 +1214,7 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	}
 	c->c_xs.xs_set = 0;
 	c->c_xs.xs_set2 = 0;
+	c->c_xs.xs_dacl = false;
 	c->c_xs.xs_did2 = 0;
 	w2 = c->c_minor != 0 && fa->fa_mask.bm_n > 2 ? fa->fa_mask.bm_w[2] : 0;
 	/* RFC 8881 s5.5: it is known, and get-only. */
@@ -1215,7 +1222,16 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	    (w2 & ~(W2_SETONLY | W2_HOLD | W2_MODEMASK)) != 0)
 		return NFS4ERR_INVAL;
 	if (attr_more(&fa->fa_mask, c->c_minor) ||
-	    (m & ~(attr_supported | attr_stored | attr_quota)) != 0)
+	    (m & ~(attr_supported | attr_stored | attr_quota |
+	    BIT(FATTR4_DACL))) != 0)
+		return NFS4ERR_ATTRNOTSUPP;
+	/*
+	 * RFC 8881 s6.2.2, of 4.1 and where nfsv4_dacl_supported(); and
+	 * s6.4.1: the acl with the dacl MUST be refused, with this error.
+	 */
+	if ((m & BIT(FATTR4_DACL)) != 0 && (c->c_minor == 0 ||
+	    (m & BIT(FATTR4_ACL)) != 0 ||
+	    !nfsv4_dacl_supported(c->c_cur.cf_vp)))
 		return NFS4ERR_ATTRNOTSUPP;
 	/* Whether these can be set depends on the file system. */
 	if (((m & attr_stored) != 0 || (w2 & W2_RETENTION) != 0) &&
@@ -1247,6 +1263,12 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		case FATTR4_ACL:
 			st = nfsv4_acl_parse(x, c->c_rq->rq_flavor,
 			    &c->c_setacl);
+			break;
+		case FATTR4_DACL:
+			st = nfsv4_dacl_parse(x, c->c_rq->rq_flavor,
+			    &c->c_setacl, &c->c_xs.xs_daclflags);
+			if (st == NFS4_OK)
+				c->c_xs.xs_dacl = true;
 			break;
 		case FATTR4_ARCHIVE:
 		case FATTR4_HIDDEN:

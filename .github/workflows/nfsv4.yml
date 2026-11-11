@@ -195,6 +195,12 @@ jobs:
           cp ci/nfsv4/retention.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./retention.py /export/acl 2>&1 | tee "$OLDPWD/out/retention.txt" || true
+      - name: dacl, RFC 8881 s6.2.2, where ACLs and extended attributes are
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' dacl '))
+        run: |
+          cp ci/nfsv4/dacl.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 300 python3 ./dacl.py /export/acl 2>&1 | tee "$OLDPWD/out/dacl.txt" || true
       - if: github.event_name == 'workflow_dispatch' && inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up

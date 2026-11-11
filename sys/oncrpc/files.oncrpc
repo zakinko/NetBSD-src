@@ -3,6 +3,7 @@
 define	xdr
 
 defflag				ONCRPC: xdr, aes, des
+defflag	opt_oncrpc.h		ONCRPC_GSS_HEIMDAL_DES3
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc

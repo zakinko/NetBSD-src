@@ -25,7 +25,7 @@ sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p tcp -m multiport \
     ! --dports 2049,1234,20049 -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p udp -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A POSTROUTING -o nb0 -j MASQUERADE
-sudo apt-get install -y -q rpcbind nfs-common >/dev/null 2>&1
+sudo apt-get update -q >/dev/null; sudo apt-get install -y -q rpcbind nfs-common >/dev/null 2>&1
 sudo systemctl start rpcbind rpc-statd
 # TCP across the link, seen at both ends, as ping alone went through in
 # run 43007424174 and rpcinfo did not.

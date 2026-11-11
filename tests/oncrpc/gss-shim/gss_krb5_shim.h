@@ -37,6 +37,7 @@
 #define	OPENSSL_SUPPRESS_DEPRECATED
 
 #include <sys/types.h>
+#include <sys/param.h>		/* MIN */
 
 #include <assert.h>
 #include <errno.h>

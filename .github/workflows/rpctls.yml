@@ -5,6 +5,7 @@ on:
     paths:
       - 'sys/fs/nfsv4/**'
       - 'sys/modules/nfsv4/**'
+      - 'sys/modules/oncrpc/**'
       - 'sys/oncrpc/**'
       - 'sys/nfs/**'
       - 'sys/kern/vfs_lockf.c'
@@ -69,6 +70,8 @@ jobs:
           sudo apt-get install -y -q libssl-dev >/dev/null
           cc -g -fsanitize=address,undefined -Wall -Isys/oncrpc -Itests/oncrpc/gss-shim -o t3 tests/oncrpc/t_gss_krb5.c sys/oncrpc/gss_krb5*.c -lcrypto
           ./t3
+          cc -g -fsanitize=address,undefined -Wall -Wno-deprecated-declarations -Isys/oncrpc -Itests/oncrpc/gss-shim -o t4 tests/oncrpc/t_tls13_crypto.c sys/oncrpc/tls13_crypto.c -lcrypto
+          ./t4
       - uses: actions/upload-artifact@v4
         if: always()
         with:

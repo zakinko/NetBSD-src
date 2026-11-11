@@ -74,6 +74,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <oncrpc/gss_krb5.h>
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_var.h>
+#include <oncrpc/tls13_crypto.h>
 
 /*
  * None of these come from the RFC.  ONCRPC_MAXMSG is the largest record
@@ -1577,7 +1578,7 @@ oncrpc_modcmd(modcmd_t cmd, void *arg)
 
 	switch (cmd) {
 	case MODULE_CMD_INIT:
-		if (gss_krb5_selftest() != 0)
+		if (gss_krb5_selftest() != 0 || tls13_selftest() != 0)
 			return EIO;
 		oncrpc_gss_init();
 		mutex_init(&oncrpc_named_lock, MUTEX_DEFAULT, IPL_NONE);

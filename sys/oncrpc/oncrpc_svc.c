@@ -998,10 +998,14 @@ svc_loop(struct oncrpc_svc *svc, bool sig)
 		xp->xp_refs++;
 		mutex_exit(&svc->svc_lock);
 
+		/*
+		 * The transport's error is the xprt's, not the loop's: in
+		 * error it would end this thread at the next turn, and a
+		 * peer closing its connection took a worker with it.
+		 */
 		m = nam = NULL;
 		ctx = NULL;
-		error = (*xp->xp_ops->xo_recv)(xp, &m, &nam, &ctx);
-		if (error != 0) {
+		if ((*xp->xp_ops->xo_recv)(xp, &m, &nam, &ctx) != 0) {
 			KASSERT(m == NULL);
 			oncrpc_xprt_zap(xp);
 		}

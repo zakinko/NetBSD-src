@@ -6,6 +6,8 @@ on:
       - 'sys/nfs/**'
       - 'sys/oncrpc/**'
       - 'sys/modules/nfsserver/**'
+      - 'usr.sbin/nfsd/**'
+      - 'etc/rpc'
       - 'ci/nfsacl/**'
       - 'ci/nfsbridge/off-is-unchanged.sh'
       - 'tests/oncrpc/**'
@@ -73,6 +75,7 @@ jobs:
             sys/nfs/nfs.h
             usr.sbin/mountd
             usr.sbin/gssd
+            usr.sbin/nfsd
       - uses: actions/download-artifact@v4
         with:
           name: out
@@ -99,12 +102,22 @@ jobs:
           ssh netbsd 'sysctl -w ddb.onpanic=1 ddb.tee_msgbuf=1; sysctl -w ddb.commandonenter="bt;show all locks;reboot"' || :
       - name: The KDC, the daemons, and the exports with POSIX.1e ACLs
         run: |
-          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
-          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
+          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd usr.sbin/nfsd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/vm-nfsd.sh ci/nfsacl/vm-nfsreg.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/vm-acl.sh'
           ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'
+          ssh netbsd 'sh /var/tmp/nfsv4/vm-nfsd.sh'
           ssh netbsd 'showmount -e 127.0.0.1'
+      # Its failure is reported at the end, after the measurements.
+      - name: NFSACL registered with rpcbind
+        id: reg
+        continue-on-error: true
+        run: ssh netbsd 'sh /var/tmp/nfsv4/vm-nfsreg.sh'
+      # Its failure is reported at the end too, so that the illumos
+      # client is measured whatever the Linux one found.
       - name: getfacl and setfacl over version 3, AUTH_SYS and Kerberos, and the probe
+        id: linux
+        continue-on-error: true
         run: sh ci/nfsacl/linux.sh "$PWD/out"
       - name: Wireshark reads it
         if: always()
@@ -114,6 +127,11 @@ jobs:
         if: always()
         run: |
           ssh -o ConnectTimeout=20 netbsd "tail -40 /var/log/messages; uname -a; modstat | grep -E 'xdr|oncrpc|nfs'; dmesg | grep -n -A60 -E 'panic|fatal|trap type' | head -150; dmesg | tail -40" | tee out/kernel.txt || echo no answer
+      - name: The steps that failed above
+        if: always() && (steps.reg.outcome == 'failure' || steps.linux.outcome == 'failure')
+        run: |
+          echo 'registration: ${{ steps.reg.outcome }}, Linux client and probe: ${{ steps.linux.outcome }}'
+          exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:

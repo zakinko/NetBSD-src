@@ -13,7 +13,7 @@ SRCS+=	nfs_srvsubs.c nfs_srvsocket.c nfs_syscalls.c
 
 .if defined(NFSSERVER_ONCRPC)
 CPPFLAGS+=	-DNFSSERVER_ONCRPC
-SRCS+=	nfs_oncrpc.c
+SRCS+=	nfs_acl.c nfs_oncrpc.c
 .endif
 
 WARNS=	3

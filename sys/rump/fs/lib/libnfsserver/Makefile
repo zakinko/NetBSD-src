@@ -12,6 +12,7 @@ SRCS=	nfs_export.c nfs_serv.c nfs_srvcache.c nfs_srvsubs.c		\
 .if defined(NFSSERVER_ONCRPC)
 .PATH:	${.CURDIR}/../../../../oncrpc ${.CURDIR}/../../../../../common/lib/libc/rpc
 CPPFLAGS+=	-DNFSSERVER_ONCRPC
+SRCS+=	nfs_acl.c
 SRCS+=	nfs_oncrpc.c oncrpc_auth.c oncrpc_msg.c oncrpc_rm.c oncrpc_svc.c
 SRCS+=	xdr.c xdr_array.c xdr_mem.c xdr_mbuf.c xdr_module.c
 .endif

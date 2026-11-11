@@ -113,7 +113,8 @@ static LIST_HEAD(, nfs_oncrpc_xprt) nfs_oncrpc_xprts =
 static kcondvar_t nfs_oncrpc_gathercv;
 static struct lwp *nfs_oncrpc_gatherlwp;
 static bool nfs_oncrpc_dying;
-static const char nfs_oncrpc_tag[] = "nfssvc";
+/* The sockets of nfsd, and the owner of the programs served on them. */
+const char nfs_oncrpc_tag[] = "nfssvc";
 
 static void *
 nfs_oncrpc_xprt_make(struct socket *so)
@@ -413,6 +414,7 @@ static const struct oncrpc_program nfs_oncrpc_program = {
 	.op_vers_low = NFS_VER2,
 	.op_vers_high = NFS_VER3,
 	.op_dispatch = nfs_oncrpc_dispatch,
+	.op_owner = nfs_oncrpc_tag,
 };
 
 int
@@ -429,6 +431,12 @@ nfs_oncrpc_init(void)
 		oncrpc_svc_rele(nfs_oncrpc_svc);
 		return error;
 	}
+	error = oncrpc_svc_register(nfs_oncrpc_svc, &nfs_acl_program);
+	if (error != 0) {
+		oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
+		oncrpc_svc_rele(nfs_oncrpc_svc);
+		return error;
+	}
 	cv_init(&nfs_oncrpc_gathercv, "nfsgathr");
 	nfs_oncrpc_dying = false;
 	error = kthread_create(PRI_NONE, KTHREAD_MPSAFE | KTHREAD_MUSTJOIN,
@@ -436,6 +444,7 @@ nfs_oncrpc_init(void)
 	    "nfsgather");
 	if (error != 0) {
 		cv_destroy(&nfs_oncrpc_gathercv);
+		oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_acl_program);
 		oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
 		oncrpc_svc_rele(nfs_oncrpc_svc);
 	}
@@ -446,6 +455,7 @@ void
 nfs_oncrpc_fini(void)
 {
 
+	oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_acl_program);
 	oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
 	oncrpc_svc_closesocks(nfs_oncrpc_svc, nfs_oncrpc_tag);
 
@@ -474,7 +484,11 @@ nfs_oncrpc_run(void)
 	return oncrpc_svc_run(nfs_oncrpc_svc);
 }
 
-/* Connections that version 4 has used stay, served by its threads. */
+/*
+ * Connections that version 4 has used stay, served by its threads.  The
+ * ACL program has the same owner, so a version 3 mount that has asked
+ * for ACLs is still only nfsd's.
+ */
 void
 nfs_oncrpc_closesocks(void)
 {

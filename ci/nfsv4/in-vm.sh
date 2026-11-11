@@ -54,6 +54,11 @@ if [ -f "$D/modules/zfs.kmod" ] && command -v zpool >/dev/null; then
 	modload zfs
 	# The port installs its libraries in /lib, outside the default search.
 	export LD_LIBRARY_PATH=/lib
+fi
+# The base system has a zpool of its own, which fails against this module
+# ("sysctl vfs.zfs.version.ioctl failed") and stopped this script whenever
+# the port could not be built, as on a cdn.netbsd.org outage.
+if [ -f "$D/modules/zfs.kmod" ] && zpool version >/dev/null 2>&1; then
 	dd if=/dev/zero of=/var/tmp/tank.img bs=1m count=512
 	zpool create -f tank /var/tmp/tank.img
 	zfs create -o aclmode=passthrough -o aclinherit=passthrough tank/x

@@ -437,6 +437,7 @@ nfs_oncrpc_init(void)
 		oncrpc_svc_rele(nfs_oncrpc_svc);
 		return error;
 	}
+	nfs_acl_init();
 	cv_init(&nfs_oncrpc_gathercv, "nfsgathr");
 	nfs_oncrpc_dying = false;
 	error = kthread_create(PRI_NONE, KTHREAD_MPSAFE | KTHREAD_MUSTJOIN,
@@ -447,6 +448,7 @@ nfs_oncrpc_init(void)
 		oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_acl_program);
 		oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
 		oncrpc_svc_rele(nfs_oncrpc_svc);
+		nfs_acl_fini();
 	}
 	return error;
 }
@@ -455,6 +457,7 @@ void
 nfs_oncrpc_fini(void)
 {
 
+	nfs_acl_fini();
 	oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_acl_program);
 	oncrpc_svc_unregister(nfs_oncrpc_svc, &nfs_oncrpc_program);
 	oncrpc_svc_closesocks(nfs_oncrpc_svc, nfs_oncrpc_tag);

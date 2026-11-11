@@ -55,6 +55,7 @@ __RCSID("$NetBSD: nfsd.c,v 1.74 2021/11/27 22:30:25 rillig Exp $");
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/sysctl.h>
 #include <poll.h>
 
 #include <rpc/rpc.h>
@@ -158,6 +159,29 @@ static int cfg_socktype[] = {
 static int cfg_protocol[] = {
     IPPROTO_UDP, IPPROTO_TCP, IPPROTO_UDP, IPPROTO_TCP };
 
+/*
+ * NFSACL, program 100227, on the NFS port, in the versions the kernel
+ * serves (vfs.nfsserver.nfsacl, 1 << version); none if it has no such
+ * node.  As illumos' nfsd registers it beside NFS.
+ */
+#define	NFS_ACL_PROGRAM	100227
+
+static int
+rpcb_set_acl(struct conf *cfg)
+{
+	int vers;
+	size_t len = sizeof(vers);
+	rpcvers_t v;
+
+	if (sysctlbyname("vfs.nfsserver.nfsacl", &vers, &len, NULL, 0) == -1)
+		return 1;
+	for (v = 2; v <= 3; v++)
+		if ((vers & (1 << v)) != 0 &&
+		    !rpcb_set(NFS_ACL_PROGRAM, v, cfg->nc, &cfg->nb))
+			return 0;
+	return 1;
+}
+
 static int
 tryconf(struct conf *cfg, int t, int reregister)
 {
@@ -188,7 +212,8 @@ tryconf(struct conf *cfg, int t, int reregister)
 	cfg->nb.buf = cfg->ai->ai_addr;
 	cfg->nb.len = cfg->nb.maxlen = cfg->ai->ai_addrlen;
 	if (reregister)
-		if (!rpcb_set(RPCPROG_NFS, 2, cfg->nc, &cfg->nb)) {
+		if (!rpcb_set(RPCPROG_NFS, 2, cfg->nc, &cfg->nb) ||
+		    !rpcb_set_acl(cfg)) {
 			logit(LOG_ERR, "rpcb_set %s failed", cfg_netconf[t]);
 			goto out1;
 		}
@@ -249,7 +274,8 @@ setupsock(struct conf *cfg, struct pollfd *set, int p)
 	}
 
 	if (!rpcb_set(RPCPROG_NFS, 2, cfg->nc, &cfg->nb) ||
-	    !rpcb_set(RPCPROG_NFS, 3, cfg->nc, &cfg->nb)) {
+	    !rpcb_set(RPCPROG_NFS, 3, cfg->nc, &cfg->nb) ||
+	    !rpcb_set_acl(cfg)) {
 		logit(LOG_ERR, "can't register with %s portmap",
 		    cfg_netconf[p]);
 		goto out;

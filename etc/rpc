@@ -32,6 +32,7 @@ keyserv		100029	keyserver
 tfsd		100037 
 nsed		100038
 nsemntd		100039
+nfs_acl		100227
 pcnfsd		150001	pcnfs
 amd		300019	amq
 sgi_fam		391002	fam

@@ -36,6 +36,9 @@ dreturns() {
 	awk -v m=" $1 " 'index($0, "device ") == 1 { on = index($0, m) != 0 }
 	    on && $1 == "DELEGRETURN:" { print $2; exit }' /proc/self/mountstats
 }
+# pynfs's client takes the delegation away; pynfs.sh fetches and builds
+# it, and with a short limit runs nothing much of its suite.
+[ -d "$HOME/pynfs/nfs4.1" ] || LIMIT=5 sh "$(dirname "$0")/../nfsv4/pynfs.sh" "$OUT" /export/x pynfs-fetch >/dev/null 2>&1 || :
 sudo mkdir -p "$M"
 for V in $VERSIONS; do
 	fails=0

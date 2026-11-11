@@ -97,14 +97,14 @@ jobs:
         timeout-minutes: 5
         shell: bash
         run: set -o pipefail; python3 -u ci/nfsrdma/badpeer.py 192.0.2.1 20049 2>&1 | tee out/badpeer.txt
+      - name: The Linux client on siw
+        timeout-minutes: 30
+        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
       - name: pynfs on TCP, the path that the transport split went through
         timeout-minutes: 40
         run: |
           sh ci/nfsv4/pynfs.sh "$PWD/out" /export/x pynfs || true
           python3 ci/nfsv4/pynfs-summary.py out/pynfs.json out/pynfs.log | tee out/summary.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
-      - name: The Linux client on siw
-        timeout-minutes: 30
-        run: sh ci/nfsrdma/linux-client.sh "$PWD/out" || true
       - name: Result
         if: always()
         timeout-minutes: 2

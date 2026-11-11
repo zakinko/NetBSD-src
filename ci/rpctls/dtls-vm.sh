@@ -24,4 +24,6 @@ kill "$(cat tlsservd41.pid)" 2>/dev/null || :
 sleep 1
 echo "--- rpc.tlsservd (OpenSSL 4.1)"
 tail -n 30 tlsservd-dtls.log
+echo "--- the kernel's DTLS records (options ONCRPC_DTLS_DEBUG)"
+dmesg | grep rpcdtls | tail -n 80 || :
 exit $rc

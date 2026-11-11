@@ -19,13 +19,16 @@ sudo ip addr add 10.77.0.1 peer 10.77.0.2 dev nb0
 sudo ip link set nb0 up mtu 1400
 ping -c 2 10.77.0.2
 ssh netbsd 'rpcinfo -p | grep -E "nlockmgr|status"; netstat -an -f inet | grep -E "\\.111 "'
+# Run 43047611152 lost name resolution after the rules below; ask
+# before and after them.
+resolvectl query archive.ubuntu.com 2>&1 | head -2
 # The mount names 192.0.2.1; rpcbind, NLM and NSM of the server are on
 # the far side of nb0, and the server calls back to 10.77.0.1.
 sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p tcp -m multiport \
     ! --dports 2049,1234,20049 -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A OUTPUT -d 192.0.2.1 -p udp -j DNAT --to-destination 10.77.0.2
 sudo iptables -t nat -A POSTROUTING -o nb0 -j MASQUERADE
-sudo apt-get update -q >/dev/null; sudo apt-get install -y -q rpcbind nfs-common >/dev/null 2>&1
+resolvectl query archive.ubuntu.com 2>&1 | head -2
 sudo systemctl start rpcbind rpc-statd
 # TCP across the link, seen at both ends, as ping alone went through in
 # run 43007424174 and rpcinfo did not.

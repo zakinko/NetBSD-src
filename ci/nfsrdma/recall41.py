@@ -265,6 +265,17 @@ while rp.recall is None and time.time() < end:
 check('CB_RECALL came as a reverse Call', rp.recall is not None,
       (rp.calls, rp.recall and rp.recall.hex(), dsid and dsid.hex()))
 if rp.recall is not None:
+    # The Linux client asked GETATTR of the file twice, a second apart,
+    # between answering the recall and returning the delegation, and the
+    # second got no answer (run 43007424174, the capture).
+    for i in range(2):
+        try:
+            r = a.seqd([u32(OP_PUTFH) + opq(fh), u32(9) + u32(1) + u32(0x18)])
+            check('GETATTR %d during the recall' % i, True, a.last)
+        except Exception as e:
+            check('GETATTR %d during the recall' % i, False, repr(e))
+            break
+        time.sleep(1)
     # As the Linux client does with the file still open: the open is
     # moved off the delegation first, OPEN with CLAIM_DELEG_CUR_FH (5),
     # RFC 8881 s18.16.3, and the delegation is then returned.

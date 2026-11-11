@@ -4,9 +4,13 @@
  * STARTTLS, report the first bytes the client sent after it, and give
  * the kernel a failed verdict.  tlsstub [count]
  */
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/ucred.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 
+#include <nfs/rpcv2.h>
+#include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
 
 #include <err.h>

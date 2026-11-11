@@ -145,7 +145,7 @@ struct oncrpc_xprt {
 	struct socket		*xp_so;
 	struct mbuf		*xp_nam;	/* the peer, if connected */
 	const void		*xp_tag;	/* for closesocks */
-	const struct oncrpc_program *xp_lastop;	/* served last */
+	const void		*xp_lastop;	/* owner of the last served */
 	bool			 xp_mixed;	/* has served more than one */
 	void			*xp_ctx;	/* see oncrpc_req_ctx() */
 	void			(*xp_ctxdtor)(void *);
@@ -685,6 +685,13 @@ svc_gss_raw(struct oncrpc_ireq *ir, struct mbuf **rawp)
 	return true;
 }
 
+static const void *
+op_owner(const struct oncrpc_program *op)
+{
+
+	return op->op_owner != NULL ? op->op_owner : op;
+}
+
 static struct oncrpc_prog *
 svc_prog_hold(struct oncrpc_svc *svc, const struct oncrpc_call *c,
     uint32_t *lowp, uint32_t *highp, bool *known)
@@ -779,9 +786,10 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	op = pg->pg_prog;
 
 	mutex_enter(&svc->svc_lock);
-	if (ir->ir_xprt->xp_lastop != NULL && ir->ir_xprt->xp_lastop != op)
+	if (ir->ir_xprt->xp_lastop != NULL &&
+	    ir->ir_xprt->xp_lastop != op_owner(op))
 		ir->ir_xprt->xp_mixed = true;
-	ir->ir_xprt->xp_lastop = op;
+	ir->ir_xprt->xp_lastop = op_owner(op);
 	mutex_exit(&svc->svc_lock);
 
 	gss = c->c_cred.oa_flavor == RPCSEC_GSS;
@@ -1321,10 +1329,11 @@ oncrpc_svc_closesocks(struct oncrpc_svc *svc, const void *tag)
 
 /*
  * For a holder that is going while the others stay: with op, a connected
- * socket that has served any other program stays open, as a client of
- * that program is still on it.  Datagram sockets go whatever they have
- * served.  They are bound to the port, which the next one to start will
- * want, and a client of a stream transport is not on them.
+ * socket that has served a program of another owner (op_owner) stays
+ * open, as a client of that program is still on it.  Datagram sockets go
+ * whatever they have served.  They are bound to the port, which the next
+ * one to start will want, and a client of a stream transport is not on
+ * them.
  */
 void
 oncrpc_svc_closesocks_for(struct oncrpc_svc *svc, const void *tag,
@@ -1339,7 +1348,7 @@ restart:
 			continue;
 		if (op != NULL && xp->xp_so->so_type == SOCK_STREAM &&
 		    xp->xp_lastop != NULL &&
-		    (xp->xp_mixed || xp->xp_lastop != op))
+		    (xp->xp_mixed || xp->xp_lastop != op_owner(op)))
 			continue;
 		xp->xp_refs++;
 		mutex_exit(&svc->svc_lock);

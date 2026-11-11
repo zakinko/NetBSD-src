@@ -131,6 +131,13 @@ struct oncrpc_program {
 	enum oncrpc_dispatch
 			(*op_dispatch)(struct oncrpc_req *);
 	void		*op_arg;
+	/*
+	 * Programs of one holder, that a client uses together, name the
+	 * same op_owner.  oncrpc_svc_closesocks_for() counts a connection
+	 * that has served only them as the holder's.  NULL is the program
+	 * on its own.
+	 */
+	const void	*op_owner;
 };
 
 /*

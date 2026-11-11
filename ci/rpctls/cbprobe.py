@@ -33,7 +33,7 @@ class Conn:
         if not tls: return
         self.send(p32(1, 0, 2, PROG, VERS, 0, AUTH_TLS, 0, AUTH_NONE, 0))
         r = self.recv()
-        assert r[16:24] == b'\0\0\0\0\0\0\0\x08' and r[24:32] == b'STARTTLS', r
+        assert r[12:20] == b'\0\0\0\0\0\0\0\x08' and r[20:28] == b'STARTTLS', r
         ctx = SSL.Context(SSL.TLS_CLIENT_METHOD)
         ctx.set_min_proto_version(SSL.TLS1_3_VERSION)
         ctx.set_alpn_protos([b'sunrpc'])

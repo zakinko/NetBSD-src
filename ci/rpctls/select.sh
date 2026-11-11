@@ -19,7 +19,7 @@ for f in $(git diff --name-only "$before" HEAD); do
 	sys/oncrpc/tls13_crypto.*|tests/oncrpc/*)
 		;;	# the unit tests, in the build job
 	sys/oncrpc/*|sys/nfs/*|sys/modules/oncrpc/*|usr.sbin/rpc.tlsservd/*|\
-	ci/rpctls/probe*|ci/rpctls/tlsstub.c|ci/rpctls/mkcerts.sh|ci/nfsv4/build.sh|\
+	ci/rpctls/probe*|ci/rpctls/tlsstub.c|ci/rpctls/dtls*|ci/rpctls/ossl41.sh|ci/rpctls/mkcerts.sh|ci/nfsv4/build.sh|\
 	ci/nfsv4/in-vm.sh|ci/oncrpc/swap.sh)
 		vm=true ;;
 	sys/fs/nfsv4/*|sys/modules/nfsv4/*|ci/nfsv4/each-commit.sh)

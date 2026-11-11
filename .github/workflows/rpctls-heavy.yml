@@ -87,6 +87,9 @@ jobs:
             ci/oncrpc/swap.sh
             sys/nfs
             usr.sbin/rpc.tlsservd
+            sys/oncrpc/tls13_crypto.c
+            sys/oncrpc/tls13_crypto.h
+            tests/oncrpc/gss-shim
             usr.sbin/mountd
             usr.sbin/gssd
       - uses: actions/download-artifact@v4
@@ -187,6 +190,37 @@ jobs:
         if: always()
         run: ssh netbsd 'cd /var/tmp/nfsv4 && kill $(cat tlsservd.pid); sleep 1; tail -n 40 tlsservd-anon.log tlsservd-mutual.log tlsservd-krb5.log; tail -20 gssd.log' | tee out/tlsservd.txt
       - run: sh ci/nfsv4/pynfs.sh "$PWD/out"
+      - uses: actions/cache/restore@v4
+        id: ossl41
+        with:
+          path: ossl41
+          key: ossl41-netbsd11-amd64-${{ hashFiles('ci/rpctls/ossl41.sh') }}
+      - name: OpenSSL 4.1 in the VM, built once and cached
+        timeout-minutes: 45
+        run: |
+          if [ -f ossl41/openssl41.tar ]; then
+            ssh netbsd 'mkdir -p /usr/local && tar -C /usr/local -xf -' <ossl41/openssl41.tar
+          else
+            curl -fsSL --retry 3 -o openssl-4.1.0.tar.gz https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz
+            echo '50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd  openssl-4.1.0.tar.gz' | sha256sum -c -
+            scp openssl-4.1.0.tar.gz ci/rpctls/ossl41.sh netbsd:/var/tmp/
+            ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/ossl41.sh /var/tmp/openssl-4.1.0.tar.gz'
+            mkdir -p ossl41
+            ssh netbsd 'tar -C /usr/local -cf - openssl41' >ossl41/openssl41.tar
+          fi
+      - uses: actions/cache/save@v4
+        if: steps.ossl41.outputs.cache-hit != 'true'
+        with:
+          path: ossl41
+          key: ${{ steps.ossl41.outputs.cache-primary-key }}
+      - name: RPC over DTLS, RFC 9289 s5.1.2
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          scp ci/rpctls/dtls-vm.sh netbsd:/var/tmp/nfsv4/
+          ssh netbsd 'sh /var/tmp/nfsv4/dtls-vm.sh' 2>&1 | tee out/probe-dtls.txt; exit ${PIPESTATUS[0]}
+        shell: bash
       - name: What the kernel said
         if: always()
         run: |
@@ -211,6 +245,7 @@ jobs:
             out/probe1-*.txt
             out/probe2-*.txt
             out/probe3.txt
+            out/probe-dtls.txt
             out/tlsproxy.log
             out/tlsstub.txt
             out/tlsservd.txt

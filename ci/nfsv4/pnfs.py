@@ -107,7 +107,7 @@ try:
     t("s18.43.3 iomode", lo.lo_iomode, LAYOUTIOMODE4_RW)
     t("s18.43.3 type", lo.lo_content.loc_type, LAYOUT4_NFSV4_1_FILES)
     fl = NFS4Unpacker(lo.lo_content.loc_body).unpack_nfsv4_1_file_layout4()
-    t("s13.3 the fh of the file", fl.nfl_fh_list, [fh])
+    t("s13.3 the fh of the file", fl.nfl_fh_list, [[fh]])
     t("s13.3 stripe unit", fl.nfl_util & NFL4_UFLG_STRIPE_UNIT_SIZE_MASK,
       131072)
     t("s13.3 sparse", fl.nfl_util & NFL4_UFLG_DENSE, 0)
@@ -130,7 +130,7 @@ try:
     t("s18.41 GETDEVICELIST", res.status, NFS4_OK)
     if res.status == NFS4_OK:
         t("s18.41 the one device", res.resarray[-1].gdlr_deviceid_list,
-          [devid])
+          [[devid]])
         t("s18.41 eof", res.resarray[-1].gdlr_eof, True)
     res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES,
         4096, 0)])
@@ -138,7 +138,7 @@ try:
     if res.status == NFS4_OK:
         da = NFS4Unpacker(res.resarray[-1].da_addr_body
                           ).unpack_nfsv4_1_file_layout_ds_addr4()
-        t("s13.3 stripe indices", da.nflda_stripe_indices, [0])
+        t("s13.3 stripe indices", da.nflda_stripe_indices, [[0]])
         na = da.nflda_multipath_ds_list[0][0]
         t("s13.3 netid", na.na_r_netid, b"tcp")
         t("s13.3 uaddr", na.na_r_addr, UADDR.encode())
@@ -167,7 +167,7 @@ try:
     t("s18.42 LAYOUTCOMMIT", res.status, NFS4_OK)
     if res.status == NFS4_OK:
         t("s12.5.4.2 new size", (res.resarray[-1].ns_sizechanged,
-          getattr(res.resarray[-1], "ns_size", None)), (True, 10000))
+          getattr(res.resarray[-1], "ns_size", None)), [(True, 10000)])
 
     # s20.3, s12.5.5.2.1.3
     vm("sysctl -w vfs.nfsv4.layout_recall=1")
@@ -183,6 +183,9 @@ try:
         t("s20.3 of the file", rc.lor_layout.lor_fh, fh)
         t("s12.5.3 recall seqid one past", rsid.seqid, lsid.seqid + 1)
         time.sleep(1)
+        res = s.compound([op.test_stateid([rsid, lsid])])
+        print("TEST_STATEID of the recall's and the last stateid:",
+              res.status, getattr(res.resarray[-1], "tsr_status_codes", None))
         t("s12.5.5.2.1.3 LAYOUTGET after the answer", lget(rsid).status,
           NFS4ERR_RETURNCONFLICT)
         rsid_ = rsid

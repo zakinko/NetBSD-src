@@ -15,7 +15,7 @@ leaf() {	# name ca san eku
 	o x509 -req -in $1.csr -CA $2.pem -CAkey $2.key -CAcreateserial \
 	    -out $1.pem -days 7 -extfile $1.ext
 }
-leaf server ca "DNS:localhost,IP:127.0.0.1" serverAuth
+leaf server ca "DNS:localhost,DNS:nfsgss-server.test,IP:127.0.0.1" serverAuth
 leaf client ca "DNS:rpctls-client.test" clientAuth
 leaf rogue rogueca "DNS:rpctls-client.test" clientAuth
 ls

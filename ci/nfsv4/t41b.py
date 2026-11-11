@@ -295,9 +295,13 @@ t("option: falls back to 1", cbvers(b"c", 1, [1]), OPEN_DELEGATE_READ)
 
 # s10.2: a change through the server of NFSv3 recalls too.  nfsd(8) on UDP
 # only, as the module has TCP 2049; the client is the VM's own.
+# Soft, and bounded: a hard mount of a server that does not answer hung
+# the whole script until its timeout (run 43022459488).
 v3 = subprocess.call(["ssh", "netbsd", "sh -c 'pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
+                      "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "
                       "mkdir -p /mnt/v3; mount | grep -q /mnt/v3 || "
-                      "mount_nfs -3 -U 127.0.0.1:/%s /mnt/v3'" % b"/".join(export).decode()])
+                      "mount_nfs -3 -U -s -x 2 -t 30 127.0.0.1:/%s /mnt/v3'" % b"/".join(export).decode()],
+                     timeout=120)
 print("  NFSv3 mount:", v3)
 if v3 == 0:
     for name, cmd in ((b"v3t", "touch"), (b"v3r", "rm")):
@@ -317,7 +321,7 @@ if v3 == 0:
         t("s10.2 recall by NFSv3 " + cmd, recalled, [[0]])
         s.compound(nofh(fv, op.delegreturn(dv.read.stateid)))
         t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=120), 0)
-    subprocess.call(["ssh", "netbsd", "umount /mnt/v3"])
+    subprocess.call(["ssh", "netbsd", "umount -f /mnt/v3"], timeout=60)
 
 # s11.17 fs_locations_info, here and at the referral in.vm.sh sets up
 gli = lambda ops: s.compound(ops + [op.getattr(nfs4lib.list2bitmap([FATTR4_FS_LOCATIONS_INFO]))])

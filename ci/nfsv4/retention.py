@@ -52,16 +52,21 @@ def trunc(n):
         open_owner4(0, b"tr" + n), openflag4(OPEN4_CREATE, createhow4(UNCHECKED4,
         {FATTR4_SIZE: 0})), open_claim4(CLAIM_NULL, stamp + n))]).status
 def vm(cmd):
-    p = subprocess.run(["ssh", "netbsd", "sh -c '%s'" % cmd],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        p = subprocess.run(["ssh", "netbsd", "sh -c '%s'" % cmd],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=120)
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
     return p.returncode, p.stdout.decode(errors="replace").strip()
 V = lambda n: "/%s/%s" % (b"/".join(export).decode(), (stamp + n).decode())
 def uchg(n):
     return "uchg" in vm("stat -f %%Sf %s" % V(n))[1].split(",")
 # s10.2 of t41b: nfsd(8) on UDP only, as the module has TCP 2049.
 v3 = vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 2; "
+        "sleep 1; rpcinfo -p 127.0.0.1; pgrep -lx nfsd; "
         "mkdir -p /mnt/v3r; mount | grep -q /mnt/v3r || "
-        "mount_nfs -3 -U 127.0.0.1:%s /mnt/v3r" % "/".join([""] + [e.decode() for e in export]))
+        "mount_nfs -3 -U -s -x 2 -t 30 127.0.0.1:%s /mnt/v3r" % "/".join([""] + [e.decode() for e in export]))
 print("  NFSv3 mount:", v3)
 W = lambda n: "/mnt/v3r/%s" % (stamp + n).decode()
 RS = lambda en, d=None: retention_set4(en, [] if d is None else [d])
@@ -184,6 +189,6 @@ except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")
 if v3[0] == 0:
-    vm("umount /mnt/v3r")
+    vm("umount -f /mnt/v3r")
 print("failures:", fails)
 sys.exit(0)

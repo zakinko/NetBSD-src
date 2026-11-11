@@ -189,6 +189,80 @@ want = struct.pack('>III', 0, 1, 2) + seg(7, 0, 1) + seg(8, 0, 2) + \
 check('unused Write and Reply chunks', m[16:16 + len(want)] == want,
       m[16:16 + len(want)].hex())
 
+def serve_reads(p, data):
+    """Answer the Read Requests the server makes, as a client's RNIC would."""
+    got = []
+    for _ in data:
+        op, tagged, last, msn, qn, d = p.recv()
+        sink, sinkto, size, src, srcto = struct.unpack('>IQIIQ', d)
+        got.append((op, qn, src, size))
+        b = data[src]
+        p.fpdu(bytes([0xc1, 0x42]) + struct.pack('>IQ', sink, sinkto) + b[:size])
+    return got
+
+def reply_of(m, xid):
+    """The RPC reply in an RDMA_MSG: (rdma proc, accept_stat, first result)."""
+    w = struct.unpack('>%dI' % (len(m) // 4), m[:len(m) // 4 * 4])
+    return w[0] == xid, w
+
+# RFC 8267 s4: version 3 has a binding now.  WRITE3args with its data by
+# a Read chunk at the data, past fh, offset, count, stable and the length.
+data = b'abcdefgh'
+args = struct.pack('>I', 8) + bytes(8) + struct.pack('>QIII', 0, 8, 0, 8)
+tail = struct.pack('>IIIIQIII', 1, 40 + len(args), 0x3333, 8, 0x300, 0, 0, 0)
+p.send(rdma(20, tail=tail) + null_call(20, vers=3, proc=7) + args)
+got = serve_reads(p, {0x3333: data})
+check('v3 WRITE: the Read chunk is read', got[0][0] == 1 and got[0][3] == 8, got)
+m = p.recv_msg()
+check('v3 WRITE answered', struct.unpack('>I', m[:4])[0] == 20 and
+      struct.unpack('>I', m[28:32])[0] == 20, m[:48].hex())
+
+# The same chunk one word early is an ineligible item, RFC 8166 s6.1.
+tail = struct.pack('>IIIIQIII', 1, 36 + len(args), 0x3333, 8, 0x300, 0, 0, 0)
+p.send(rdma(21, tail=tail) + null_call(21, vers=3, proc=7) + args)
+m = p.recv_msg()
+ok, w = is_error(m, 21, 1, 2)
+check('ERR_CHUNK: v3 WRITE chunk misplaced', ok, w)
+
+# READ3args with a Write chunk, for a handle that is no good: the error
+# has no data, and the chunk goes back unused, RFC 8166 s4.3.2.2.
+args = struct.pack('>I', 8) + bytes(8) + struct.pack('>QI', 0, 4096)
+tail = struct.pack('>III', 0, 1, 1) + seg(7, 4096, 1) + struct.pack('>II', 0, 0)
+p.send(struct.pack('>IIII', 22, 1, 8, 0) + tail + null_call(22, vers=3, proc=6) + args)
+m = p.recv_msg()
+want = struct.pack('>III', 0, 1, 1) + seg(7, 0, 1) + struct.pack('>II', 0, 0)
+check('v3 READ error: Write chunk unused', m[16:16 + len(want)] == want,
+      m[16:16 + len(want)].hex())
+
+# NFSACL, RFC 8267 s5.2: nothing eligible, whether or not it is served.
+tail = struct.pack('>IIIIQIII', 1, 52, 0x4444, 8, 0, 0, 0, 0)
+p.send(rdma(23, tail=tail) + null_call(23, prog=100227, vers=3, proc=2) + bytes(16))
+m = p.recv_msg()
+ok, w = is_error(m, 23, 1, 2)
+check('ERR_CHUNK: NFSACL', ok, w)
+
+# Minor version 1: SEQUENCE PUTFH WRITE, the data by a Read chunk.  The
+# session is no good, but the chunk is in its place and is read first.
+args = struct.pack('>III', 0, 1, 3) + struct.pack('>I', 53) + bytes(16) + \
+    struct.pack('>IIII', 1, 0, 0, 0) + struct.pack('>II', 22, 8) + bytes(8) + \
+    struct.pack('>I', 38) + bytes(16) + struct.pack('>QII', 0, 0, 8)
+tail = struct.pack('>IIIIQIII', 1, 40 + len(args), 0x5555, 8, 0x500, 0, 0, 0)
+p.send(rdma(24, tail=tail) + null_call(24, vers=4, proc=1) + args)
+got = serve_reads(p, {0x5555: data})
+check('4.1 WRITE: the Read chunk is read', got[0][0] == 1 and got[0][3] == 8, got)
+m = p.recv_msg()
+check('4.1 WRITE answered', struct.unpack('>I', m[:4])[0] == 24, m[:48].hex())
+
+# RFC 8167 s4.1: Replies with no Call of the server's behind them, and
+# grants to the moon, change nothing; nor does one with chunks.
+for i in range(100):
+    p.send(struct.pack('>IIII', 1000 + i, 1, 0xffffffff, 0) + bytes(12) +
+           struct.pack('>III', 1000 + i, 1, 0))
+p.send(struct.pack('>IIII', 2000, 1, 1, 0) + struct.pack('>III', 0, 1, 1) +
+       seg(1, 8, 0) + struct.pack('>II', 0, 0) + struct.pack('>III', 2000, 1, 0))
+check('stray reverse Replies are dropped', p.expect_nothing())
+check('NULL after the Replies', *null_ok(p, 25))
+
 # Data for no Read in progress ends the connection.
 p.fpdu(bytes([0xc1, 0x42]) + struct.pack('>IQ', 0xdead, 0) + b'x')
 try:

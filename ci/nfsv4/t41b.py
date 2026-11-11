@@ -139,9 +139,10 @@ res = s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12), MM(0o1070, 0o1050)
 t("s6.2.5 SETATTR", res.status, NFS4_OK)
 t("s6.2.5 attrsset", res.status == 0 and nfs4lib.bitmap2list(res.resarray[-1].attrsset),
   [[FATTR4_MODE_SET_MASKED]])
-t("s6.2.5 the masked bits alone", mode_of(fm), 0o1664)
+# 0644 under value 1070, mask 1050: the sticky bit set, group r-- to r-x.
+t("s6.2.5 the masked bits alone", mode_of(fm), 0o1654)
 t("s6.2.5 with mode", s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12),
-  dict(MM(0, 0o7), **{FATTR4_MODE: 0o600})))).status, NFS4ERR_INVAL)
+  {**MM(0, 0o7), FATTR4_MODE: 0o600}))).status, NFS4ERR_INVAL)
 t("s6.2.5 an undefined bit", s.compound(nofh(fm, op.setattr(stateid4(0, b"\0" * 12),
   MM(0, 0o10000)))).status, NFS4ERR_INVAL)
 t("s6.2.5 GETATTR", s.compound(nofh(fm, op.getattr(nfs4lib.list2bitmap(

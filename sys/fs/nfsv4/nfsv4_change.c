@@ -594,12 +594,13 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		if (st != NFS4_OK)
 			set = 0;
 		else {
-			if (masked)
-				c->c_xs.xs_did2 |=
-				    1U << (FATTR4_MODE_SET_MASKED - 64);
 			st = nfsv4_acl_set(c, vp, cf->cf_cred);
 			if (st != NFS4_OK)
 				set &= ~(1ULL << FATTR4_ACL | 1ULL << FATTR4_DACL);
+			/* After: nfsv4_xstore_apply() starts xs_did2 afresh. */
+			if (masked)
+				c->c_xs.xs_did2 |=
+				    1U << (FATTR4_MODE_SET_MASKED - 64);
 		}
 	} else
 		set = 0;

@@ -100,7 +100,11 @@ struct nfsv4_xstore {
 		uint64_t	rs_duration;
 	}		xs_ret[2];	/* NFSV4_RET_* */
 	uint64_t	xs_hold;
-	/* mode_set_masked, RFC 8881 s6.2.5: the value, then the mask. */
+	/*
+	 * mode_set_masked, RFC 8881 s6.2.5: given, the value, the mask.
+	 * Not in xs_set2, which says what nfsv4_xstore_apply() keeps.
+	 */
+	bool		xs_masked;
 	uint32_t	xs_mmode, xs_mmask;
 	/* dacl, RFC 8881 s6.2.2: given, and its aclflag4 */
 	bool		xs_dacl;

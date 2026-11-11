@@ -118,6 +118,9 @@ def body():
     # Not asked for by s5.13; UF_IMMUTABLE refuses it in ufs_setattr().
     t("s5.13 SETATTR mode", setattr(fh, {FATTR4_MODE: 0o644}), NFS4ERR_PERM)
     # UF_IMMUTABLE, so local processes and NFSv3 are refused too.
+    # What uchg() reads, as it is: run 43062806284 still saw no uchg
+    # here with ssh quiet, while local writes were refused.
+    print("  raw:", repr(vm("stat -f %%Sf %s; ls -lo %s; id" % (V(b"a"), V(b"a")))))
     t("uchg while retained", uchg(b"a"), True)
     t("local append refused", vm("echo x >> %s" % V(b"a"))[0] != 0, True)
     t("local rm refused", vm("rm -f %s" % V(b"a"))[0] != 0, True)

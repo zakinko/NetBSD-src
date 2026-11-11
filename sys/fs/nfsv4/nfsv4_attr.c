@@ -272,7 +272,7 @@ uint32_t
 nfsv4_attr_create_ok(const struct nfsv4_compound *c)
 {
 
-	return (c->c_xs.xs_set2 & W2_MODEMASK) != 0 ? NFS4ERR_INVAL : NFS4_OK;
+	return c->c_xs.xs_masked ? NFS4ERR_INVAL : NFS4_OK;
 }
 
 /*
@@ -289,7 +289,7 @@ nfsv4_attr_mode_masked(struct nfsv4_compound *c, struct vnode *vp,
 	struct vattr cur;
 	int error;
 
-	if ((c->c_xs.xs_set2 & W2_MODEMASK) == 0)
+	if (!c->c_xs.xs_masked)
 		return false;
 	vn_lock(vp, LK_SHARED | LK_RETRY);
 	error = VOP_GETATTR(vp, &cur, c->c_cur.cf_cred);
@@ -1215,6 +1215,7 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 	c->c_xs.xs_set = 0;
 	c->c_xs.xs_set2 = 0;
 	c->c_xs.xs_dacl = false;
+	c->c_xs.xs_masked = false;
 	c->c_xs.xs_did2 = 0;
 	w2 = c->c_minor != 0 && fa->fa_mask.bm_n > 2 ? fa->fa_mask.bm_w[2] : 0;
 	/* RFC 8881 s5.5: it is known, and get-only. */
@@ -1354,8 +1355,10 @@ nfsv4_attr_parse(struct nfsv4_compound *c, const struct nfsv4_fattr *fa,
 		    ~07777U) != 0 || (m & BIT(FATTR4_MODE)) != 0)
 			st = NFS4ERR_INVAL;
 	}
-	if (st == NFS4_OK)
-		c->c_xs.xs_set2 = w2;
+	if (st == NFS4_OK) {
+		c->c_xs.xs_set2 = w2 & ~W2_MODEMASK;
+		c->c_xs.xs_masked = (w2 & W2_MODEMASK) != 0;
+	}
 	if (st == NFS4_OK && XDR_GETPOS(x) != fa->fa_pos + fa->fa_len)
 		st = NFS4ERR_BADXDR;
 	if (!XDR_SETPOS(x, end))

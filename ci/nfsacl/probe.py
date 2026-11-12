@@ -428,11 +428,12 @@ ssh('rm -rf /export/pacl/pf /export/pacl/pm /export/pacl/pd')
 
 # Named attributes: GETXATTRDIR, then NFS itself on the handles it
 # leads to (nfs_srvxattr.c), and handles made to be wrong.
-def nfs3(proc, args, cred=None):
+def nfs3(proc, args, cred=None, rpcerr=False):
     st, r = call(2049, NFS, 3, proc, args, cred)
     # A reply with no status is a failure of its own, said as such; the
     # checks after it then see SERVERFAULT rather than a traceback.
-    if st != SUCCESS or r.done():
+    # rpcerr: the call is one the server is to refuse at the RPC level.
+    if not rpcerr and (st != SUCCESS or r.done()):
         check('NFS3 procedure %d answered with a status' % proc, False,
               'accept_stat %d, %d bytes of result' % (st, len(r.b) - r.p))
         r = R(u32(10006))
@@ -560,7 +561,7 @@ for n, what in ((63, '63 bytes'), (64, '64 bytes')):
     s3 = r.u() if st == SUCCESS else None
     check('a handle of %s past the mark: STALE' % what, s3 in (STALE, BADHANDLE),
           str((st, s3)))
-st, r = nfs3(1, opq(dfh + b'\x07' * (65 - len(dfh))))
+st, r = nfs3(1, opq(dfh + b'\x07' * (65 - len(dfh))), rpcerr=True)
 check('65 bytes: GARBAGE_ARGS', st == GARBAGE_ARGS, str(st))
 h = bytearray(dfh)
 h[len(xf)] = 3

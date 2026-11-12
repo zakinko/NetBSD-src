@@ -61,6 +61,17 @@ for w in "$OUT"/acl.*.where; do
 	c=${w%.where}
 	read sp d <"$w"
 	ssh -o LogLevel=ERROR netbsd "sh /var/tmp/nfsv4/sacl.sh $d '$sp'" >"$c.server"
+	# A file system of NFSv4 ACLs has no POSIX.1e ACL to show, and the
+	# server makes one of the mode (nfsacl_acl_from_mode()); that is
+	# what the client must print.
+	if grep -q '@:' "$c.server"; then
+		ssh -o LogLevel=ERROR netbsd "stat -f %Lp '$sp'" | awk '{
+		    split("user::,group::,other::", w, ",")
+		    for (i = 1; i <= 3; i++) {
+			b = substr($1, i, 1) + 0
+			print w[i] (b >= 4 ? "r" : "-") (b % 4 >= 2 ? "w" : "-") (b % 2 ? "x" : "-")
+		    }}' | sort >"$c.server"
+	fi
 	# The server sends an ACL of three entries as four, with a mask of
 	# the group's (design: the encode of 3 to 4), and illumos prints
 	# it; the server's own has none.  Such a mask is dropped here.

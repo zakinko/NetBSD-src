@@ -301,7 +301,6 @@ xa_name(struct mbuf **mdp, char **dposp, char *name)
 	struct iovec iov;
 	struct uio uio;
 	uint32_t len;
-	int error;
 
 	iov.iov_base = &len;
 	iov.iov_len = sizeof(len);
@@ -327,14 +326,14 @@ xa_name(struct mbuf **mdp, char **dposp, char *name)
 	uio.uio_offset = 0;
 	uio.uio_resid = len;
 	UIO_SETUP_SYSSPACE(&uio);
+	/*
+	 * nfsm_mbuftouio() steps over the XDR padding itself.  Stepping
+	 * over it again here put the cursor past the name: a LOOKUP of a
+	 * name whose length was not a multiple of 4 ran off the arguments
+	 * and was GARBAGE_ARGS, and a CREATE read its createhow askew.
+	 */
 	if (len != 0 && nfsm_mbuftouio(mdp, &uio, len, dposp) != 0)
 		return EBADRPC;
-	if (nfsm_padlen(len) != 0) {
-		error = nfs_adv(mdp, dposp, nfsm_padlen(len),
-		    mtod(*mdp, char *) + (*mdp)->m_len - *dposp);
-		if (error != 0)
-			return EBADRPC;
-	}
 	name[len] = '\0';
 	if (len == 0 || strlen(name) != len || strchr(name, '/') != NULL)
 		return EACCES;

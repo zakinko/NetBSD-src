@@ -43,7 +43,8 @@ mount /dev/vnd3d /export/blk
 chmod 1777 /export/blk
 dumpfs -s /dev/rvnd3d 2>/dev/null | grep -E '^(magic|id|bsize|fsize|sblkno)' | head
 grep -q '^/export/blk ' /etc/exports || echo '/export/blk -maproot=root -noresvport' >>/etc/exports
-pkill -HUP -x mountd; sleep 1
+kill -HUP \$(cat /var/run/mountd.pid); sleep 2
+mount | grep ' /export/blk '
 if [ \$(sysctl -n kern.securelevel) -le 0 ]; then dev=/dev/rvnd3d; else dev=/var/tmp/blkt/blk.img; fi
 echo \"exported: \$dev\"
 printf 'extent0\t%s\t0\t64MB\ntarget0\trw\textent0\t0.0.0.0/0\n' \$dev >/var/tmp/nfsv4/targets

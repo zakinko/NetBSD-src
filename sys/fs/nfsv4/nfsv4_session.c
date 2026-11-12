@@ -501,6 +501,23 @@ put_hostname(XDR *x)
 }
 
 /*
+ * so_major_id of s2.10.5: the host name, and for a connection to the
+ * data server under vfs.nfsv4.ds_owner, that with "/ds" after it.
+ */
+static bool
+put_owner(XDR *x, bool ds)
+{
+	char major[MAXHOSTNAMELEN + 4];
+
+	if (!ds)
+		return put_hostname(x);
+	snprintf(major, sizeof(major), "%.*s/ds",
+	    hostnamelen > 0 ? (int)hostnamelen : 6,
+	    hostnamelen > 0 ? hostname : "netbsd");
+	return put_opaque(x, major, strlen(major));
+}
+
+/*
  * nfs_impl_id4<1>, s18.35.3, which a system manager can change or empty
  * with sysctl, as that section requires.  The date is left as zero.
  */
@@ -532,8 +549,9 @@ exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
 
 	return xdr_u_int64_t(x, &id) && xdr_u_int32_t(x, &seq) &&
 	    xdr_u_int32_t(x, &flags) && xdr_u_int32_t(x, &none) &&
-	    xdr_u_int64_t(x, &minor) && put_hostname(x) && put_hostname(x) &&
-	    put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
+	    xdr_u_int64_t(x, &minor) &&
+	    put_owner(x, nfsv4_layout_ds_conn(c->c_rq->rq_so)) &&
+	    put_hostname(x) && put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
 /* The numbered cases of s18.35.4 are marked. */

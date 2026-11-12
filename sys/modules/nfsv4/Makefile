@@ -43,6 +43,14 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # SHOULD NOT.  Not set: nothing is known to need it.  See nfsv4_acl.c.
 #CPPFLAGS+=	-DNFSV4_EXCL_INHERIT
 #
+# NFSV4_DS_OWNER: give a connection to the file layout's data server
+# (vfs.nfsv4.pnfs_ds) a so_major_id of its own, against RFC 8881
+# s2.10.5's MUST of one per server, so that the client of Linux sends
+# the I/O of layouts there rather than trunking it onto the metadata
+# server's connection.  Not set: vfs.nfsv4.ds_owner turns it on.  See
+# nfsv4_layout.c.
+#CPPFLAGS+=	-DNFSV4_DS_OWNER
+#
 # NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
 # file system mask the inherited ACEs by the server's default mode,
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not

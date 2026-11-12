@@ -87,6 +87,7 @@ struct mbuf;
 struct oncrpc_svc;
 struct oncrpc_req;
 struct sockaddr;
+struct socket;
 
 /* One call, for oncrpc_clnt_call(). */
 struct oncrpc_clnt_call {
@@ -139,6 +140,7 @@ struct oncrpc_req {
 	kauth_cred_t	rq_cred;	/* NULL for AUTH_NONE */
 	struct mbuf	*rq_nam;	/* peer, as MT_SONAME; may be NULL */
 	uint64_t	rq_connid;	/* the connection; none is used twice */
+	struct socket	*rq_so;		/* its socket, or the datagram one */
 	void		*rq_arg;	/* op_arg */
 	XDR		*rq_args;
 	XDR		*rq_res;

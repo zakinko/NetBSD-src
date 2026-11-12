@@ -966,6 +966,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_numeric_owner_sys, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "ds_owner", SYSCTL_DESCR("Give the data server a server owner of its own"),
+	    NULL, 0, &nfsv4_ds_owner, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_vers1", SYSCTL_DESCR("Fall back to callback version 1"),
 	    NULL, 0, &nfsv4_cb_vers1, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

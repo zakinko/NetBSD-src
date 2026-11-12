@@ -656,6 +656,7 @@ svc_serve(struct oncrpc_svc *svc, struct oncrpc_ireq *ir)
 	rq->rq_flavor = c->c_cred.oa_flavor;
 	rq->rq_nam = ir->ir_nam != NULL ? ir->ir_nam : ir->ir_xprt->xp_nam;
 	rq->rq_connid = ir->ir_xprt->xp_id;
+	rq->rq_so = ir->ir_xprt->xp_so;
 	rq->rq_arg = op->op_arg;
 	rq->rq_args = &ir->ir_args.xm_xdr;
 	oncrpc_xdrmbuf_create(&ir->ir_res, NULL, ONCRPC_MAXMSG, XDR_ENCODE);

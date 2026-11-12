@@ -68,9 +68,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/kmem.h>
 #include <sys/mount.h>
 #include <sys/namei.h>
+#include <sys/protosw.h>
+#include <sys/socket.h>
+#include <sys/socketvar.h>
 #include <sys/systm.h>
 #include <sys/vfs_syscalls.h>
 #include <sys/vnode.h>
+
+#include <netinet/in.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
@@ -349,6 +354,62 @@ nfsv4_layout_setff(const char *line)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	return error;
+}
+
+/*
+ * vfs.nfsv4.ds_owner, from the option NFSV4_DS_OWNER (see the module's
+ * Makefile).  RFC 8881 s2.10.5 has one server give the same so_major_id
+ * over every connection, so the data server, this same server at the
+ * address of vfs.nfsv4.pnfs_ds, gives the metadata server's.  The client
+ * of Linux then takes the two for one (client ID trunking, its
+ * nfs41_walk_client_list() in fs/nfs/nfs4client.c) and sends the I/O
+ * of the layouts over its connection to the metadata server, never to
+ * the data server's address.  On, a connection to that address is given a
+ * so_major_id of its own, so that the client makes a second nfs_client
+ * and sends the I/O there; the client ID and its state are the same, as
+ * s2.10.5's client ID is only unique under a so_major_id (rfc8881.txt
+ * 25448), so nothing else changes.  Off, or without the option, the
+ * RFC's single server owner is given.
+ */
+#ifdef NFSV4_DS_OWNER
+int nfsv4_ds_owner = 1;
+#else
+int nfsv4_ds_owner = 0;
+#endif
+
+/*
+ * Whether so, a connection's socket, is at the address of the file
+ * layout's data server, and that is to have a server owner of its own.
+ */
+bool
+nfsv4_layout_ds_conn(struct socket *so)
+{
+	struct sockaddr_big sb;
+	const struct sockaddr_in *sin = (const struct sockaddr_in *)&sb;
+	const uint8_t *a, *p;
+	char ua[NFSV4_DS_UADDR];
+	bool is;
+
+	if (!nfsv4_ds_owner || so == NULL || so->so_type != SOCK_STREAM)
+		return false;
+	memset(&sb, 0, sizeof(sb));
+	solock(so);
+	if ((*so->so_proto->pr_usrreqs->pr_sockaddr)(so,
+	    (struct sockaddr *)&sb) != 0)
+		sb.sb_family = AF_UNSPEC;
+	sounlock(so);
+	if (sb.sb_family != AF_INET)
+		return false;
+	/* RFC 5665 s5.2.3.3: h1.h2.h3.h4.p1.p2 */
+	a = (const uint8_t *)&sin->sin_addr;
+	p = (const uint8_t *)&sin->sin_port;
+	snprintf(ua, sizeof(ua), "%u.%u.%u.%u.%u.%u", a[0], a[1], a[2], a[3],
+	    p[0], p[1]);
+	mutex_enter(&nfsv4_state_lock);
+	is = strcmp(ds_dev.d_netid, "tcp") == 0 &&
+	    strcmp(ds_dev.d_uaddr, ua) == 0;
+	mutex_exit(&nfsv4_state_lock);
+	return is;
 }
 
 /* The roles of EXCHANGE_ID, s13.1: ours and what the client asked. */

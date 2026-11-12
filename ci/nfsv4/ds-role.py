@@ -59,6 +59,7 @@ try:
     res = s.compound([op.putfh(fh), op.layoutget(False,
         LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_READ, 0, ANY, 0, osid, 4096)])
     t("LAYOUTGET for reading at the metadata server", res.status, NFS4_OK)
+    lsid = res.resarray[-1].logr_stateid if res.status == NFS4_OK else None
     res = d.compound([op.putfh(fh), op.read(zsid, 0, 10)])
     t("s13.6 READ by a layout", res.status, NFS4_OK)
     res = d.compound([op.putfh(fh), op.read(osid, 0, 10)])
@@ -71,10 +72,24 @@ try:
       NFS4ERR_PNFS_NO_LAYOUT)
     res = d.compound([op.putfh(fh), op.commit(0, 0)])
     t("s13.6 COMMIT at the data server", res.status, NFS4_OK)
+    # Returned and closed: a layout left held kept vfs.nfsv4.pnfs_ds from
+    # being cleared (EBUSY), and the next step's client went on to a
+    # data server that was no longer being served.
+    if lsid is not None:
+        s.compound([op.putfh(fh), op.layoutreturn(False,
+            LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_ANY, layoutreturn4(
+            LAYOUTRETURN4_FILE, layoutreturn_file4(0, ANY, lsid, b"")))])
+    s.compound([op.putfh(fh), op.close(0, osid)])
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")
 finally:
-    print(vm("sysctl -w vfs.nfsv4.ds_owner=0; sysctl -w vfs.nfsv4.pnfs_ds="))
+    print(vm("sysctl -w vfs.nfsv4.ds_owner=0"))
+    for i in range(18):
+        out = vm("sysctl -w vfs.nfsv4.pnfs_ds=")
+        print(out)
+        if "busy" not in out:
+            break
+        time.sleep(10)
 print("failures:", fails)
 sys.exit(0)

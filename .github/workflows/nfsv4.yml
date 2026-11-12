@@ -192,6 +192,8 @@ jobs:
           timeout 600 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
       - name: pNFS, the file layout, RFC 8881 s12 and s13
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfs '))
+        timeout-minutes: 15
+        continue-on-error: true
         run: |
           cp ci/nfsv4/pnfs.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
@@ -200,9 +202,11 @@ jobs:
           timeout 300 sh ci/nfsv4/pnfs-linux.sh 2>&1 | tee -a out/pnfs.txt || true
           cp ci/nfsv4/ds-role.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
-          timeout 120 python3 ./ds-role.py /export/pynfs 2>&1 | tee -a "$OLDPWD/out/pnfs.txt" || true
+          timeout 300 python3 ./ds-role.py /export/pynfs 2>&1 | tee -a "$OLDPWD/out/pnfs.txt" || true
       - name: pNFS, the flexible file layout, RFC 8435
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsff '))
+        timeout-minutes: 20
+        continue-on-error: true
         run: |
           timeout 400 sh ci/nfsv4/pnfs-ff.sh 2>&1 | tee out/pnfs-ff.txt || true
           ssh netbsd "sysctl -w 'vfs.nfsv4.ff_ds=tcp 127.0.0.1.8.2 /export/ffds'"
@@ -217,8 +221,14 @@ jobs:
           ssh netbsd "ls -l /export/ffds"
       - name: pNFS, the block layout, RFC 5663, over iSCSI
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsblk '))
+        timeout-minutes: 15
+        continue-on-error: true
+        run: timeout 600 sh ci/nfsv4/pnfs-blk.sh 2>&1 | tee out/pnfs-blk.txt || true
+      - name: The block layout from the server's side, and fsck_ffs
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsblk '))
+        timeout-minutes: 15
+        continue-on-error: true
         run: |
-          timeout 600 sh ci/nfsv4/pnfs-blk.sh 2>&1 | tee out/pnfs-blk.txt || true
           cp ci/nfsv4/blk.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true

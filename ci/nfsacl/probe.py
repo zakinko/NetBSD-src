@@ -430,6 +430,12 @@ ssh('rm -rf /export/pacl/pf /export/pacl/pm /export/pacl/pd')
 # leads to (nfs_srvxattr.c), and handles made to be wrong.
 def nfs3(proc, args, cred=None):
     st, r = call(2049, NFS, 3, proc, args, cred)
+    # A reply with no status is a failure of its own, said as such; the
+    # checks after it then see SERVERFAULT rather than a traceback.
+    if st != SUCCESS or r.done():
+        check('NFS3 procedure %d answered with a status' % proc, False,
+              'accept_stat %d, %d bytes of result' % (st, len(r.b) - r.p))
+        r = R(u32(10006))
     return st, r
 
 

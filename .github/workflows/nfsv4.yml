@@ -337,7 +337,7 @@ jobs:
             out/cbgetattr.txt
             out/fault.txt
             out/pnfs.txt
-            out/pnfs-linux.pcap
+            out/pnfs-linux-*.pcap
             out/pnfs-ff.txt
             out/iscsi-probe.txt
             out/named-attr.txt

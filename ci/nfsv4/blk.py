@@ -105,7 +105,7 @@ try:
         ex = extents(lo.lo_content.loc_body)
         t("s2.3.1 one extent, a hole", [(e[0], e[3]) for e in ex],
           [[(0, NONE)]])
-        devid = lo.lo_content.loc_body[8:24]
+        devid = lo.lo_content.loc_body[4:20]
         lsid = res.resarray[-1].logr_stateid
         res = s.compound([op.getdeviceinfo(devid, BLK, 4096, 0)])
         t("s2.2 GETDEVICEINFO", res.status, NFS4_OK)
@@ -114,7 +114,7 @@ try:
             nv, typ, nc, off, ln = struct.unpack(">IIIqI", b[:24])
             sig = b[24:24 + ln]
             t("s2.2.1 one simple volume of one component", (nv, typ, nc),
-              (1, 0, 1))
+              [(1, 0, 1)])
             want = vm("dd if=%s bs=1 skip=%d count=%d 2>/dev/null"
                       " | od -A n -t x1 | tr -d ' \\n'" % (IMG, off, ln))
             t("s2.2.1 the signature is on the device at its offset",
@@ -134,7 +134,7 @@ try:
         ex = extents(lo.lo_content.loc_body)
         t("s2.3.1 all READ_WRITE_DATA", set(e[3] for e in ex), [{RW_DATA}])
         t("s2.3.1 from 0, 1 MiB", (ex[0][0], sum(e[1] for e in ex)),
-          (0, 1048576))
+          [(0, 1048576)])
         t("the size has not moved", size(s, fh), 0)
         so = ex[0][2]
         # Write as the client would, to the volume, then commit 64 KiB.
@@ -176,6 +176,12 @@ try:
     t("s2.3.8 hint of 1 s", hint(s3, fh3, osid3, 1), NFS4_OK)
     res = lget(s3, fh3, osid3, LAYOUTIOMODE4_RW, 0, 65536, 4096)
     t("LAYOUTGET to be fenced", res.status, NFS4_OK)
+    # A size, so that a SETATTR of a smaller one would free blocks.
+    if res.status == NFS4_OK:
+        res = s3.compound([op.putfh(fh3), op.layoutcommit(0, 65536, False,
+            res.resarray[-1].logr_stateid, newoffset4(True, 65535),
+            newtime4(False), layoutupdate4(BLK, struct.pack(">I", 0)))])
+        t("LAYOUTCOMMIT of 64 KiB to be fenced", res.status, NFS4_OK)
     s4 = c.new_pnfs_client_session(stamp + b"d")
     time.sleep(2)
     res = s4.compound([op.putfh(fh3), op.open(0, OPEN4_SHARE_ACCESS_BOTH,
@@ -232,11 +238,13 @@ finally:
 # fsck_ffs, read only, of the file system with blocks past the end of
 # stamp+"past" (size 0, 64 blocks), then after removing it.
 name = (stamp + b"past").decode()
-print(vm("ls -ls /export/blk; umount /export/blk || umount -f /export/blk; "
-         "fsck_ffs -n -f /dev/rvnd3d; echo fsck exit $?; "
-         "mount /dev/vnd3d /export/blk && rm -f /export/blk/%s && "
-         "{ umount /export/blk || umount -f /export/blk; }; "
-         "fsck_ffs -n -f /dev/rvnd3d; echo fsck exit $?; "
-         "mount /dev/vnd3d /export/blk" % name))
+def fsck(what):
+    print("=== fsck_ffs -n, %s" % what)
+    print(vm("ls -ls /export/blk; umount /export/blk || umount -f /export/blk"))
+    print(vm("fsck_ffs -n -f /dev/rvnd3d; echo fsck exit $?"))
+    print(vm("mount /dev/vnd3d /export/blk; echo mount $?"))
+fsck("blocks past the end of three files")
+print(vm("rm -f /export/blk/%s; echo rm $?" % name))
+fsck("after removing %s, of size 0 with blocks past its end" % name)
 print("failures:", fails)
 sys.exit(0)

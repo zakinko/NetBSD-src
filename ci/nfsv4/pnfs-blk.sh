@@ -61,6 +61,12 @@ sleep 3
 lsblk -o NAME,SIZE,TRAN,VENDOR,MODEL
 d=$(lsblk -dn -o NAME,TRAN | awk '$2 == "iscsi" { print $1; exit }')
 [ -n "$d" ] && echo "ok     iSCSI disk /dev/$d" || echo "FAILED no iSCSI disk"
+# iscsi-target answered a WRITE longer than its immediate data with CHECK
+# CONDITION and no R2T (the capture of the first run: 2 MB WRITE(10)s
+# with 256 KiB immediate, status 2, no sense), so the client's writes to
+# the volume failed and went to the metadata server.  Requests no longer
+# than the first burst have all their data immediate.
+echo 128 | sudo tee "/sys/block/$d/queue/max_sectors_kb"
 sudo dd if="/dev/$d" bs=4096 skip=16 count=1 2>/dev/null | od -A d -t x1 | head -4
 
 # blkmapd answers the kernel's upcall with the device whose bytes match

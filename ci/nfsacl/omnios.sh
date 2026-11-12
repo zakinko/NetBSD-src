@@ -21,10 +21,13 @@ norm() {
 	    -e 's/^mask:\([^:]*\)$/mask::\1/' -e 's/^other:\([^:]*\)$/other::\1/' |
 	    grep -v '^$' | sort
 }
+# omnios-check.sh reads the server's ACL of each after this script is
+# done, so each file shown is one nothing changes later.  The names are
+# show's own: d and the rest are the callers'.
 show() {	# label server-path [-d] client-path
-	l=$1; sp=$2; d=$3; cp=$4
-	echo "=== $l $sp $d"
-	if [ "$d" = -d ]; then getfacl -d "$cp"; else getfacl -a "$cp"; fi | norm
+	s_l=$1; s_sp=$2; s_d=$3; s_cp=$4
+	echo "=== $s_l $s_sp $s_d"
+	if [ "$s_d" = -d ]; then getfacl -d "$s_cp"; else getfacl -a "$s_cp"; fi | norm
 }
 uname -a
 # What the client sees of the server's rpcbind, before any mount.
@@ -36,12 +39,13 @@ for v in 3 2; do
 	mkdir -p $m
 	t mount -F nfs -o vers=$v,proto=tcp,retry=2 $S:/export/pacl $m || continue
 	f=$m/o$v; d=$m/od$v
-	rm -rf $f $d
-	t touch $f
-	t chmod 640 $f
-	show v$v-mode /export/pacl/o$v "" $f
+	rm -rf $m/m$v $m/n$v $f $d
+	t touch $m/m$v $m/n$v $f
+	t chmod 640 $m/m$v $m/n$v $f
+	show v$v-mode /export/pacl/m$v "" $m/m$v
+	t setfacl -m user:2097:rw-,user:2098:r--,group:3001:r--,mask:rwx $m/n$v
+	show v$v-named /export/pacl/n$v "" $m/n$v
 	t setfacl -m user:2097:rw-,user:2098:r--,group:3001:r--,mask:rwx $f
-	show v$v-named /export/pacl/o$v "" $f
 	t chmod 600 $f
 	show v$v-chmod /export/pacl/o$v "" $f
 	t mkdir $d
@@ -79,7 +83,7 @@ for e in tmpfs acl; do
 	show $e-mode /export/$e/o "" $m/o
 	n setfacl -m user:2097:rw-,mask:rw- $m/o
 	t sh -c "echo y >$m/o2"
-	rm -f $m/o $m/o2
+	rm -f $m/o2
 	t umount $m
 done
 echo "failures: $fails"

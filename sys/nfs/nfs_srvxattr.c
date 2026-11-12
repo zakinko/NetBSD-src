@@ -353,6 +353,10 @@ xa_verf(u_int32_t *tl)
 
 /*
  * The locals of nfsm_subs.h, as each procedure of nfs_serv.c has them.
+ * As there, a procedure returns 0 once its reply is built: the status
+ * is in nd_repstat, and nfs_oncrpc_dispatch() drops a reply that comes
+ * with an error.  nfsm_srvdone returns error, so falling into it after
+ * a version 3 reply of, say, EEXIST left the client with no answer.
  */
 #define	XA_LOCALS							\
 	struct mbuf *mrep = nfsd->nd_mrep, *md = nfsd->nd_md;		\
@@ -828,6 +832,7 @@ xa_create(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		nfsm_build(fp, struct nfs_fattr *, NFSX_V2FATTR);
 		nfsm_srvfillattr(&va, fp);
 	}
+	return 0;
 	nfsm_srvdone;
 }
 
@@ -867,6 +872,7 @@ xa_remove(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 	nfsm_reply(NFSX_WCCDATA(v3));
 	if (v3)
 		nfsm_srvwcc_data(dirfor_ret, &dirfor, diraft_ret, &diraft);
+	return 0;
 	nfsm_srvdone;
 }
 
@@ -933,6 +939,7 @@ xa_rename(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		nfsm_srvwcc_data(dirfor_ret, &dirfor, diraft_ret, &diraft);
 		nfsm_srvwcc_data(dirfor_ret, &dirfor, diraft_ret, &diraft);
 	}
+	return 0;
 	nfsm_srvdone;
 }
 
@@ -1326,6 +1333,7 @@ xa_inval(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp,
 		nfsm_srvpostop_attr(1, NULL);
 	if (nfsd->nd_procnum != NFSPROC_READLINK)
 		nfsm_srvwcc_data(1, NULL, 1, NULL);
+	return 0;
 	nfsm_srvdone;
 }
 

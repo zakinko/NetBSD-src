@@ -223,6 +223,66 @@ try:
             LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
             layoutreturn_file4(0, ANY, lsid, b"")))])
     opened.append((s4, fh3, osid4))
+
+    # s2.3.8: a truncation that is not this server's, by a local process
+    # (open with O_TRUNC) and by NFSv3 (SETATTR of the size to nfsd),
+    # waits for the block layouts of the file as SETATTR does.
+    def held(n):
+        fh, sid = newfile(s4, n)
+        opened.append((s4, fh, sid))
+        res = lget(s4, fh, sid, LAYOUTIOMODE4_RW, 0, 65536, 4096)
+        lsid = res.resarray[-1].logr_stateid
+        s4.compound([op.putfh(fh), op.layoutcommit(0, 65536, False, lsid,
+            newoffset4(True, 65535), newtime4(False),
+            layoutupdate4(BLK, struct.pack(">I", 0)))])
+        return fh, sid, lsid
+    def outside(n, path, how):
+        fh, sid, lsid = held(n)
+        del recalls[:]
+        vm("rm -f /var/tmp/blkt/tr.done; nohup sh -c ': > %s; "
+           "touch /var/tmp/blkt/tr.done' >/dev/null 2>&1 &" % path)
+        got = False
+        for i in range(20):
+            time.sleep(1)
+            s4.compound([])
+            if recalls:
+                got = True
+                break
+        t("s2.3.8 %s: the layout is recalled" % how, got, True)
+        time.sleep(3)
+        t("s2.3.8 %s: not done while the layout is held" % how,
+          vm("test -f /var/tmp/blkt/tr.done && echo done || echo waiting"),
+          "waiting")
+        s4.compound([op.putfh(fh), op.layoutreturn(False, BLK,
+            LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
+            layoutreturn_file4(0, ANY, lsid, b"")))])
+        for i in range(20):
+            time.sleep(1)
+            if "done" in vm("test -f /var/tmp/blkt/tr.done && echo done"):
+                break
+        t("s2.3.8 %s: done once the layout is back" % how,
+          vm("test -f /var/tmp/blkt/tr.done && stat -f %%z %s" % path), "0")
+    n = stamp + b"trl"
+    outside(n, "/export/blk/" + n.decode(), "local O_TRUNC")
+    print(vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 4; "
+             "mkdir -p /mnt/blkv3; mount_nfs -3 -U 127.0.0.1:/export/blk "
+             "/mnt/blkv3; echo mount_nfs $?"))
+    n = stamp + b"trv3"
+    outside(n, "/mnt/blkv3/" + n.decode(), "NFSv3 SETATTR")
+    print(vm("umount /mnt/blkv3"))
+
+    # OPEN with a size of 0 from another client: NFS4ERR_DELAY.
+    fh6, osid6, lsid6 = held(b"tro")
+    s5 = c.new_pnfs_client_session(stamp + b"e")
+    res = s5.compound(use_obj(export) + [op.open(0, OPEN4_SHARE_ACCESS_BOTH,
+        OPEN4_SHARE_DENY_NONE, open_owner4(0, b"e"), openflag4(OPEN4_CREATE,
+        createhow4(UNCHECKED4, {FATTR4_SIZE: 0})),
+        open_claim4(CLAIM_NULL, stamp + b"tro"))])
+    t("s2.3.8 OPEN truncating, the layout held: DELAY", res.status,
+      NFS4ERR_DELAY)
+    s4.compound([op.putfh(fh6), op.layoutreturn(False, BLK,
+        LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
+        layoutreturn_file4(0, ANY, lsid6, b"")))])
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")

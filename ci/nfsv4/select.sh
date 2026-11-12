@@ -21,9 +21,9 @@ for f in $(git diff --name-only "$base" "$head"); do
 					add aclcreate retention t41b t40rm pnfs pnfsff pnfsblk;;
 	sys/fs/nfsv4/nfsv4_attr.c)	add owner retention named dacl fault pnfs pnfsff pnfsblk t41b;;
 	sys/fs/nfsv4/nfsv4_idmap.c)	add owner;;
-	sys/fs/nfsv4/nfsv4_state.c)	add fault pnfs pnfsff pnfsblk t41b;;
+	sys/fs/nfsv4/nfsv4_state.c)	add fault pnfs pnfsff pnfsblk t41b leaseexp;;
 	sys/fs/nfsv4/nfsv4_layout.c|sys/fs/nfsv4/nfsv4_session.c)
-					add pnfs pnfsff pnfsblk t41b;;
+					add pnfs pnfsff pnfsblk t41b leaseexp;;
 	sys/fs/nfsv4/nfsv4_xattr.c)	add named retention;;
 	sys/fs/nfsv4/nfsv4_cb.c|sys/fs/nfsv4/nfsv4_deleg.c)
 					add cbgetattr pnfs pnfsff t41b t40rm;;
@@ -43,6 +43,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/fault.py)		add fault;;
 	ci/nfsv4/pnfs.py|ci/nfsv4/pnfs-linux.sh|ci/nfsv4/ds-role.py)
 					add pnfs;;
+	ci/nfsv4/lease-expire.sh|ci/nfsv4/rpcs.py)	add leaseexp;;
 	ci/nfsv4/pnfs-blk.sh|ci/nfsv4/blk.py|external/bsd/iscsi/*)
 					add pnfsblk;;
 	ci/nfsv4/pnfs-ff.sh|ci/nfsv4/nfs3tcp.c)	add pnfsff;;

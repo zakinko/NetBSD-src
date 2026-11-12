@@ -237,6 +237,11 @@ jobs:
           cp ci/nfsv4/blk.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 1000 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true
+      - name: The client of Linux losing its lease with a layout held
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' leaseexp '))
+        timeout-minutes: 15
+        continue-on-error: true
+        run: timeout 600 sh ci/nfsv4/lease-expire.sh 2>&1 | tee out/lease-expire.txt || true
       - name: Whether the block layout, RFC 5663, can be measured (iSCSI)
         if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' iscsi '))
         run: timeout 400 sh ci/nfsv4/iscsi-probe.sh 2>&1 | tee out/iscsi-probe.txt || true
@@ -367,6 +372,8 @@ jobs:
             out/iscsi-probe.txt
             out/pnfs-blk.txt
             out/pnfs-blk.pcap
+            out/lease-expire.txt
+            out/lease-expire.pcap
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

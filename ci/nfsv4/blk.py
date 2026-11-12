@@ -23,8 +23,12 @@ def t(name, got, want):
         fails += 1
 
 def vm(cmd):
-    p = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "netbsd", cmd],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    try:
+        p = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "netbsd", cmd],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=180)
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT"
     return p.stdout.decode().strip()
 
 ANY = 0xffffffffffffffff
@@ -230,11 +234,16 @@ try:
     def held(n):
         fh, sid = newfile(s4, n)
         opened.append((s4, fh, sid))
+        g0 = vm("sysctl -n vfs.nfsv4.layouts_given")
         res = lget(s4, fh, sid, LAYOUTIOMODE4_RW, 0, 65536, 4096)
+        t("LAYOUTGET to be held", res.status, NFS4_OK)
         lsid = res.resarray[-1].logr_stateid
-        s4.compound([op.putfh(fh), op.layoutcommit(0, 65536, False, lsid,
-            newoffset4(True, 65535), newtime4(False),
+        res = s4.compound([op.putfh(fh), op.layoutcommit(0, 65536, False,
+            lsid, newoffset4(True, 65535), newtime4(False),
             layoutupdate4(BLK, struct.pack(">I", 0)))])
+        t("LAYOUTCOMMIT of the held one", res.status, NFS4_OK)
+        print("layouts given %s -> %s" % (g0,
+              vm("sysctl -n vfs.nfsv4.layouts_given")))
         return fh, sid, lsid
     def outside(n, path, how):
         fh, sid, lsid = held(n)
@@ -265,7 +274,8 @@ try:
     n = stamp + b"trl"
     outside(n, "/export/blk/" + n.decode(), "local O_TRUNC")
     print(vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 4; "
-             "mkdir -p /mnt/blkv3; mount_nfs -3 -U 127.0.0.1:/export/blk "
+             "mkdir -p /mnt/blkv3; rpcinfo -p | grep -E 'nfs|mount'; "
+             "timeout 60 mount_nfs -3 -U -i 127.0.0.1:/export/blk "
              "/mnt/blkv3; echo mount_nfs $?"))
     n = stamp + b"trv3"
     outside(n, "/mnt/blkv3/" + n.decode(), "NFSv3 SETATTR")

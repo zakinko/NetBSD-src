@@ -1,10 +1,10 @@
 #!/bin/sh
 # In the OmniOS VM: the illumos client on versions 3 and 2 of NFS, which
 # carry NFSACL versions 3 and 2.  The server is the NetBSD VM behind
-# the runner, 10.0.2.2 to a QEMU guest.  Each ACL is printed in the form
+# the runner, 192.168.122.2 to an anyvm guest.  Each ACL is printed in the form
 # of sacl.sh, after a line "=== LABEL SERVER-PATH [-d]", for
 # omnios-check.sh to compare.  omnios.sh
-S=10.0.2.2
+S=192.168.122.2
 fails=0
 t() {
 	echo "\$ $*"

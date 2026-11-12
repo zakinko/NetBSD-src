@@ -103,10 +103,10 @@ jobs:
           done
           cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
           sudo apt-get update -q 2>&1 | tail -3 || :
-      # For the OmniOS VM: it reaches the NetBSD one through the runner.
-      # The runner's own rpcbind holds port 111 and must go before the
-      # NetBSD VM forwards it, or OmniOS asks the runner's and its mount
-      # retries for ever ("RPC: Unknown protocol").
+      # For the OmniOS VM: it reaches the NetBSD one through the runner,
+      # whose port 111 is rpcb-nat.py in front of the NetBSD VM's
+      # rpcbind (forwarded to 10111); see that script for why.  The
+      # runner's own rpcbind holds port 111 and must go.
       - run: |
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
           sudo systemctl stop rpcbind.socket rpcbind 2>/dev/null || :
@@ -121,8 +121,8 @@ jobs:
             udp:"2049": "2049"
             "4002": "4002"
             udp:"4002": "4002"
-            "111": "111"
-            udp:"111": "111"
+            "10111": "111"
+            udp:"10111": "111"
           sync: rsync
           copyback: false
           run: uname -a

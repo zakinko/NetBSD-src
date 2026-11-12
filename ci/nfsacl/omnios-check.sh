@@ -5,6 +5,13 @@ OUT=$1
 H=$(cd "$(dirname "$0")" && pwd)
 L=$OUT/nfsacl-omnios.txt
 scp "$H/omnios.sh" omnios:/var/tmp/omnios.sh
+# Both VMs are 192.168.122.10 to themselves and see the runner as
+# 192.168.122.2; the universal addresses the NetBSD rpcbind gives out
+# have to name the latter.
+sudo python3 "$H/rpcb-nat.py" 111 10111 192.168.122.10 192.168.122.2 \
+    >"$OUT/nfsacl-rpcb-nat.txt" 2>&1 &
+NAT=$!
+sleep 1
 # And what the runner's port 111 leads to.
 ss -lntup | grep -E ':(111|2049|4002) ' || :
 rpcinfo -p 127.0.0.1 2>&1 | head -30 || :
@@ -31,6 +38,7 @@ sleep 2
 timeout 1200 ssh omnios 'sh /var/tmp/omnios.sh' 2>&1 | tee "$L" |
     sed 's/^/omnios: /'
 sudo pkill -x tcpdump
+sudo kill $NAT 2>/dev/null
 sleep 1
 sudo chmod 644 "$OUT/nfsacl-omnios.pcap" 2>/dev/null
 if command -v tshark >/dev/null; then

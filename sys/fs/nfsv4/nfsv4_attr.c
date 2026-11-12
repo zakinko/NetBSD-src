@@ -235,9 +235,10 @@ const uint64_t nfsv4_attr_exclcreat =
 			    W2_HOLD)
 #define	W2_SETONLY	(W2_RETSET | W2_EVTSET)		/* s5.5 */
 /* s5.12, of pNFS while it is on, R */
+#define	W2_MDSTH	(1U << (FATTR4_MDSTHRESHOLD - 64))
 #define	W2_PNFS		((1U << (FATTR4_LAYOUT_TYPE - 64)) | \
 			    (1U << (FATTR4_LAYOUT_BLKSIZE - 64)) | \
-			    (1U << (FATTR4_LAYOUT_ALIGNMENT - 64)))
+			    (1U << (FATTR4_LAYOUT_ALIGNMENT - 64)) | W2_MDSTH)
 
 static uint32_t
 attr_w2_supported(struct vnode *vp)
@@ -418,6 +419,34 @@ attr_u64(XDR *x, uint64_t v)
 {
 
 	return xdr_u_int64_t(x, &v);
+}
+
+/*
+ * mdsthreshold4, s5.12.6 and s3.3.23: of each layout type given, the
+ * file size thresholds for reading and writing, 0: none through the
+ * metadata server.  READ and WRITE there wait for the layouts of the
+ * flexible file layout to be returned (nfsv4_layout_ff_conflict()), and
+ * of the file layout they reach the same server either way.  None for
+ * what has no layout.
+ */
+static bool
+attr_mdsthreshold(XDR *x, struct vnode *vp)
+{
+	uint32_t t[2];
+	u_int i, n;
+
+	n = vp->v_type == VREG ? nfsv4_layout_typelist(t) : 0;
+	if (!attr_u32(x, n))
+		return false;
+	for (i = 0; i < n; i++) {
+		/* thi_hintset of one word, thi_hintlist of two length4 */
+		if (!attr_u32(x, t[i]) || !attr_u32(x, 1) ||
+		    !attr_u32(x, 1U << THRESHOLD4_READ_SIZE |
+		    1U << THRESHOLD4_WRITE_SIZE) || !attr_u32(x, 16) ||
+		    !attr_u64(x, 0) || !attr_u64(x, 0))
+			return false;
+	}
+	return true;
 }
 
 /* A pathname4, s2.2.8, from the text of a path. */
@@ -1041,6 +1070,8 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 		if (cf->cf_ref != NULL)
 			c->c_probed = true;	/* as for fs_locations */
 	}
+	if (ok && (w2 & W2_MDSTH) != 0)		/* s5.12.6, 68 after 67 */
+		ok = attr_mdsthreshold(&x, vp);
 	/* retention_get4, s5.13.1 and s5.13.3; 69, 71, 73 in order. */
 	for (n = 0; n < 2 && ok; n++) {
 		uint64_t d;

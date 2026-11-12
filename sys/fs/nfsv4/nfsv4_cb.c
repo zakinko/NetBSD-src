@@ -128,6 +128,8 @@ struct cb_notify {
 	struct nfsv4_stateid cn_stateid;
 	uint32_t	cn_ltype;	/* CB_LAYOUTRECALL, the layout's type */
 	uint8_t		cn_devid[NFS4_DEVICEID4_SIZE];
+	uint32_t	cn_keep;	/* CB_RECALL_ANY4args, s20.6.1 */
+	uint32_t	cn_mask;
 	bool		cn_refset;	/* s2.10.6.3, as st_refset */
 	struct nfsv4_sessionid cn_refsid;
 	uint32_t	cn_refslot;
@@ -357,6 +359,13 @@ cb_notify_encode(XDR *x, void *arg)
 	uint32_t file = LAYOUT4_RET_REC_FILE;
 	uint64_t len = UINT64_MAX;
 
+	/* s20.6.1, s20.7.1: a bitmap4 of one word, bits up to 17 */
+	if (op == NFSV4_OP_CB_RECALL_ANY ||
+	    op == NFSV4_OP_CB_RECALLABLE_OBJ_AVAIL)
+		return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
+		    xdr_u_int32_t(x, &cn->cn_keep) &&
+		    xdr_u_int32_t(x, &(uint32_t){ 1 }) &&
+		    xdr_u_int32_t(x, &cn->cn_mask);
 	/* s20.12.1: cnda_changes<1>, a bitmap4 of one word and the value */
 	if (op == NFSV4_OP_CB_NOTIFY_DEVICEID)
 		return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
@@ -874,6 +883,32 @@ nfsv4_cb_notify_deviceid(const struct nfsv4_client *cl, uint32_t type,
 	cn->cn_clientid = cl->cl_id;
 	cn->cn_ltype = type;
 	memcpy(cn->cn_devid, id, NFS4_DEVICEID4_SIZE);
+	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
+	cb_nnotifies++;
+	cv_signal(&cb_cv);
+}
+
+/*
+ * RFC 8881 s20.6, CB_RECALL_ANY, or s20.7, CB_RECALLABLE_OBJ_AVAIL, as
+ * op, with craa_objects_to_keep keep and craa_type_mask mask.
+ */
+void
+nfsv4_cb_recall_any(const struct nfsv4_client *cl, uint32_t op,
+    uint32_t keep, uint32_t mask)
+{
+	struct cb_notify *cn;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (cb_dying || cb_nnotifies >= CB_NOTIFY_MAX || cl->cl_minor == 0)
+		return;
+	cn = kmem_zalloc(sizeof(*cn), KM_NOSLEEP);
+	if (cn == NULL)
+		return;
+	cn->cn_op = op;
+	cn->cn_clientid = cl->cl_id;
+	cn->cn_keep = keep;
+	cn->cn_mask = mask;
 	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
 	cb_nnotifies++;
 	cv_signal(&cb_cv);

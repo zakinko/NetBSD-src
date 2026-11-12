@@ -165,6 +165,7 @@ struct nfsv4_client {
 	uint32_t	cl_idlen;	/* x */
 	uint8_t		cl_idstr[NFS4_OPAQUE_LIMIT];
 	struct nfsv4_devnote cl_devnote[NFSV4_DEVNOTES];
+	uint32_t	cl_lwant;	/* RCA4_TYPE_MASK_* bits, s18.43.3 */
 };
 
 #define	NFSV4_OWNER_OPEN	1
@@ -422,6 +423,8 @@ bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 bool	nfsv4_cb_layoutrecall(struct nfsv4_state *);
 void	nfsv4_cb_notify_deviceid(const struct nfsv4_client *, uint32_t,
 	    const uint8_t *);
+void	nfsv4_cb_recall_any(const struct nfsv4_client *, uint32_t, uint32_t,
+	    uint32_t);
 void	nfsv4_layout_recalled(uint64_t, int, uint32_t, struct nfsv4_reap *);
 void	nfsv4_layout_scan(struct nfsv4_reap *);
 void	nfsv4_layout_gone(struct nfsv4_state *);

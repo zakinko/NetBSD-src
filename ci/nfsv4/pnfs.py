@@ -46,6 +46,16 @@ def devspy(self, arg, env):
     devnotes.append(arg)
     return nfs4client.encode_status(NFS4_OK)
 nfs4client.NFS4Client.op_cb_notify_deviceid = devspy
+rcas = []
+def rcaspy(self, arg, env):
+    rcas.append(arg)
+    return nfs4client.encode_status(NFS4_OK)
+nfs4client.NFS4Client.op_cb_recall_any = rcaspy
+avails = []
+def availspy(self, arg, env):
+    avails.append(arg)
+    return nfs4client.encode_status(NFS4_OK)
+nfs4client.NFS4Client.op_cb_recallable_obj_avail = availspy
 def wait(l, n=10):
     for i in range(n):
         if l:
@@ -282,6 +292,62 @@ try:
     res = s.compound(use_obj(export) + [op.remove(stamp + b"f")])
     t("s12.5.5 REMOVE", res.status, NFS4_OK)
     t("s12.5.5 REMOVE recalls the layout", wait(recalls), True)
+
+    # s5.12.6, mdsthreshold
+    res = create_file(s, stamp + b"g", path=export + [stamp + b"g"])
+    check(res)
+    gfh = res.resarray[-1].object
+    gsid = res.resarray[-2].stateid
+    res = s.compound([op.putfh(gfh), op.getattr(nfs4lib.list2bitmap(
+        [FATTR4_MDSTHRESHOLD, FATTR4_SUPPORTED_ATTRS]))])
+    t("s5.12.6 GETATTR mdsthreshold", res.status, NFS4_OK)
+    if res.status == NFS4_OK:
+        a = res.resarray[-1].obj_attributes
+        t("s5.12.6 supported 68", 68 in nfs4lib.bitmap2list(
+          a[FATTR4_SUPPORTED_ATTRS]), True)
+        h = a.get(FATTR4_MDSTHRESHOLD)
+        h = h.mth_hints if h is not None else []
+        t("s5.12.6 one hint, of the file layout", [x.thi_layout_type
+          for x in h], [[LAYOUT4_NFSV4_1_FILES]])
+        if h:
+            t("s3.3.22 read_size and write_size", nfs4lib.bitmap2list(
+              h[0].thi_hintset), [[0, 1]])
+            t("s3.3.22 both 0", h[0].thi_hintlist, b"\0" * 16)
+
+    # s20.6, s20.7, s18.43.3: layout_max 2, with the REMOVEd file's
+    # layout still out
+    vm("sysctl -w vfs.nfsv4.layout_max=2")
+    del rcas[:]
+    del avails[:]
+    res = s.compound([op.putfh(gfh), op.layoutget(False,
+        LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_RW, 0, ANY, 0, gsid, 4096)])
+    t("s18.43 LAYOUTGET to the bound", res.status, NFS4_OK)
+    glsid = res.resarray[-1].logr_stateid if res.status == NFS4_OK else gsid
+    t("s20.6 CB_RECALL_ANY near the bound", wait(rcas), True)
+    if rcas:
+        t("s20.6.1 keep half", rcas[0].craa_objects_to_keep, 1)
+        t("s20.6.1 file layouts", nfs4lib.bitmap2list(
+          rcas[0].craa_type_mask), [[RCA4_TYPE_MASK_FILE_LAYOUT]])
+    res = create_file(s, stamp + b"h", path=export + [stamp + b"h"])
+    check(res)
+    hfh = res.resarray[-1].object
+    hsid = res.resarray[-2].stateid
+    res = s.compound([op.putfh(hfh), op.layoutget(True,
+        LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_RW, 0, ANY, 0, hsid, 4096)])
+    t("s18.43.3 past the bound", res.status, NFS4ERR_LAYOUTTRYLATER)
+    t("s18.43.3 will signal", getattr(res.resarray[-1],
+      "logr_will_signal_layout_avail", None), True)
+    res = s.compound([op.putfh(gfh), op.layoutreturn(False,
+        LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_ANY, layoutreturn4(
+        LAYOUTRETURN4_FILE, layoutreturn_file4(0, ANY, glsid, b"")))])
+    t("s18.44 LAYOUTRETURN under the bound", res.status, NFS4_OK)
+    t("s20.7 CB_RECALLABLE_OBJ_AVAIL", wait(avails), True)
+    if avails:
+        t("s20.7.3 what it holds and the room", avails[0].
+          craa_objects_to_keep, 2)
+        t("s20.7.1 file layouts", nfs4lib.bitmap2list(
+          avails[0].craa_type_mask), [[RCA4_TYPE_MASK_FILE_LAYOUT]])
+    vm("sysctl -w vfs.nfsv4.layout_max=0")
 
     # s18.16.3
     res = s.compound(use_obj(export) + [op.open(0, OPEN4_SHARE_ACCESS_BOTH,

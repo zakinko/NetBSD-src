@@ -986,6 +986,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_layouts_given, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layout_max", SYSCTL_DESCR("Layouts held at once; 0 for no bound"),
+	    NULL, 0, &nfsv4_layout_max, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layout_recall", SYSCTL_DESCR("Recall every layout"),
 	    nfsv4_sysctl_layout_recall, 0, NULL, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

@@ -138,7 +138,20 @@ int nfsv4_ff_fences;			/* vfs.nfsv4.ff_fences */
 
 static volatile u_int layout_count;	/* d_refs of all the devices */
 
+/*
+ * vfs.nfsv4.layout_max, 0 for no bound: past it LAYOUTGET has none
+ * readily available (s18.43.3).  From three quarters of it, the holders
+ * are asked to return some, s20.6.3 ("somewhat below"), once a lease.
+ */
+int nfsv4_layout_max;
+static time_t layout_rca_next;
+static bool layout_wanted;		/* some cl_lwant is set */
+
 static void layout_recall_type(uint32_t);
+static void layout_avail(const struct nfsv4_state *);
+static void layout_crowded(void);
+static bool layout_full(void);
+static uint32_t layout_rcamask(uint32_t, uint32_t);
 
 /* pNFS is on; under nfsv4_state_lock, or as a hint. */
 bool
@@ -667,6 +680,7 @@ nfsv4_layout_gone(struct nfsv4_state *st)
 	} else if (o->d_refs != 0 && st->st_lgen == o->d_gen &&
 	    --o->d_refs == 0)
 		dev_deleted(st->st_ltype, o->d_gen);
+	layout_avail(st);
 	if (st->st_ltype != LAYOUT4_FLEX_FILES || st->st_file == NULL)
 		return;
 	fd = ff_find(st->st_file->f_vp);
@@ -1047,7 +1061,7 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	char user[12], group[12];
 	uint32_t status, need, body, util;
 	size_t ul, gl;
-	bool ff = la->type == LAYOUT4_FLEX_FILES, held = false;
+	bool ff = la->type == LAYOUT4_FLEX_FILES, held = false, signal = false;
 	XDR *x = c->c_rx;
 
 	if ((status = layout_client(c)) != NFS4_OK)
@@ -1142,6 +1156,17 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		    NFS4ERR_RECALLCONFLICT;
 		goto out;
 	}
+	if (st == NULL && layout_full()) {
+		/* s18.43.3, resource exhaustion: the want is honoured */
+		if (la->signal) {
+			c->c_client->cl_lwant |= layout_rcamask(la->type,
+			    1U << la->iomode);
+			layout_wanted = true;
+		}
+		signal = la->signal != 0;
+		status = NFS4ERR_LAYOUTTRYLATER;
+		goto out;
+	}
 	if (st == NULL) {
 		sw = nfsv4_owner_find(c->c_client, NFSV4_OWNER_LAYOUT,
 		    (const uint8_t *)"", 0);
@@ -1155,6 +1180,7 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		st->st_lgen = dev_of(la->type, false)->d_gen;
 		dev_of(la->type, false)->d_refs++;
 		atomic_inc_uint(&layout_count);
+		layout_crowded();
 		held = ff;		/* the reference of ff_attach() */
 		if (st->st_file->f_fh.fh_len == 0)
 			st->st_file->f_fh = fh;
@@ -1237,9 +1263,9 @@ out:
 	mutex_exit(&nfsv4_state_lock);
 	if (ff)
 		ff_drop(vp);
-	/* s18.43.3: the signal for when one is available is not given. */
+	/* s18.43.2: logr_will_signal_layout_avail, CB_RECALLABLE_OBJ_AVAIL */
 	if (status == NFS4ERR_LAYOUTTRYLATER)
-		(void)nfsv4_xdr_u32(x, 0);
+		(void)nfsv4_xdr_u32(x, signal);
 done:
 	if (ssw != NULL)
 		kmem_free(ssw, sizeof(*ssw));
@@ -1444,6 +1470,115 @@ nfsv4_layout_recall_all(void)
 	mutex_enter(&nfsv4_state_lock);
 	layout_recall_type(0);
 	mutex_exit(&nfsv4_state_lock);
+}
+
+/*
+ * craa_type_mask bits of a layout type and modes (1 << LAYOUTIOMODE4_*):
+ * RFC 8881 s20.6.1 for the file layout, RFC 8435 s13.1 by iomode for
+ * the flexible file layout.
+ */
+static uint32_t
+layout_rcamask(uint32_t type, uint32_t modes)
+{
+	uint32_t m = 0;
+
+	if (type == LAYOUT4_NFSV4_1_FILES)
+		return 1U << RCA4_TYPE_MASK_FILE_LAYOUT;
+	if ((modes & 1U << LAYOUTIOMODE4_READ) != 0)
+		m |= 1U << PNFS_FF_RCA4_TYPE_MASK_READ;
+	if ((modes & 1U << LAYOUTIOMODE4_RW) != 0)
+		m |= 1U << PNFS_FF_RCA4_TYPE_MASK_RW;
+	return m;
+}
+
+static bool
+layout_full(void)
+{
+	int max = nfsv4_layout_max;
+
+	return max > 0 && atomic_load_relaxed(&layout_count) >= (u_int)max;
+}
+
+/* The layouts cl holds but gone, and their craa_type_mask bits. */
+static u_int
+layout_held(struct nfsv4_client *cl, const struct nfsv4_state *gone,
+    uint32_t *maskp)
+{
+	struct nfsv4_owner_s *sw;
+	struct nfsv4_state *st;
+	u_int n = 0;
+
+	*maskp = 0;
+	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+		if (sw->sw_type != NFSV4_OWNER_LAYOUT)
+			continue;
+		LIST_FOREACH(st, &sw->sw_states, st_olist) {
+			if (st->st_file == NULL || st == gone)
+				continue;
+			n++;
+			*maskp |= layout_rcamask(st->st_ltype, st->st_liomode);
+		}
+	}
+	return n;
+}
+
+/*
+ * A layout was given: past three quarters of vfs.nfsv4.layout_max, each
+ * holder is sent CB_RECALL_ANY to keep half of its layouts, s20.6.  The
+ * client chooses which; none is recalled by name after it (s20.6.4
+ * leaves that to the server).
+ */
+static void
+layout_crowded(void)
+{
+	struct nfsv4_client *cl;
+	uint32_t mask;
+	u_int n;
+	int max = nfsv4_layout_max;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (max <= 0 || atomic_load_relaxed(&layout_count) <
+	    (u_int)max - (u_int)max / 4 || time_uptime < layout_rca_next)
+		return;
+	layout_rca_next = time_uptime + NFSV4_LEASE;
+	for (cl = nfsv4_client_next(NULL); cl != NULL;
+	    cl = nfsv4_client_next(cl)) {
+		if ((n = layout_held(cl, NULL, &mask)) != 0)
+			nfsv4_cb_recall_any(cl, NFSV4_OP_CB_RECALL_ANY, n / 2,
+			    mask);
+	}
+}
+
+/*
+ * The layout gone is going: if there is room again, the clients that
+ * asked to be told are sent CB_RECALLABLE_OBJ_AVAIL, s18.43.3, s20.7.
+ * craa_objects_to_keep is what each holds and the room (s20.7.3).
+ */
+static void
+layout_avail(const struct nfsv4_state *gone)
+{
+	struct nfsv4_client *cl;
+	uint32_t mask;
+	u_int n, room;
+	int max = nfsv4_layout_max;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (!layout_wanted || layout_full())
+		return;
+	layout_wanted = false;
+	room = max > 0 ? (u_int)max - atomic_load_relaxed(&layout_count) :
+	    UINT32_MAX / 2;
+	for (cl = nfsv4_client_next(NULL); cl != NULL;
+	    cl = nfsv4_client_next(cl)) {
+		if (cl->cl_lwant == 0)
+			continue;
+		n = layout_held(cl, gone, &mask);
+		nfsv4_cb_recall_any(cl, NFSV4_OP_CB_RECALLABLE_OBJ_AVAIL,
+		    n + room, cl->cl_lwant);
+		cl->cl_lwant = 0;
+	}
 }
 
 /*

@@ -322,6 +322,7 @@ void	nfsv4_ff_fence_all(void);
 extern int nfsv4_ff_fences;
 u_int	nfsv4_layout_typelist(uint32_t *);
 extern int nfsv4_layouts_given;
+extern int nfsv4_layout_max;
 uint32_t nfsv4_layout_types(struct vnode *);
 uint32_t nfsv4_layout_blksize(void);
 extern int nfsv4_numeric_owner_sys;

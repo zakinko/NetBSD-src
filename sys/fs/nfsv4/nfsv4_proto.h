@@ -310,6 +310,11 @@
 #define	FATTR4_LAYOUT_BLKSIZE	65
 #define	FATTR4_LAYOUT_ALIGNMENT	66
 #define	FATTR4_FS_LOCATIONS_INFO 67	/* RFC 8881 s11.17, Table 5 */
+#define	FATTR4_MDSTHRESHOLD	68	/* RFC 8881 s5.12.6, Table 5 */
+
+/* threshold_item4's thi_hintset, RFC 8881 s3.3.22, Table 2 */
+#define	THRESHOLD4_READ_SIZE	0
+#define	THRESHOLD4_WRITE_SIZE	1
 
 /* RFC 8881 s11.17.1 */
 #define	FSLI4BX_GFLAGS		0

@@ -47,7 +47,10 @@ jobs:
           key: rpctls-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       - run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
-      - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
+      # Not until the branches are squashed (2026-11-12): fixup! commits
+      # mend what the commits before them break, so a commit of the
+      # series alone need not build.  Put back after the squash.
+      # - run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - uses: actions/cache@v4
         with:
           path: tirpc
@@ -215,11 +218,11 @@ jobs:
           key: ${{ steps.ossl41.outputs.cache-primary-key }}
       - name: RPC over DTLS, RFC 9289 s5.1.2
         continue-on-error: true
-        timeout-minutes: 10
+        timeout-minutes: 30
         run: |
           tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/rpctls/dtls-vm.sh netbsd:/var/tmp/nfsv4/
-          ssh netbsd 'sh /var/tmp/nfsv4/dtls-vm.sh' 2>&1 | tee out/probe-dtls.txt; exit ${PIPESTATUS[0]}
+          ssh netbsd 'sh /var/tmp/nfsv4/dtls-vm.sh heavy' 2>&1 | tee out/probe-dtls.txt; exit ${PIPESTATUS[0]}
         shell: bash
       - name: What the kernel said
         if: always()

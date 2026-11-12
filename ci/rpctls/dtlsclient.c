@@ -8,6 +8,10 @@
  * the client's traffic secret, which OpenSSL's key log gives.
  *
  *	dtlsclient host port cafile
+ *	dtlsclient host port cafile bench NPROC NCALLS
+ *
+ * The second form times NCALLS NULL calls in each of NPROC processes,
+ * first plain on UDP and then over DTLS, one association per process.
  *
  * Prints "ok name" or "FAIL name" per check and "probe-dtls failures N".
  */
@@ -15,6 +19,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -347,6 +352,75 @@ readreply(SSL *ssl, uint32_t xid)
 	return false;
 }
 
+static double
+now(void)
+{
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec / 1e6;
+}
+
+/*
+ * NCALLS calls in each of nproc children; the calls answered and the
+ * seconds the slowest child took.  Over DTLS each child associates
+ * first, outside the timing.
+ */
+static void
+bench(SSL_CTX *ctx, bool dtls, int nproc, int ncalls)
+{
+	int i, k, fd, pfd[2], st, ok, total = 0;
+	double t0, t1, slow = 0;
+	SSL *ssl = NULL;
+
+	for (i = 0; i < nproc; i++) {
+		if (pipe(pfd) == -1)
+			err(1, "pipe");
+		if (fork() == 0) {
+			close(pfd[0]);
+			if (dtls) {
+				if ((ssl = associate(ctx, &fd, false)) == NULL)
+					_exit(1);
+			} else
+				fd = udpsock();
+			ok = 0;
+			t0 = now();
+			for (k = 0; k < ncalls; k++)
+				ok += dtls ? dtlscall(ssl) :
+				    plaincall(fd, AUTH_NONE, NULL, 0);
+			t1 = now() - t0;
+			dprintf(pfd[1], "%d %f\n", ok, t1);
+			_exit(0);
+		}
+		close(pfd[1]);
+		/* the read end, kept per child in the low fds' order */
+		if (dup2(pfd[0], 100 + i) == -1)
+			err(1, "dup2");
+		close(pfd[0]);
+	}
+	for (i = 0; i < nproc; i++) {
+		char line[64] = "";
+		FILE *f = fdopen(100 + i, "r");
+
+		if (f != NULL && fgets(line, sizeof(line), f) != NULL) {
+			double t;
+
+			if (sscanf(line, "%d %lf", &ok, &t) == 2) {
+				total += ok;
+				if (t > slow)
+					slow = t;
+			}
+		}
+		if (f != NULL)
+			fclose(f);
+		(void)wait(&st);
+	}
+	printf("bench %s: %d processes, %d of %d calls answered, %.2f s, "
+	    "%.0f calls/s\n", dtls ? "DTLS" : "plain UDP", nproc, total,
+	    nproc * ncalls, slow, slow > 0 ? total / slow : 0);
+	fflush(stdout);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -358,12 +432,17 @@ main(int argc, char **argv)
 	uint64_t seq;
 	int fd, fd2, i;
 
-	if (argc != 4)
-		errx(1, "usage: dtlsclient host port cafile");
+	if (argc != 4 && !(argc == 7 && strcmp(argv[4], "bench") == 0))
+		errx(1, "usage: dtlsclient host port cafile [bench nproc ncalls]");
 	host = argv[1];
 	port = atoi(argv[2]);
 	cafile = argv[3];
 	ctx = mkctx();
+	if (argc == 7) {
+		bench(ctx, false, atoi(argv[5]), atoi(argv[6]));
+		bench(ctx, true, atoi(argv[5]), atoi(argv[6]));
+		return 0;
+	}
 
 	fd = udpsock();
 	check(plaincall(fd, AUTH_NONE, NULL, 0),

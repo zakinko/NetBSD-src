@@ -108,6 +108,18 @@ struct nfsv4_session {
 #define	NFSV4_CSREPLY_MAX	128
 
 /*
+ * RFC 8881 s18.40.3: the device ID notifications asked of one device ID,
+ * as bits 1 << NOTIFY_DEVICEID4_*.  Two layout types, each with a device
+ * and one retired, nfsv4_layout.c.
+ */
+struct nfsv4_devnote {
+	uint32_t	dn_type;	/* LAYOUT4_* */
+	uint32_t	dn_gen;		/* of the device ID */
+	uint32_t	dn_mask;	/* 0 for a free one */
+};
+#define	NFSV4_DEVNOTES	(2 * 2)
+
+/*
  * RFC 7530 s16.33.5, a record { v, x, c, k, s }, or the 5-tuple of
  * RFC 8881 s18.35.4 if cl_minor is not 0.  The two never match each
  * other by name.
@@ -152,6 +164,7 @@ struct nfsv4_client {
 	time_t		cl_expire;	/* lease, in time_uptime */
 	uint32_t	cl_idlen;	/* x */
 	uint8_t		cl_idstr[NFS4_OPAQUE_LIMIT];
+	struct nfsv4_devnote cl_devnote[NFSV4_DEVNOTES];
 };
 
 #define	NFSV4_OWNER_OPEN	1
@@ -261,6 +274,7 @@ struct nfsv4_state {
 	/* layout, of nfsv4_layout.c: all of the file, in these modes */
 	uint32_t	st_liomode;	/* bits 1 << LAYOUTIOMODE4_* */
 	uint32_t	st_ltype;	/* LAYOUT4_*, s3.3.13 */
+	uint32_t	st_lgen;	/* of the device it refers to */
 	bool		st_lfence;	/* not returned in time, RFC 8435 s2.2 */
 	bool		st_lrecall;	/* CB_LAYOUTRECALL sent, s12.5.5.2 */
 	bool		st_lanswered;	/* and the client has answered it */
@@ -406,6 +420,8 @@ void	nfsv4_deleg_drop_prev(struct nfsv4_client *, struct nfsv4_reap *);
 void	nfsv4_deleg_scan(struct nfsv4_reap *);
 bool	nfsv4_deleg_path_down(struct nfsv4_client *);
 bool	nfsv4_cb_layoutrecall(struct nfsv4_state *);
+void	nfsv4_cb_notify_deviceid(const struct nfsv4_client *, uint32_t,
+	    const uint8_t *);
 void	nfsv4_layout_recalled(uint64_t, int, uint32_t, struct nfsv4_reap *);
 void	nfsv4_layout_scan(struct nfsv4_reap *);
 void	nfsv4_layout_gone(struct nfsv4_state *);
@@ -414,6 +430,8 @@ uint32_t nfsv4_layout_ff_conflict(struct vnode *);
 
 /* These do not. */
 void	nfsv4_layout_recall_all(void);
+void	nfsv4_layout_recall_vp(struct vnode *, bool);
+void	nfsv4_layout_recall_name(const struct nfsv4_cfh *, const char *);
 struct vnode *nfsv4_file_vp_byfh(const struct nfsv4_fh *);
 uint32_t nfsv4_seq_stateid(const struct nfsv4_compound *,
 	    const struct nfsv4_stateid *, uint32_t, uint32_t,

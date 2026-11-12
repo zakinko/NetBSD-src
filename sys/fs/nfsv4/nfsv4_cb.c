@@ -114,7 +114,9 @@ struct cb_recall_args {
 
 /*
  * CB_NOTIFY_LOCK4args, RFC 8881 s20.11.1, or with cn_op of
- * CB_LAYOUTRECALL, the LAYOUTRECALL4_FILE of s20.3.1, and whom to.
+ * CB_LAYOUTRECALL, the LAYOUTRECALL4_FILE of s20.3.1, or of
+ * CB_NOTIFY_DEVICEID, one notify_deviceid_delete4 of s20.12.1, and whom
+ * to.
  */
 struct cb_notify {
 	TAILQ_ENTRY(cb_notify) cn_list;
@@ -125,6 +127,11 @@ struct cb_notify {
 	uint64_t	cn_other;	/* the layout, by st_other */
 	struct nfsv4_stateid cn_stateid;
 	uint32_t	cn_ltype;	/* CB_LAYOUTRECALL, the layout's type */
+	uint8_t		cn_devid[NFS4_DEVICEID4_SIZE];
+	bool		cn_refset;	/* s2.10.6.3, as st_refset */
+	struct nfsv4_sessionid cn_refsid;
+	uint32_t	cn_refslot;
+	uint32_t	cn_refseq;
 	uint32_t	cn_olen;
 	uint8_t		cn_owner[NFS4_OPAQUE_LIMIT];
 };
@@ -350,6 +357,16 @@ cb_notify_encode(XDR *x, void *arg)
 	uint32_t file = LAYOUT4_RET_REC_FILE;
 	uint64_t len = UINT64_MAX;
 
+	/* s20.12.1: cnda_changes<1>, a bitmap4 of one word and the value */
+	if (op == NFSV4_OP_CB_NOTIFY_DEVICEID)
+		return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
+		    xdr_u_int32_t(x, &(uint32_t){ 1 }) &&
+		    xdr_u_int32_t(x, &(uint32_t){ 1 }) &&
+		    xdr_u_int32_t(x,
+		    &(uint32_t){ 1U << NOTIFY_DEVICEID4_DELETE }) &&
+		    xdr_u_int32_t(x, &(uint32_t){ 4 + NFS4_DEVICEID4_SIZE }) &&
+		    xdr_u_int32_t(x, &type) &&
+		    XDR_PUTBYTES(x, (char *)cn->cn_devid, NFS4_DEVICEID4_SIZE);
 	/* s20.3.1: all of the file, of any mode; not changed, s20.3.3. */
 	if (op == NFSV4_OP_CB_LAYOUTRECALL)
 		return cb_head(x, cn->cn_ct, 0) && xdr_u_int32_t(x, &op) &&
@@ -636,6 +653,15 @@ cb_do_notify(struct cb_notify *cn)
 	if (cl == NULL || cl->cl_minor == 0 || !cb_target_get(cl, &ct))
 		return;
 	cn->cn_ct = &ct;
+	/* s2.10.6.3, as for CB_RECALL in cb_do_recall(). */
+	if (cn->cn_op == NFSV4_OP_CB_LAYOUTRECALL && ct.ct_sess != NULL &&
+	    cn->cn_refset &&
+	    memcmp(&cn->cn_refsid, &ct.ct_sid, sizeof(ct.ct_sid)) == 0 &&
+	    ct.ct_sess->se_slots[cn->cn_refslot].sl_seq == cn->cn_refseq) {
+		ct.ct_ref = true;
+		ct.ct_refslot = cn->cn_refslot;
+		ct.ct_refseq = cn->cn_refseq;
+	}
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_COMPOUND, cb_notify_encode, cn,
 	    cb_status_decode, &status);
@@ -816,11 +842,41 @@ nfsv4_cb_layoutrecall(struct nfsv4_state *st)
 	cn->cn_fh = st->st_file->f_fh;
 	cn->cn_other = st->st_other;
 	cn->cn_ltype = st->st_ltype;
+	cn->cn_refset = st->st_refset;
+	cn->cn_refsid = st->st_refsid;
+	cn->cn_refslot = st->st_refslot;
+	cn->cn_refseq = st->st_refseq;
 	nfsv4_stateid_out(st, &cn->cn_stateid);
 	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
 	cb_nnotifies++;
 	cv_signal(&cb_cv);
 	return true;
+}
+
+/*
+ * RFC 8881 s20.12: the device ID id of type is deleted.  A notification,
+ * queued and bounded as the others.
+ */
+void
+nfsv4_cb_notify_deviceid(const struct nfsv4_client *cl, uint32_t type,
+    const uint8_t *id)
+{
+	struct cb_notify *cn;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (cb_dying || cb_nnotifies >= CB_NOTIFY_MAX)
+		return;
+	cn = kmem_zalloc(sizeof(*cn), KM_NOSLEEP);
+	if (cn == NULL)
+		return;
+	cn->cn_op = NFSV4_OP_CB_NOTIFY_DEVICEID;
+	cn->cn_clientid = cl->cl_id;
+	cn->cn_ltype = type;
+	memcpy(cn->cn_devid, id, NFS4_DEVICEID4_SIZE);
+	TAILQ_INSERT_TAIL(&cb_notifies, cn, cn_list);
+	cb_nnotifies++;
+	cv_signal(&cb_cv);
 }
 
 void

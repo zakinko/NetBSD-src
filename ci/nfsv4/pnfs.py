@@ -35,6 +35,23 @@ def spy(self, arg, env):
     recalls.append(arg)
     return nfs4client.encode_status(NFS4_OK)
 nfs4client.NFS4Client.op_cb_layoutrecall = spy
+seqs = []
+cb_sequence = nfs4client.NFS4Client.op_cb_sequence
+def seqspy(self, arg, env):
+    seqs.append(arg)
+    return cb_sequence(self, arg, env)
+nfs4client.NFS4Client.op_cb_sequence = seqspy
+devnotes = []
+def devspy(self, arg, env):
+    devnotes.append(arg)
+    return nfs4client.encode_status(NFS4_OK)
+nfs4client.NFS4Client.op_cb_notify_deviceid = devspy
+def wait(l, n=10):
+    for i in range(n):
+        if l:
+            return True
+        time.sleep(1)
+    return False
 
 export = sys.argv[1].strip('/').encode().split(b'/')
 stamp = b"%d" % int(time.time())
@@ -215,6 +232,56 @@ try:
         LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_ANY,
         layoutreturn4(LAYOUTRETURN4_ALL))])
     t("s18.44.3 reclaim with ALL", res.status, NFS4ERR_INVAL)
+
+    # s12.2.10, s13.5, s18.40.3, s18.43.4, s20.3.4, s20.12: a device
+    # replaced while a layout refers to it
+    res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES, 0,
+        nfs4lib.list2bitmap([NOTIFY_DEVICEID4_DELETE]))])
+    t("s18.40.3 GETDEVICEINFO asking for DELETE", res.status, NFS4_OK)
+    if res.status == NFS4_OK:
+        t("s18.40.3 gdir_notification", nfs4lib.bitmap2list(
+          res.resarray[-1].gdir_notification), [[NOTIFY_DEVICEID4_DELETE]])
+    # The last request on the slot, for s2.10.6.3 below.
+    res = lget(osid)
+    t("s18.43 a layout before the device changes", res.status, NFS4_OK)
+    lsid = res.resarray[-1].logr_stateid if res.status == NFS4_OK else osid
+    del recalls[:]
+    del seqs[:]
+    del devnotes[:]
+    print(vm("sysctl -w 'vfs.nfsv4.pnfs_ds=tcp %s'" % UADDR))
+    t("s20.3.4 CB_LAYOUTRECALL on a new device", wait(recalls), True)
+    # s2.10.6.3: the slot has seen nothing since the LAYOUTGET.
+    ref = [a for a in seqs if a.csa_referring_call_lists]
+    t("s2.10.6.3 CB_LAYOUTRECALL refers to the LAYOUTGET", len(ref) > 0,
+      True)
+    res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES, 4096,
+        0)])
+    t("s18.43.4 the old device ID while the layout is held", res.status,
+      NFS4_OK)
+    t("s20.12.3 no DELETE while the layout is held", len(devnotes), 0)
+    rsid_ = recalls[0].clora_recall.lor_layout.lor_stateid if recalls \
+        else lsid
+    res = s.compound([op.putfh(fh), op.layoutreturn(False,
+        LAYOUT4_NFSV4_1_FILES, LAYOUTIOMODE4_ANY, layoutreturn4(
+        LAYOUTRETURN4_FILE, layoutreturn_file4(0, ANY, rsid_, b"")))])
+    t("s18.44 LAYOUTRETURN of the recalled", res.status, NFS4_OK)
+    t("s20.12 NOTIFY_DEVICEID4_DELETE once returned", wait(devnotes), True)
+    if devnotes:
+        n = devnotes[0].cnda_changes[0]
+        t("s20.12.1 the mask", nfs4lib.bitmap2list(n.notify_mask),
+          [[NOTIFY_DEVICEID4_DELETE]])
+        t("s20.12.1 the device", n.notify_vals[4:], devid)
+    res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES, 4096,
+        0)])
+    t("s18.40.3 the old device ID once deleted", res.status, NFS4ERR_NOENT)
+
+    # s12.5.5: REMOVE recalls
+    res = lget(osid)
+    t("s18.43 a layout before REMOVE", res.status, NFS4_OK)
+    del recalls[:]
+    res = s.compound(use_obj(export) + [op.remove(stamp + b"f")])
+    t("s12.5.5 REMOVE", res.status, NFS4_OK)
+    t("s12.5.5 REMOVE recalls the layout", wait(recalls), True)
 
     # s18.16.3
     res = s.compound(use_obj(export) + [op.open(0, OPEN4_SHARE_ACCESS_BOTH,

@@ -250,6 +250,7 @@ nfsv4_op_remove(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = nfsv4_deleg_break_dir(c, cf);
 	if (st != NFS4_OK)
 		return st;
+	nfsv4_layout_recall_name(cf, nm->nm_str);	/* RFC 8881 s12.5.5 */
 
 	memset(&ci, 0, sizeof(ci));
 	error = nfsv4_namei(&nd, cf->cf_vp, nm->nm_str, DELETE,
@@ -604,6 +605,15 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 		set = 0;
 	w2 = c->c_xs.xs_did2;
 	c->c_xs.xs_did2 = 0;
+	/*
+	 * RFC 8881 s12.5.1: a layout of RFC 8435 carries access to the data
+	 * file (its s2.2.2), and the access may have gone.
+	 */
+	if (vp != NULL && ((set & (1ULL << FATTR4_MODE |
+	    1ULL << FATTR4_OWNER | 1ULL << FATTR4_OWNER_GROUP |
+	    1ULL << FATTR4_ACL | 1ULL << FATTR4_DACL)) != 0 ||
+	    (w2 & 1U << (FATTR4_MODE_SET_MASKED - 64)) != 0))
+		nfsv4_layout_recall_vp(vp, true);
 	if (!nfsv4_attr_put_mask(c->c_rx, set, w2))
 		return NFS4ERR_RESOURCE;
 	return st;

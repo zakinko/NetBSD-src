@@ -83,9 +83,21 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	NFSV4_DS_NETID		16
 #define	NFSV4_DS_UADDR		64
 
-static char ds_netid[NFSV4_DS_NETID];
-static char ds_uaddr[NFSV4_DS_UADDR];
-static uint32_t ds_gen;		/* in the device ID; changes with the address */
+/*
+ * A storage device: its address, and the generation in its device ID,
+ * which changes with the address.  s12.2.10, s18.43.4: a device ID is not
+ * deleted while a layout refers to it.  So a device replaced while
+ * d_refs layouts refer to it is kept, as the type's retired one, until
+ * they are returned or revoked, and they are recalled (s13.5, s20.3.4).
+ */
+struct pnfs_dev {
+	char		d_netid[NFSV4_DS_NETID];
+	char		d_uaddr[NFSV4_DS_UADDR];
+	uint32_t	d_gen;
+	u_int		d_refs;		/* layouts that refer to it */
+};
+
+static struct pnfs_dev ds_dev, ds_old;	/* the file layout's */
 int nfsv4_layouts_given;		/* vfs.nfsv4.layouts_given, to be counted */
 
 /* RFC 8435: the storage device, and the data files. */
@@ -118,20 +130,22 @@ struct ff_data {
 	bool		fd_dead;	/* no layouts; to be copied back */
 };
 
-static char ff_netid[NFSV4_DS_NETID];
-static char ff_uaddr[NFSV4_DS_UADDR];
+static struct pnfs_dev ff_dev, ff_old;
 static char ff_dir[NFSV4_FF_DIR];
-static uint32_t ff_gen;
 static LIST_HEAD(, ff_data) ff_list = LIST_HEAD_INITIALIZER(ff_list);
 static volatile u_int ff_count;		/* on ff_list */
 int nfsv4_ff_fences;			/* vfs.nfsv4.ff_fences */
+
+static volatile u_int layout_count;	/* d_refs of all the devices */
+
+static void layout_recall_type(uint32_t);
 
 /* pNFS is on; under nfsv4_state_lock, or as a hint. */
 bool
 nfsv4_pnfs_on(void)
 {
 
-	return ds_uaddr[0] != '\0' || ff_uaddr[0] != '\0';
+	return ds_dev.d_uaddr[0] != '\0' || ff_dev.d_uaddr[0] != '\0';
 }
 
 /* Layouts of type t are given. */
@@ -141,9 +155,9 @@ layout_on(uint32_t t)
 
 	switch (t) {
 	case LAYOUT4_NFSV4_1_FILES:
-		return ds_uaddr[0] != '\0';
+		return ds_dev.d_uaddr[0] != '\0';
 	case LAYOUT4_FLEX_FILES:
-		return ff_uaddr[0] != '\0';
+		return ff_dev.d_uaddr[0] != '\0';
 	default:
 		return false;
 	}
@@ -169,36 +183,120 @@ nfsv4_layout_typelist(uint32_t *types)
 	return n;
 }
 
+/* The device of a layout type, or the one it has retired. */
+static struct pnfs_dev *
+dev_of(uint32_t type, bool old)
+{
+
+	if (type == LAYOUT4_FLEX_FILES)
+		return old ? &ff_old : &ff_dev;
+	return old ? &ds_old : &ds_dev;
+}
+
+/*
+ * s3.3.14: the device ID of each layout type and generation; not valid
+ * across restarts, s12.2.10.
+ */
+static void
+ds_devid(uint8_t *id, uint32_t type, uint32_t gen)
+{
+
+	memset(id, 0, NFS4_DEVICEID4_SIZE);
+	be32enc(id, nfsv4_boot);
+	be32enc(id + 4, gen);
+	memcpy(id + 8, type == LAYOUT4_FLEX_FILES ? "NetBSDff" : "NetBSDds",
+	    8);
+}
+
+/*
+ * The device ID of type and gen is deleted: no layout refers to it.
+ * s20.12.3: NOTIFY_DEVICEID4_DELETE to the clients that asked for it by
+ * GETDEVICEINFO, s18.40.3, and the asking is forgotten.  The generation
+ * only goes up, so the ID is not used again (s20.12.3).
+ */
+static void
+dev_deleted(uint32_t type, uint32_t gen)
+{
+	struct nfsv4_client *cl;
+	struct nfsv4_devnote *dn;
+	uint8_t id[NFS4_DEVICEID4_SIZE];
+	u_int i;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	ds_devid(id, type, gen);
+	for (cl = nfsv4_client_next(NULL); cl != NULL;
+	    cl = nfsv4_client_next(cl)) {
+		for (i = 0; i < NFSV4_DEVNOTES; i++) {
+			dn = &cl->cl_devnote[i];
+			if (dn->dn_mask == 0 || dn->dn_type != type ||
+			    dn->dn_gen != gen)
+				continue;
+			if ((dn->dn_mask & 1U << NOTIFY_DEVICEID4_DELETE) != 0)
+				nfsv4_cb_notify_deviceid(cl, type, id);
+			memset(dn, 0, sizeof(*dn));
+		}
+	}
+}
+
+/*
+ * The device of type is to have a new address.  If layouts refer to it,
+ * it is retired and they are recalled; else its ID is deleted now.  An
+ * earlier retired one that layouts still refer to cannot be put aside:
+ * EBUSY, after recalling those of the present one, so that asking again
+ * once they are back succeeds.
+ */
+static int
+dev_replace(uint32_t type)
+{
+	struct pnfs_dev *d = dev_of(type, false), *o = dev_of(type, true);
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (d->d_refs != 0 && o->d_refs != 0) {
+		layout_recall_type(type);
+		return EBUSY;
+	}
+	if (d->d_refs != 0) {
+		*o = *d;
+		d->d_refs = 0;
+		layout_recall_type(type);
+	} else
+		dev_deleted(type, d->d_gen);
+	d->d_gen++;
+	return 0;
+}
+
 /*
  * vfs.nfsv4.pnfs_ds: "netid uaddr", or "" for off.  A new address is a
- * new device ID, so that one still in a client's hands is unknown,
- * NFS4ERR_NOENT, s18.40.3; device ID notifications are not offered.
+ * new device ID; the old one goes as dev_replace() says.
  */
 int
 nfsv4_layout_setds(const char *line)
 {
-	const char *sp;
-	size_t n;
+	const char *sp = NULL;
+	size_t n = 0;
+	int error;
 
-	if (*line == '\0') {
-		mutex_enter(&nfsv4_state_lock);
-		ds_uaddr[0] = ds_netid[0] = '\0';
-		ds_gen++;
-		mutex_exit(&nfsv4_state_lock);
-		return 0;
+	if (*line != '\0') {
+		sp = strchr(line, ' ');
+		if (sp == NULL || (n = sp - line) == 0 ||
+		    n >= sizeof(ds_dev.d_netid) || sp[1] == '\0' ||
+		    strlen(sp + 1) >= sizeof(ds_dev.d_uaddr) ||
+		    strchr(sp + 1, ' ') != NULL)
+			return EINVAL;
 	}
-	sp = strchr(line, ' ');
-	if (sp == NULL || (n = sp - line) == 0 || n >= sizeof(ds_netid) ||
-	    sp[1] == '\0' || strlen(sp + 1) >= sizeof(ds_uaddr) ||
-	    strchr(sp + 1, ' ') != NULL)
-		return EINVAL;
 	mutex_enter(&nfsv4_state_lock);
-	memcpy(ds_netid, line, n);
-	ds_netid[n] = '\0';
-	strlcpy(ds_uaddr, sp + 1, sizeof(ds_uaddr));
-	ds_gen++;
+	error = dev_replace(LAYOUT4_NFSV4_1_FILES);
+	if (error == 0 && sp == NULL)
+		ds_dev.d_uaddr[0] = ds_dev.d_netid[0] = '\0';
+	else if (error == 0) {
+		memcpy(ds_dev.d_netid, line, n);
+		ds_dev.d_netid[n] = '\0';
+		strlcpy(ds_dev.d_uaddr, sp + 1, sizeof(ds_dev.d_uaddr));
+	}
 	mutex_exit(&nfsv4_state_lock);
-	return 0;
+	return error;
 }
 
 /*
@@ -209,52 +307,35 @@ nfsv4_layout_setds(const char *line)
 int
 nfsv4_layout_setff(const char *line)
 {
-	const char *sp, *sp2;
-	size_t n, u;
+	const char *sp = NULL, *sp2 = NULL;
+	size_t n = 0, u = 0;
+	int error;
 
-	if (*line == '\0') {
-		mutex_enter(&nfsv4_state_lock);
-		ff_uaddr[0] = ff_netid[0] = ff_dir[0] = '\0';
-		ff_gen++;
-		mutex_exit(&nfsv4_state_lock);
-		return 0;
+	if (*line != '\0') {
+		sp = strchr(line, ' ');
+		if (sp == NULL || (n = sp - line) == 0 ||
+		    n >= sizeof(ff_dev.d_netid))
+			return EINVAL;
+		sp2 = strchr(sp + 1, ' ');
+		if (sp2 == NULL || (u = sp2 - sp - 1) == 0 ||
+		    u >= sizeof(ff_dev.d_uaddr) || sp2[1] != '/' ||
+		    strlen(sp2 + 1) >= sizeof(ff_dir) ||
+		    strchr(sp2 + 1, ' ') != NULL)
+			return EINVAL;
 	}
-	sp = strchr(line, ' ');
-	if (sp == NULL || (n = sp - line) == 0 || n >= sizeof(ff_netid))
-		return EINVAL;
-	sp2 = strchr(sp + 1, ' ');
-	if (sp2 == NULL || (u = sp2 - sp - 1) == 0 || u >= sizeof(ff_uaddr) ||
-	    sp2[1] != '/' || strlen(sp2 + 1) >= sizeof(ff_dir) ||
-	    strchr(sp2 + 1, ' ') != NULL)
-		return EINVAL;
 	mutex_enter(&nfsv4_state_lock);
-	memcpy(ff_netid, line, n);
-	ff_netid[n] = '\0';
-	memcpy(ff_uaddr, sp + 1, u);
-	ff_uaddr[u] = '\0';
-	strlcpy(ff_dir, sp2 + 1, sizeof(ff_dir));
-	ff_gen++;
-	mutex_exit(&nfsv4_state_lock);
-	return 0;
-}
-
-/*
- * s3.3.14: the one device ID of each layout type; not valid across
- * restarts, s12.2.10.
- */
-static void
-ds_devid(uint8_t *id, uint32_t type)
-{
-
-	memset(id, 0, NFS4_DEVICEID4_SIZE);
-	be32enc(id, nfsv4_boot);
-	if (type == LAYOUT4_FLEX_FILES) {
-		be32enc(id + 4, ff_gen);
-		memcpy(id + 8, "NetBSDff", 8);
-	} else {
-		be32enc(id + 4, ds_gen);
-		memcpy(id + 8, "NetBSDds", 8);
+	error = dev_replace(LAYOUT4_FLEX_FILES);
+	if (error == 0 && sp == NULL)
+		ff_dev.d_uaddr[0] = ff_dev.d_netid[0] = ff_dir[0] = '\0';
+	else if (error == 0) {
+		memcpy(ff_dev.d_netid, line, n);
+		ff_dev.d_netid[n] = '\0';
+		memcpy(ff_dev.d_uaddr, sp + 1, u);
+		ff_dev.d_uaddr[u] = '\0';
+		strlcpy(ff_dir, sp2 + 1, sizeof(ff_dir));
 	}
+	mutex_exit(&nfsv4_state_lock);
+	return error;
 }
 
 /* The roles of EXCHANGE_ID, s13.1: ours and what the client asked. */
@@ -460,7 +541,8 @@ struct ff_snap {
 /*
  * Take a reference to the data file of vp, made and filled from vp if
  * there is none.  A data file that is to be copied back first is
- * NFS4ERR_DELAY, the lease thread being woken to do it.
+ * NFS4ERR_LAYOUTTRYLATER, the layout being unavailable for a time
+ * (RFC 8881 s18.43.3), and the lease thread is woken to do it.
  */
 static uint32_t
 ff_attach(struct vnode *vp, struct ff_snap *sn)
@@ -489,7 +571,7 @@ ff_attach(struct vnode *vp, struct ff_snap *sn)
 	mutex_exit(&nfsv4_state_lock);
 	if (fd != NULL) {
 		VOP_UNLOCK(vp);
-		return dead ? NFS4ERR_DELAY : NFS4_OK;
+		return dead ? NFS4ERR_LAYOUTTRYLATER : NFS4_OK;
 	}
 	if (dir[0] == '\0') {
 		VOP_UNLOCK(vp);
@@ -572,8 +654,19 @@ nfsv4_layout_gone(struct nfsv4_state *st)
 {
 	struct ff_data *fd;
 
+	struct pnfs_dev *d, *o;
+
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
+	d = dev_of(st->st_ltype, false);
+	o = dev_of(st->st_ltype, true);
+	atomic_dec_uint(&layout_count);
+	if (st->st_lgen == d->d_gen) {
+		KASSERT(d->d_refs > 0);
+		d->d_refs--;
+	} else if (o->d_refs != 0 && st->st_lgen == o->d_gen &&
+	    --o->d_refs == 0)
+		dev_deleted(st->st_ltype, o->d_gen);
 	if (st->st_ltype != LAYOUT4_FLEX_FILES || st->st_file == NULL)
 		return;
 	fd = ff_find(st->st_file->f_vp);
@@ -750,30 +843,25 @@ nfsv4_layout_ff_conflict(struct vnode *vp)
  * 8435 s4.1, ff_device_addr4.
  */
 static u_int
-ds_addr_len(uint32_t type)
+ds_addr_len(uint32_t type, const struct pnfs_dev *d)
 {
 	size_t n, u;
 
-	if (type == LAYOUT4_FLEX_FILES) {
-		n = strlen(ff_netid);
-		u = strlen(ff_uaddr);
-		/* netaddrs<1>, versions<1> of five words */
+	n = strlen(d->d_netid);
+	u = strlen(d->d_uaddr);
+	/* netaddrs<1>, versions<1> of five words */
+	if (type == LAYOUT4_FLEX_FILES)
 		return 4 + 4 + roundup(n, 4) + 4 + roundup(u, 4) + 4 + 5 * 4;
-	}
-	n = strlen(ds_netid);
-	u = strlen(ds_uaddr);
 	/* indices<1>, list<1> of multipath<1> of netaddr4 */
 	return 4 + 4 + 4 + 4 + 4 + roundup(n, 4) + 4 + roundup(u, 4);
 }
 
 static bool
-ds_addr_put(XDR *x, uint32_t type)
+ds_addr_put(XDR *x, uint32_t type, struct pnfs_dev *d)
 {
-	char *n = ds_netid, *u = ds_uaddr;
+	char *n = d->d_netid, *u = d->d_uaddr;
 
 	if (type == LAYOUT4_FLEX_FILES) {
-		n = ff_netid;
-		u = ff_uaddr;
 		/* s4.1: version 3 MUST have minor 0 and not tightly coupled */
 		return nfsv4_xdr_u32(x, 1) &&
 		    xdr_string(x, &n, NFSV4_DS_NETID) &&
@@ -791,28 +879,94 @@ ds_addr_put(XDR *x, uint32_t type)
 	    xdr_string(x, &u, NFSV4_DS_UADDR);
 }
 
+/*
+ * The device of type whose ID is id, present or retired, copied to *dv;
+ * false if there is none.
+ */
+static bool
+dev_find(uint32_t type, const uint8_t *id, struct pnfs_dev *dv)
+{
+	struct pnfs_dev *d = dev_of(type, false), *o = dev_of(type, true);
+	uint8_t did[NFS4_DEVICEID4_SIZE];
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	ds_devid(did, type, d->d_gen);
+	if (d->d_uaddr[0] != '\0' &&
+	    memcmp(did, id, NFS4_DEVICEID4_SIZE) == 0) {
+		*dv = *d;
+		return true;
+	}
+	ds_devid(did, type, o->d_gen);
+	if (o->d_refs != 0 && memcmp(did, id, NFS4_DEVICEID4_SIZE) == 0) {
+		*dv = *o;
+		return true;
+	}
+	return false;
+}
+
+/*
+ * s18.40.3: the notifications a client asks for, of one device ID; the
+ * last asking counts, and an empty one turns them off.  Only deletion is
+ * ever sent: a device ID keeps its address (dev_replace()).  The bits
+ * that will be sent are returned.
+ */
+static uint32_t
+dev_note(struct nfsv4_client *cl, uint32_t type, uint32_t gen,
+    const struct nfsv4_bitmap *bm)
+{
+	struct nfsv4_devnote *dn, *free = NULL;
+	uint32_t mask;
+	u_int i;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	mask = bm->bm_n > 0 ? bm->bm_w[0] & 1U << NOTIFY_DEVICEID4_DELETE : 0;
+	for (i = 0; i < NFSV4_DEVNOTES; i++) {
+		dn = &cl->cl_devnote[i];
+		if (dn->dn_mask != 0 && dn->dn_type == type &&
+		    dn->dn_gen == gen) {
+			dn->dn_mask = mask;
+			return mask;
+		}
+		if (dn->dn_mask == 0 && free == NULL)
+			free = dn;
+	}
+	/*
+	 * Two of each layout type, present and retired, are all that can
+	 * be known at once, and one deleted is forgotten; so there is room.
+	 */
+	if (mask == 0 || free == NULL)
+		return 0;
+	free->dn_type = type;
+	free->dn_gen = gen;
+	free->dn_mask = mask;
+	return mask;
+}
+
 /* s18.40, GETDEVICEINFO */
 uint32_t
 nfsv4_op_getdeviceinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 {
 	const struct nfsv4_args_getdeviceinfo *ga = &a->getdeviceinfo;
-	uint8_t id[NFS4_DEVICEID4_SIZE];
-	uint32_t status, len, need;
-	bool ok, on;
+	struct pnfs_dev dv;
+	uint32_t status, len, need, note = 0;
+	bool ok, found;
 
 	if ((status = layout_client(c)) != NFS4_OK)
 		return status;
 	if (!layout_known(ga->type))
 		return NFS4ERR_UNKNOWN_LAYOUTTYPE;
 	mutex_enter(&nfsv4_state_lock);
-	ds_devid(id, ga->type);
-	on = layout_on(ga->type);
-	len = ds_addr_len(ga->type);
+	found = dev_find(ga->type, ga->devid, &dv);
+	if (found)
+		note = dev_note(c->c_client, ga->type, dv.d_gen, &ga->notify);
 	mutex_exit(&nfsv4_state_lock);
-	if (!on || memcmp(id, ga->devid, NFS4_DEVICEID4_SIZE) != 0)
+	if (!found)
 		return NFS4ERR_NOENT;
-	/* type, body<>, and an empty gdir_notification: none are sent. */
-	need = 4 + 4 + len + 4;
+	len = ds_addr_len(ga->type, &dv);
+	/* type, body<>, and gdir_notification of one word or none */
+	need = 4 + 4 + len + 4 + (note != 0 ? 4 : 0);
 	/* s18.40.3: maxcount 0 has an empty body, never TOOSMALL. */
 	if (ga->maxcount != 0 && ga->maxcount < need) {
 		(void)nfsv4_xdr_u32(c->c_rx, need);	/* gdir_mincount */
@@ -822,16 +976,13 @@ nfsv4_op_getdeviceinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 		len = 0;
 	ok = nfsv4_xdr_u32(c->c_rx, ga->type) &&
 	    nfsv4_xdr_u32(c->c_rx, len);
-	if (ok && len != 0) {
-		mutex_enter(&nfsv4_state_lock);
-		/* Changed meanwhile: the length was of the other. */
-		if (ds_addr_len(ga->type) != len)
-			ok = false;
-		else
-			ok = ds_addr_put(c->c_rx, ga->type);
-		mutex_exit(&nfsv4_state_lock);
-	}
-	if (!ok || !nfsv4_xdr_u32(c->c_rx, 0))
+	if (ok && len != 0)
+		ok = ds_addr_put(c->c_rx, ga->type, &dv);
+	if (ok && note != 0)
+		ok = nfsv4_xdr_u32(c->c_rx, 1) && nfsv4_xdr_u32(c->c_rx, note);
+	else if (ok)
+		ok = nfsv4_xdr_u32(c->c_rx, 0);
+	if (!ok)
 		return NFS4ERR_RESOURCE;
 	return NFS4_OK;
 }
@@ -855,7 +1006,7 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (ga->maxdevices == 0)
 		return NFS4ERR_INVAL;		/* s18.41.3 */
 	mutex_enter(&nfsv4_state_lock);
-	ds_devid(id, ga->type);
+	ds_devid(id, ga->type, dev_of(ga->type, false)->d_gen);
 	on = layout_on(ga->type);
 	mutex_exit(&nfsv4_state_lock);
 	/* The verifier is the generation; a cookie of 0 needs none. */
@@ -930,8 +1081,12 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	need = 4 + 16 + 4 + 8 + 8 + 4 + 4 + 4 + body;
 	if (la->maxcount < need)
 		return NFS4ERR_TOOSMALL;
-	if (ff && (status = ff_attach(vp, &sn)) != NFS4_OK)
+	if (ff && (status = ff_attach(vp, &sn)) != NFS4_OK) {
+		/* s18.43.2: logr_will_signal_layout_avail, not given */
+		if (status == NFS4ERR_LAYOUTTRYLATER)
+			(void)nfsv4_xdr_u32(x, 0);
 		return status;
+	}
 
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
 	sst = kmem_zalloc(sizeof(*sst), KM_SLEEP);
@@ -942,9 +1097,14 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		goto out;
 	}
 	st = layout_find(c->c_client, vp);
-	/* One layout of a file to a client, of one type. */
+	/*
+	 * One layout of a file to a client, of one type.  s18.43.3: layouts
+	 * are given, but none that matches: BADLAYOUT, or LAYOUTTRYLATER for
+	 * a loga_minlength of 0, which Table 22 does not bind.
+	 */
 	if (st != NULL && st->st_ltype != la->type) {
-		status = NFS4ERR_LAYOUTUNAVAILABLE;
+		status = la->minlength == 0 ? NFS4ERR_LAYOUTTRYLATER :
+		    NFS4ERR_BADLAYOUT;
 		goto out;
 	}
 	status = nfsv4_stateid_lookup(c, &la->stateid, &ost);
@@ -973,6 +1133,9 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		status = NFS4ERR_OPENMODE;
 		goto out;
 	}
+	/* Of a retired device, s12.2.10: it is to come back first. */
+	if (st != NULL && st->st_lgen != dev_of(la->type, false)->d_gen)
+		layout_recall(st);
 	/* s12.5.5.2.1.3: a recall of it not yet done. */
 	if (st != NULL && st->st_lrecall) {
 		status = st->st_lanswered ? NFS4ERR_RETURNCONFLICT :
@@ -989,14 +1152,24 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		}
 		st = nfsv4_state_add(&sst, sw, &sf, vp, NFSV4_ST_LAYOUT);
 		st->st_ltype = la->type;
+		st->st_lgen = dev_of(la->type, false)->d_gen;
+		dev_of(la->type, false)->d_refs++;
+		atomic_inc_uint(&layout_count);
 		held = ff;		/* the reference of ff_attach() */
 		if (st->st_file->f_fh.fh_len == 0)
 			st->st_file->f_fh = fh;
 	} else
 		layout_bump(st);		/* s12.5.3 */
 	st->st_liomode |= 1U << la->iomode;
+	/* s2.10.6.3: what a recall of it is to refer to. */
+	if (c->c_sess != NULL && c->c_slot != NULL) {
+		st->st_refset = true;
+		st->st_refsid = c->c_sess->se_id;
+		st->st_refslot = c->c_slot - c->c_sess->se_slots;
+		st->st_refseq = c->c_slot->sl_seq;
+	}
 	nfsv4_stateid_out(st, &si);
-	ds_devid(id, la->type);
+	ds_devid(id, la->type, st->st_lgen);
 	mutex_exit(&nfsv4_state_lock);
 	if (ff && !held)
 		ff_drop(vp);
@@ -1267,21 +1440,75 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 void
 nfsv4_layout_recall_all(void)
 {
+
+	mutex_enter(&nfsv4_state_lock);
+	layout_recall_type(0);
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/*
+ * The layouts of vp are recalled, not waited for; with ff, only those of
+ * RFC 8435, which carry access to the data file.
+ */
+void
+nfsv4_layout_recall_vp(struct vnode *vp, bool ff)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+
+	if (atomic_load_relaxed(&layout_count) == 0)
+		return;
+	mutex_enter(&nfsv4_state_lock);
+	if ((f = nfsv4_file_find(vp)) != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type == NFSV4_ST_LAYOUT &&
+			    (!ff || st->st_ltype == LAYOUT4_FLEX_FILES))
+				layout_recall(st);
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+}
+
+/*
+ * RFC 8881 s12.5.5: REMOVE SHOULD recall the layouts of the file.  That
+ * of a name that is not the last link is recalled too; the client only
+ * asks again.  The lookup is outside the directory's lock, as in
+ * nfsv4_deleg_break_name().
+ */
+void
+nfsv4_layout_recall_name(const struct nfsv4_cfh *dir, const char *name)
+{
+	struct vnode *vp;
+
+	if (atomic_load_relaxed(&layout_count) == 0)
+		return;
+	if (nfsv4_lookup_vp(dir->cf_vp, name, dir->cf_cred, &vp) != 0)
+		return;
+	nfsv4_layout_recall_vp(vp, false);
+	vrele(vp);
+}
+
+/* The same for the layouts of one type, or of all for 0. */
+static void
+layout_recall_type(uint32_t type)
+{
 	struct nfsv4_client *cl;
 	struct nfsv4_owner_s *sw;
 	struct nfsv4_state *st;
 
-	mutex_enter(&nfsv4_state_lock);
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
 	for (cl = nfsv4_client_next(NULL); cl != NULL;
 	    cl = nfsv4_client_next(cl)) {
 		LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
 			if (sw->sw_type != NFSV4_OWNER_LAYOUT)
 				continue;
-			LIST_FOREACH(st, &sw->sw_states, st_olist)
-				layout_recall(st);
+			LIST_FOREACH(st, &sw->sw_states, st_olist) {
+				if (type == 0 || st->st_ltype == type)
+					layout_recall(st);
+			}
 		}
 	}
-	mutex_exit(&nfsv4_state_lock);
 }
 
 /*

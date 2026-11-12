@@ -8,6 +8,11 @@ scp "$H/omnios.sh" omnios:/var/tmp/omnios.sh
 # And what the runner's port 111 leads to.
 ss -lntup | grep -E ':(111|2049|4002) ' || :
 rpcinfo -p 127.0.0.1 2>&1 | head -30 || :
+for p in 111 2049 4002; do
+	if timeout 5 bash -c "echo >/dev/tcp/127.0.0.1/$p" 2>/dev/null; then
+		echo "runner to 127.0.0.1:$p: open"; else echo "runner to 127.0.0.1:$p: no"; fi
+done
+ssh -o LogLevel=ERROR netbsd "netstat -an | grep -E '[.](111|2049|4002) '; ps -axo pid,args | grep '[r]pcbind'; cat /etc/hosts.allow /etc/hosts.deny 2>/dev/null; npfctl show 2>/dev/null | head -5; ifconfig -a | grep inet" || :
 # The calls of the illumos client, to see what runat and ls -l ask.
 sudo tcpdump -i any -s 0 -w "$OUT/nfsacl-omnios.pcap" 'tcp port 2049' >/dev/null 2>&1 &
 sleep 2

@@ -162,8 +162,11 @@ fcntl.lockf(f,fcntl.LOCK_UN,10,0)"
 		t test "$(dreturns "$m")" -gt "$r0"
 		# The connection goes, and with it the backchannel, s2.10.13.1.2.
 		t sudo pkill -f '[s]sh -f -N .*2049:127.0.0.1:2049'
+		# The same forwards as the workflow's tunnel: without 2050 and
+		# 2051 the pNFS steps after this had no data servers.
 		t ssh -f -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 \
-		    -L 2049:127.0.0.1:2049 \
+		    -L 2049:127.0.0.1:2049 -L 2050:127.0.0.1:2050 \
+		    -L 2051:127.0.0.1:2051 \
 		    -R 40001:127.0.0.1:40001 -R 40002:127.0.0.1:40002 \
 		    -R 40003:127.0.0.1:40003 -R 40004:127.0.0.1:40004 \
 		    -R 40100:127.0.0.1:40100 netbsd

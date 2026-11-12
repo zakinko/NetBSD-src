@@ -24,7 +24,14 @@ sysctl -w 'vfs.nfsv4.ff_ds=tcp 127.0.0.1.8.2 /export/ffds'
 netstat -an -f inet | grep '\.2050 '"
 num() { vm "sysctl -n vfs.nfsv4.$1"; }
 g0=$(num layouts_given) f0=$(num ff_fences)
-cap=$(mktemp)
+# tcpdump was refused a mktemp file in /tmp ("Permission denied").  Either
+# of two rules would do that: fs.protected_regular, against root opening
+# with O_CREAT another user's file in a sticky directory, and the AppArmor
+# profile of tcpdump, which writes only names ending in .pcap; both are
+# printed, and neither applies to a new .pcap in a directory of our own.
+sysctl fs.protected_regular; sudo aa-status 2>/dev/null | grep tcpdump
+capd=$(mktemp -d)
+cap=$capd/lo.pcap
 sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2050' 2>"$cap.err" &
 tp=$!
 sleep 1
@@ -84,5 +91,5 @@ b=$(tcpdump -r "$cap" -nn -q 2>/dev/null | awk '{ n += $NF } END { print n + 0 }
 echo "bytes over port 2050 (the storage device): $b"
 [ "$b" -gt 4194304 ] && ok "I/O went to the storage device" ||
     no "I/O went to the storage device"
-rm -f "$src" "$src.2" "$src.3" "$cap"
+rm -f "$src" "$src.2" "$src.3"; rm -rf "$capd"
 vm "sysctl -w vfs.nfsv4.ff_ds="

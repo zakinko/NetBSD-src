@@ -18,7 +18,14 @@ sleep 1
 sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.3'
 netstat -an -f inet | grep '\.2051 '"
 command -v tcpdump || sudo apt-get install -y -q tcpdump 2>&1 | tail -2
-cap=$(mktemp)
+# tcpdump was refused a mktemp file in /tmp ("Permission denied").  Either
+# of two rules would do that: fs.protected_regular, against root opening
+# with O_CREAT another user's file in a sticky directory, and the AppArmor
+# profile of tcpdump, which writes only names ending in .pcap; both are
+# printed, and neither applies to a new .pcap in a directory of our own.
+sysctl fs.protected_regular; sudo aa-status 2>/dev/null | grep tcpdump
+capd=$(mktemp -d)
+cap=$capd/lo.pcap
 sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2049 or tcp port 2051' 2>"$cap.err" &
 tp=$!
 sleep 1
@@ -60,5 +67,5 @@ echo "bytes over 2049 (metadata server) $b49, over 2051 (data server) $b51"
 printf '%-6s %s\n' "$ok" "READ and WRITE went to the data server"
 [ "$b49" -lt 1048576 ] && ok=ok || ok=FAILED
 printf '%-6s %s\n' "$ok" "little went to the metadata server"
-rm -f "$cap"
+rm -rf "$capd"
 ssh -o LogLevel=ERROR netbsd "sysctl -w vfs.nfsv4.pnfs_ds=; dmesg | tail -5"

@@ -756,8 +756,12 @@ client_release(struct nfsv4_client *cl, struct nfsv4_reap *reap)
 
 	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
 		LIST_FOREACH(st, &sw->sw_states, st_olist) {
-			if (st->st_file != NULL)
-				nfsv4_state_unlink(st, reap, true);
+			if (st->st_file == NULL)
+				continue;
+			/* A layout taken away, not returned: fenced. */
+			if (st->st_type == NFSV4_ST_LAYOUT)
+				st->st_lfence = true;
+			nfsv4_state_unlink(st, reap, true);
 		}
 	}
 }
@@ -907,6 +911,23 @@ lease_thread(void *arg)
 				    time_uptime > cl->cl_expire +
 				    NFSV4_TOMB_TIME) {
 					client_free(cl);
+					again = true;
+					break;
+				}
+				/*
+				 * A client of 4.1 still marked expired, whose
+				 * lease ran out again: what it took since the
+				 * first time goes the same way (RFC 8881
+				 * s8.4.3).  Only the first time is it gone from
+				 * stable storage.
+				 */
+				if (cl->cl_expired &&
+				    nfsv4_client_has_lost(cl, true)) {
+					SLIST_INIT(&reap);
+					client_release(cl, &reap);
+					mutex_exit(&nfsv4_state_lock);
+					nfsv4_reap_finish(&reap);
+					mutex_enter(&nfsv4_state_lock);
 					again = true;
 					break;
 				}

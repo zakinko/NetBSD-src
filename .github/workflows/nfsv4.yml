@@ -23,6 +23,9 @@ on:
       quick:
         description: leave out the runs of all of pynfs
         default: 'false'
+      only:
+        description: run only these tests in the VM, as select.sh names them (pnfs pnfsff pnfsblk ...); empty for everything
+        default: ''
 # Two stages (2026-11-11).  A push builds, runs the unit tests and only
 # the tests in the VM that ci/nfsv4/select.sh picks from the files it
 # changed; a newer push cancels it.  workflow_dispatch runs everything,
@@ -45,6 +48,7 @@ jobs:
       - id: select
         run: |
           t=$(sh ci/nfsv4/select.sh "${{ github.event.before }}" HEAD)
+          if [ -n "${{ inputs.only }}" ]; then t=" ${{ inputs.only }} "; fi
           echo "tests=$t" >>"$GITHUB_OUTPUT"
           echo "tests in the VM:$t"
       # The kernel holds nothing of sys/fs/nfsv4, only the module does,
@@ -74,10 +78,10 @@ jobs:
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       # ZFS failing must not keep FFS and tmpfs from being measured.
       - continue-on-error: true
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       # The heavy stage, and a push that changes the script itself.
-      - if: github.event_name == 'workflow_dispatch' || contains(steps.select.outputs.tests, ' each ')
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(steps.select.outputs.tests, ' each ')
         run: sh ci/nfsv4/each-commit.sh "$PWD/nb"
       - run: |
           sudo apt-get install -y -q libtirpc-dev >/dev/null
@@ -119,20 +123,20 @@ jobs:
           copyback: false
           run: uname -a
       - name: ctime on the stock kernel, as the control
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
           ssh netbsd 'mkdir -p /var/tmp/nfsv4'
           scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
       - name: The ZFS userland, on the stock kernel
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         continue-on-error: true
         run: |
           scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
           ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - name: ctime on the kernel under test
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
@@ -150,7 +154,7 @@ jobs:
       - name: pynfs, and its INIT
         run: PYNFS_ARGS=INIT LIMIT=120 sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-init || true
       - name: Edges of COMMIT and READDIR
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' edge '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' edge '))
         run: |
           cp ci/nfsv4/edge.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
@@ -159,40 +163,40 @@ jobs:
             python3 ./edge.py "$e" || echo "edge $e: $?"
           done 2>&1 | tee "$OLDPWD/out/edge.txt"
       - name: REMOVE under DENY_WRITE in version 4.0, both ways
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' t40rm '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' t40rm '))
         run: |
           cp ci/nfsv4/t40rm.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
           timeout 120 python3 ./t40rm.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t40rm.txt" || true
       - name: The Linux client
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: The Linux client, version 4.1
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: The 4.1 suite, with the write delegations the client test turned off
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
           ssh netbsd 'sudo sysctl -w vfs.nfsv4.delegations=2 || sysctl -w vfs.nfsv4.delegations=2'
           SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs41
       - name: The 4.1 suite on ZFS
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         continue-on-error: true
         run: SUITE=nfs4.1 PYNFS_ARGS="--minorversion=1 all" sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs41-zfs
       - name: What the 4.1 suite does not run
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
           cp ci/nfsv4/t41.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./t41.py /export/pynfs 2>&1 | tee "$OLDPWD/out/t41.txt" || true
       - name: What the reading of RFC 8881 found
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' t41b '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' t41b '))
         run: |
           cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 600 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
       - name: pNFS, the file layout, RFC 8881 s12 and s13
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfs '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' pnfs '))
         timeout-minutes: 15
         continue-on-error: true
         run: |
@@ -205,7 +209,7 @@ jobs:
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./ds-role.py /export/pynfs 2>&1 | tee -a "$OLDPWD/out/pnfs.txt" || true
       - name: pNFS, the flexible file layout, RFC 8435
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsff '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' pnfsff '))
         timeout-minutes: 20
         continue-on-error: true
         run: |
@@ -221,12 +225,12 @@ jobs:
           done
           ssh netbsd "ls -l /export/ffds"
       - name: pNFS, the block layout, RFC 5663, over iSCSI
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsblk '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' pnfsblk '))
         timeout-minutes: 15
         continue-on-error: true
         run: timeout 600 sh ci/nfsv4/pnfs-blk.sh 2>&1 | tee out/pnfs-blk.txt || true
       - name: The block layout from the server's side, and fsck_ffs
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsblk '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' pnfsblk '))
         timeout-minutes: 20
         continue-on-error: true
         run: |
@@ -234,36 +238,36 @@ jobs:
           cd "$HOME/pynfs/nfs4.1"
           timeout 1000 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true
       - name: Whether the block layout, RFC 5663, can be measured (iSCSI)
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' iscsi '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' iscsi '))
         run: timeout 400 sh ci/nfsv4/iscsi-probe.sh 2>&1 | tee out/iscsi-probe.txt || true
       - name: Retention, RFC 8881 s5.13, where extended attributes are
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' retention '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' retention '))
         run: |
           cp ci/nfsv4/retention.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./retention.py /export/acl 2>&1 | tee "$OLDPWD/out/retention.txt" || true
       - name: dacl, RFC 8881 s6.2.2, where ACLs and extended attributes are
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' dacl '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' dacl '))
         run: |
           cp ci/nfsv4/dacl.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./dacl.py /export/acl 2>&1 | tee "$OLDPWD/out/dacl.txt" || true
-      - if: github.event_name == 'workflow_dispatch' && inputs.quick != 'true'
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
-        if: github.event_name == 'workflow_dispatch' && inputs.quick == 'true'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick == 'true'
         run: ssh netbsd 'rm -rf /export/pynfs/tree'
       - name: Delegations, which are not in all
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh delegations writedelegations" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-deleg
       - name: Restarts, which are not in all
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: PYNFS_ARGS="--serverhelper=$PWD/ci/nfsv4/pynfs-helper.sh reboot" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-reboot
       - name: Referrals
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' fsloc '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' fsloc '))
         run: PYNFS_ARGS='--usespecial=/export/ref/there fslocations' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-fsloc
       - name: Owners
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' owner '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' owner '))
         run: |
           cp ci/nfsv4/owner.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
@@ -271,13 +275,13 @@ jobs:
           python3 ./owner.py /export/pynfs 2>&1 | tee "$OLDPWD/out/owner.txt" || true
           ssh netbsd "sysctl -w vfs.nfsv4.domain=; sysctl -w vfs.nfsv4.idmap=clear"
       - name: Inheritance on a create with no attributes
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' aclcreate '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' aclcreate '))
         run: |
           cp ci/nfsv4/aclcreate.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
           python3 ./aclcreate.py /export/acl 2>&1 | tee "$OLDPWD/out/aclcreate.txt" || true
       - name: The rest of the options
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
           cp ci/nfsv4/more.py "$HOME/pynfs/nfs4.0/"
           o="$PWD/out"; c="$PWD/ci/nfsv4"
@@ -290,20 +294,20 @@ jobs:
             python3 ./more.py moved /export/mig
           } 2>&1 | tee "$o/more.txt" || true
       - name: CB_GETATTR, 4.0 and 4.1
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' cbgetattr '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' cbgetattr '))
         run: |
           cp ci/nfsv4/more.py "$HOME/pynfs/nfs4.0/"
           c="$PWD/ci/nfsv4"
           cd "$HOME/pynfs/nfs4.0"
           { sh "$c/cbgetattr.sh"; VERS=4.1 sh "$c/cbgetattr.sh"; } 2>&1 | tee "$OLDPWD/out/cbgetattr.txt" || true
       - name: Errors made on purpose (vfs.nfsv4.fault_*)
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' fault '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' fault '))
         run: |
           cp ci/nfsv4/fault.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
           timeout 120 python3 ./fault.py /export/pynfs 2>&1 | tee "$OLDPWD/out/fault.txt" || true
       - name: Named attributes and fs_locations
-        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' named '))
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' named '))
         run: |
           cp ci/nfsv4/named-attr.py "$HOME/pynfs/nfs4.0/"
           cd "$HOME/pynfs/nfs4.0"
@@ -311,11 +315,11 @@ jobs:
             echo "=== $e"
             python3 ./named-attr.py "$e" ssh netbsd getextattr user one || echo "named-attr $e: $?"
           done 2>&1 | tee "$OLDPWD/out/named-attr.txt"
-      - if: github.event_name == 'workflow_dispatch' && inputs.quick != 'true'
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs-tmpfs
-      - if: github.event_name == 'workflow_dispatch' && inputs.quick != 'true'
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs-acl
-      - if: github.event_name == 'workflow_dispatch' && inputs.quick != 'true'
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick != 'true'
         continue-on-error: true
         run: sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs-zfs
       - name: What the kernel said
@@ -336,7 +340,7 @@ jobs:
           python3 ci/nfsv4/pynfs-summary.py out/pynfs-zfs.json out/pynfs-zfs.log | tee -a "$GITHUB_STEP_SUMMARY" out/summary.txt || true
       # Last, for the runs after it to be measured all the same.
       - name: The Linux client must have had no failures
-        if: github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: |
           grep -H '^failures:' out/linux-client-*.txt
           ! grep -q '^failures: [1-9]' out/linux-client-*.txt

@@ -26,7 +26,7 @@ done
 # DTrace, for tests that count what the kernel does (blk.py); its
 # failing to build leaves the rest standing.
 for d in sys/modules/solaris sys/modules/cyclic sys/modules/dtrace/dtrace \
-    sys/modules/dtrace/fbt; do
+    sys/modules/dtrace/fbt sys/modules/dtrace/sdt sys/modules/dtrace/profile; do
 	m=${d##*/}
 	(cd "$d" && "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
 	    "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) \

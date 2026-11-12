@@ -147,9 +147,13 @@ try:
         # RFC 5663 errata 4139: LAYOUTCOMMIT puts the device's volatile
         # write cache to stable storage.  Counted by DTrace: DIOCCACHESYNC
         # (_IOW('d', 118, int)) reaching vndioctl() of the volume's vnd.
-        dt = vm("cd /var/tmp/nfsv4/modules 2>/dev/null && for m in solaris "
-                "cyclic dtrace dtrace_fbt; do modstat $m >/dev/null 2>&1 || "
-                "modload ./$m.kmod; done; ls -l /usr/sbin/dtrace /dev/dtrace; "
+        # dtrace(1) needs dtrace_sdt to open the device (run 43287083599:
+        # "DTrace device not available", dtrace_sdt not found), and
+        # tick- probes dtrace_profile.
+        dt = vm("cd /var/tmp/nfsv4/modules && ls; for m in solaris cyclic "
+                "dtrace dtrace_sdt dtrace_profile dtrace_fbt; do modstat $m "
+                ">/dev/null 2>&1 || modload ./$m.kmod; done; "
+                "modstat | grep -E 'dtrace|solaris|cyclic'; "
                 "rm -f /var/tmp/blkt/dt.out; nohup /usr/sbin/dtrace -q -n "
                 "'fbt::vndioctl:entry /arg1 == 0x80046476/ { n++; } "
                 "tick-15s { printf(\"cachesync %d\\n\", n); exit(0); }' "

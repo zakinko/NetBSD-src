@@ -86,7 +86,8 @@ static volatile u_int deleg_count;
 /*
  * A local process wants to do what, see vn_lease_break().  It waits for
  * the end of the recall, which is bounded, s10.4.6.  Unlike a client it
- * has no NFS4ERR_DELAY to be told.
+ * has no NFS4ERR_DELAY to be told.  A truncation waits for the block
+ * layouts of the file too (RFC 5663 s2.3.8, nfsv4_layout.c).
  */
 static void
 deleg_lease_hook(struct vnode *vp, u_int what)
@@ -95,6 +96,9 @@ deleg_lease_hook(struct vnode *vp, u_int what)
 	CTASSERT(VN_LEASE_READ == NFSV4_DC_READ);
 	CTASSERT(VN_LEASE_WRITE == NFSV4_DC_WRITE);
 
+	if ((what & VN_LEASE_TRUNC) != 0)
+		nfsv4_layout_blk_wait(vp);
+	what &= VN_LEASE_READ | VN_LEASE_WRITE;
 	if (atomic_load_relaxed(&deleg_count) == 0)
 		return;
 	mutex_enter(&nfsv4_state_lock);

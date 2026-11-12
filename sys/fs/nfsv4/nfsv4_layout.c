@@ -704,6 +704,33 @@ nfsv4_blk_reap(bool all)
 }
 
 /*
+ * Whether vp's blocks are not to be freed now: a block layout of it is
+ * held, and is recalled, or it is fenced.
+ */
+static bool
+blk_busy(struct vnode *vp)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	bool busy;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	busy = blk_fenced(vp);
+	if ((f = nfsv4_file_find(vp)) == NULL)
+		return busy;
+	LIST_FOREACH(st, &f->f_states, st_flist) {
+		if (st->st_type == NFSV4_ST_LAYOUT &&
+		    st->st_ltype == LAYOUT4_BLOCK_VOLUME &&
+		    st->st_file != NULL) {
+			layout_recall(st);
+			busy = true;
+		}
+	}
+	return busy;
+}
+
+/*
  * SETATTR of a size below vp's: the blocks past it would be freed, so
  * not while a block layout of vp is held, which is recalled, s12.5.5, nor
  * while vp is fenced, s2.3.8.  NFS4ERR_DELAY until then.
@@ -711,26 +738,32 @@ nfsv4_blk_reap(bool all)
 uint32_t
 nfsv4_layout_blk_truncate(struct vnode *vp, uint64_t size)
 {
-	struct nfsv4_file *f;
-	struct nfsv4_state *st;
-	uint32_t status = NFS4_OK;
+	uint32_t status;
 
 	if (size >= (uint64_t)vp->v_size)
 		return NFS4_OK;
 	mutex_enter(&nfsv4_state_lock);
-	if (blk_fenced(vp))
-		status = NFS4ERR_DELAY;
-	if ((f = nfsv4_file_find(vp)) != NULL) {
-		LIST_FOREACH(st, &f->f_states, st_flist) {
-			if (st->st_type == NFSV4_ST_LAYOUT &&
-			    st->st_ltype == LAYOUT4_BLOCK_VOLUME) {
-				layout_recall(st);
-				status = NFS4ERR_DELAY;
-			}
-		}
-	}
+	status = blk_busy(vp) ? NFS4ERR_DELAY : NFS4_OK;
 	mutex_exit(&nfsv4_state_lock);
 	return status;
+}
+
+/*
+ * A truncation that is not this server's (a local process, NFSv3, see
+ * vn_lease_break()) waits as SETATTR is told to, above.  Bounded: a
+ * layout not returned is let go after a lease, and its fence ends.
+ */
+void
+nfsv4_layout_blk_wait(struct vnode *vp)
+{
+
+	if (atomic_load_relaxed(&layout_count) == 0 &&
+	    atomic_load_relaxed(&nfsv4_blk_fences) == 0)
+		return;
+	mutex_enter(&nfsv4_state_lock);
+	while (blk_busy(vp))
+		(void)cv_timedwait(&nfsv4_state_cv, &nfsv4_state_lock, hz);
+	mutex_exit(&nfsv4_state_lock);
 }
 
 /*

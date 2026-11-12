@@ -127,11 +127,14 @@ nfsrv_lease_fh(nfsrvfh_t *nsfh, u_int what, kauth_cred_t cred,
 	vrele(vp);
 }
 
-/* The same for the name of len bytes at md and dpos, which stay put. */
+/*
+ * The same for the name of len bytes at md and dpos, which stay put, as
+ * what.  CREATE may truncate what is there; its size is not yet known.
+ */
 static void
-nfsrv_lease_name(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md, char *dpos,
-    kauth_cred_t cred, struct nfssvc_sock *slp, struct mbuf *nam,
-    struct lwp *l, int kerbflag)
+nfsrv_lease_name_what(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md,
+    char *dpos, kauth_cred_t cred, struct nfssvc_sock *slp, struct mbuf *nam,
+    struct lwp *l, int kerbflag, u_int what)
 {
 	struct nameidata nd;
 	struct vnode *dirp;
@@ -143,7 +146,7 @@ nfsrv_lease_name(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md, char *dpos,
 	nd.ni_cnd.cn_flags = 0;
 	if (nfs_namei(&nd, nsfh, len, slp, nam, &md, &dpos, &dirp, NULL, NULL,
 	    l, kerbflag, false) == 0) {
-		vn_lease_break(nd.ni_vp, VN_LEASE_WRITE);
+		vn_lease_break(nd.ni_vp, what);
 		vrele(nd.ni_vp);
 		pathbuf_destroy(nd.ni_pathbuf);
 	}
@@ -151,6 +154,16 @@ nfsrv_lease_name(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md, char *dpos,
 		vn_lease_break(dirp, VN_LEASE_WRITE);	/* s10.9 */
 		vrele(dirp);
 	}
+}
+
+static void
+nfsrv_lease_name(nfsrvfh_t *nsfh, uint32_t len, struct mbuf *md, char *dpos,
+    kauth_cred_t cred, struct nfssvc_sock *slp, struct mbuf *nam,
+    struct lwp *l, int kerbflag)
+{
+
+	nfsrv_lease_name_what(nsfh, len, md, dpos, cred, slp, nam, l, kerbflag,
+	    VN_LEASE_WRITE);
 }
 
 static const struct syscall_package nfsserver_syscalls[] = {
@@ -380,7 +393,8 @@ nfsrv_setattr(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *
 	/*
 	 * Now that we have all the fields, lets do it.
 	 */
-	nfsrv_lease_fh(&nsfh, VN_LEASE_WRITE, cred, slp, nam,
+	nfsrv_lease_fh(&nsfh, VN_LEASE_WRITE |
+	    (va.va_size != VNOVAL ? VN_LEASE_TRUNC : 0), cred, slp, nam,
 	    (nfsd->nd_flag & ND_KERBAUTH));
 	error = nfsrv_fhtovp(&nsfh, 1, &vp, cred, slp, nam, &rdonly,
 	    (nfsd->nd_flag & ND_KERBAUTH), false);
@@ -1502,8 +1516,8 @@ nfsrv_create(struct nfsrv_descript *nfsd, struct nfssvc_sock *slp, struct lwp *l
 	nd.ni_cnd.cn_nameiop = 0;
 	nfsm_srvmtofh(&nsfh);
 	nfsm_srvnamesiz(len);
-	nfsrv_lease_name(&nsfh, len, md, dpos, cred, slp, nam, lwp,
-	    (nfsd->nd_flag & ND_KERBAUTH));
+	nfsrv_lease_name_what(&nsfh, len, md, dpos, cred, slp, nam, lwp,
+	    (nfsd->nd_flag & ND_KERBAUTH), VN_LEASE_WRITE | VN_LEASE_TRUNC);
 	nd.ni_cnd.cn_cred = cred;
 	nd.ni_cnd.cn_nameiop = CREATE;
 	nd.ni_cnd.cn_flags = LOCKPARENT | LOCKLEAF;

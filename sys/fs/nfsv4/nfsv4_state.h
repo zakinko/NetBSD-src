@@ -438,6 +438,7 @@ uint32_t nfsv4_layout_ff_conflict(struct vnode *);
 void	nfsv4_blk_reap(bool);
 uint32_t nfsv4_layout_blkhint(struct nfsv4_client *, uint64_t);
 uint32_t nfsv4_layout_blk_truncate(struct vnode *, uint64_t);
+void	nfsv4_layout_blk_wait(struct vnode *);
 bool	nfsv4_layout_held(const struct nfsv4_client *, struct vnode *, bool);
 
 /* These do not. */

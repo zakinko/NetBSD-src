@@ -379,8 +379,9 @@ vn_open(struct vnode *at_dvp, struct pathbuf *pb,
 
 	if (vn_lease_active()) {
 		VOP_UNLOCK(vp);
-		vn_lease_break(vp, (fmode & (FWRITE | O_TRUNC)) != 0 ?
-		    VN_LEASE_WRITE : VN_LEASE_READ);
+		vn_lease_break(vp, ((fmode & (FWRITE | O_TRUNC)) != 0 ?
+		    VN_LEASE_WRITE : VN_LEASE_READ) |
+		    ((fmode & O_TRUNC) != 0 ? VN_LEASE_TRUNC : 0));
 		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	}
 

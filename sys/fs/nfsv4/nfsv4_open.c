@@ -704,6 +704,10 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		st = nfsv4_deleg_break(vp, sw->sw_client, 0, NFSV4_DC_WRITE);
 		if (st != NFS4_OK)
 			goto bad;
+		/* RFC 5663 s2.3.8: as SETATTR of a smaller size. */
+		st = nfsv4_layout_blk_truncate(vp, 0);
+		if (st != NFS4_OK)
+			goto bad;
 	}
 	st = open_share(sw, vp, NULL, oa->share_access, oa->share_deny, spare,
 	    sparef, &si, &fc,

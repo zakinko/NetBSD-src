@@ -4226,7 +4226,7 @@ sys_truncate(struct lwp *l, const struct sys_truncate_args *uap,
 	    NSM_FOLLOW_TRYEMULROOT, &vp);
 	if (error != 0)
 		return (error);
-	vn_lease_break(vp, VN_LEASE_WRITE);
+	vn_lease_break(vp, VN_LEASE_WRITE | VN_LEASE_TRUNC);
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	if (vp->v_type == VDIR)
 		error = SET_ERROR(EISDIR);
@@ -4263,7 +4263,8 @@ sys_ftruncate(struct lwp *l, const struct sys_ftruncate_args *uap,
 		error = SET_ERROR(EOPNOTSUPP);
 	else {
 		if (fp->f_type == DTYPE_VNODE)
-			vn_lease_break(fp->f_vnode, VN_LEASE_WRITE);
+			vn_lease_break(fp->f_vnode,
+			    VN_LEASE_WRITE | VN_LEASE_TRUNC);
 		error = (*fp->f_ops->fo_truncate)(fp, SCARG(uap, length));
 	}
 

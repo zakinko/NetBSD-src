@@ -294,6 +294,50 @@ try:
     s4.compound([op.putfh(fh6), op.layoutreturn(False, BLK,
         LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
         layoutreturn_file4(0, ANY, lsid6, b"")))])
+
+    # s2.3.8, RFC 8881 s8.4.3: a layout given after the client's lease ran
+    # out and returned is not fenced; only what the lease took away is.
+    s6 = c.new_pnfs_client_session(stamp + b"g")
+    fh7, osid7 = newfile(s6, b"late0")
+    t("s2.3.8 hint of 30 s, the late client", hint(s6, fh7, osid7, 30),
+      NFS4_OK)
+    print("waiting for the lease of the late client to run out")
+    sys.stdout.flush()
+    time.sleep(115)
+    s6.compound([])
+    fh8, osid8 = newfile(s6, b"late")
+    res = lget(s6, fh8, osid8, LAYOUTIOMODE4_RW, 0, 65536, 4096)
+    t("LAYOUTGET after the lease ran out", res.status, NFS4_OK)
+    if res.status == NFS4_OK:
+        lsid8 = res.resarray[-1].logr_stateid
+        f0 = vm("sysctl -n vfs.nfsv4.blk_fences")
+        res = s6.compound([op.putfh(fh8), op.layoutreturn(False, BLK,
+            LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
+            layoutreturn_file4(0, ANY, lsid8, b"")))])
+        t("its LAYOUTRETURN", res.status, NFS4_OK)
+        t("s2.3.8 returned after the lease ran out: not fenced",
+          vm("sysctl -n vfs.nfsv4.blk_fences"), f0)
+        res = s6.compound([op.putfh(fh8), op.setattr(osid8,
+            {FATTR4_SIZE: 0})])
+        t("s2.3.8 its blocks free at once (SETATTR of size 0)",
+          res.status, NFS4_OK)
+        s7 = c.new_pnfs_client_session(stamp + b"h")
+        res = s7.compound([op.putfh(fh8), op.open(0,
+            OPEN4_SHARE_ACCESS_BOTH, OPEN4_SHARE_DENY_NONE,
+            open_owner4(0, b"h"), openflag4(OPEN4_NOCREATE),
+            open_claim4(CLAIM_FH))])
+        if res.status == NFS4_OK:
+            osid9 = res.resarray[-1].stateid
+            hint(s7, fh8, osid9, 30)
+            res = lget(s7, fh8, osid9, LAYOUTIOMODE4_RW, 0, 65536, 4096)
+            t("s2.3.8 another client's layout of it at once", res.status,
+              NFS4_OK)
+            if res.status == NFS4_OK:
+                s7.compound([op.putfh(fh8), op.layoutreturn(False, BLK,
+                    LAYOUTIOMODE4_ANY, layoutreturn4(LAYOUTRETURN4_FILE,
+                    layoutreturn_file4(0, ANY,
+                    res.resarray[-1].logr_stateid, b"")))])
+            opened.append((s7, fh8, osid9))
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")

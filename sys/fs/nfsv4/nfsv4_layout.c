@@ -231,6 +231,7 @@ struct blk_fence {
 	time_t		bf_until;
 	bool		bf_fence;
 	bool		bf_rw;		/* a layout for writing was given */
+	bool		bf_late;	/* given after its client's lease ran out */
 };
 static LIST_HEAD(, blk_fence) blk_fences = LIST_HEAD_INITIALIZER(blk_fences);
 int nfsv4_blk_fences;			/* vfs.nfsv4.blk_fences, held now */
@@ -1174,7 +1175,13 @@ blk_gone(struct nfsv4_state *st)
 	st->st_lblk = NULL;
 	if (bf == NULL)
 		return;
-	bf->bf_fence = st->st_lfence || cl->cl_expired || cl->cl_retired;
+	/*
+	 * cl_expired stays until the client has freed what its lease took
+	 * (RFC 8881 s8.4.3); a layout given after that, and returned, was
+	 * never let go.
+	 */
+	bf->bf_fence = st->st_lfence || cl->cl_retired ||
+	    (cl->cl_expired && !bf->bf_late);
 	if (st->st_file == NULL || (!bf->bf_fence && !bf->bf_rw)) {
 		kmem_free(bf, sizeof(*bf));
 		return;
@@ -1977,6 +1984,8 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = nfsv4_state_add(&sst, sw, &sf, vp, NFSV4_ST_LAYOUT);
 		st->st_ltype = la->type;
 		st->st_lgen = dev_of(la->type, false)->d_gen;
+		if (bf != NULL)
+			bf->bf_late = c->c_client->cl_expired;
 		st->st_lblk = bf;		/* blk_gone() */
 		bf = NULL;
 		dev_of(la->type, false)->d_refs++;

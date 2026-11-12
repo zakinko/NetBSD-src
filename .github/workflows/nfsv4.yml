@@ -204,7 +204,14 @@ jobs:
           timeout 400 sh ci/nfsv4/pnfs-ff.sh 2>&1 | tee out/pnfs-ff.txt || true
           ssh netbsd "sysctl -w 'vfs.nfsv4.ff_ds=tcp 127.0.0.1.8.2 /export/ffds'"
           SUITE=nfs4.1 LIMIT=300 PYNFS_ARGS="--minorversion=1 flex" sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-flex || true
-          ssh netbsd "sysctl -w vfs.nfsv4.ff_ds=; ls -l /export/ffds"
+          # Layouts pynfs left are recalled by the change, which is EBUSY
+          # until they are returned or, after a lease (90 s, NFSV4_LEASE),
+          # revoked; so ask again for up to two leases.
+          for i in $(seq 18); do
+            ssh netbsd "sysctl -w vfs.nfsv4.ff_ds=" && break
+            sleep 10
+          done
+          ssh netbsd "ls -l /export/ffds"
       - name: Whether the block layout, RFC 5663, can be measured (iSCSI)
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' iscsi '))
         run: timeout 400 sh ci/nfsv4/iscsi-probe.sh 2>&1 | tee out/iscsi-probe.txt || true
@@ -330,6 +337,7 @@ jobs:
             out/cbgetattr.txt
             out/fault.txt
             out/pnfs.txt
+            out/pnfs-linux.pcap
             out/pnfs-ff.txt
             out/iscsi-probe.txt
             out/named-attr.txt

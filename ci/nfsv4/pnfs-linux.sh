@@ -18,6 +18,10 @@ sleep 1
 sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.3'
 netstat -an -f inet | grep '\.2051 '"
 command -v tcpdump || sudo apt-get install -y -q tcpdump 2>&1 | tail -2
+command -v tshark || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q tshark 2>&1 | tail -2
+# The client's own account of the layouts: filelayout and pnfs messages.
+sudo rpcdebug -m nfs -s pnfs 2>/dev/null
+sudo dmesg -C
 # tcpdump was refused a mktemp file in /tmp ("Permission denied").  Either
 # of two rules would do that: fs.protected_regular, against root opening
 # with O_CREAT another user's file in a sticky directory, and the AppArmor
@@ -53,6 +57,9 @@ echo "LAYOUTGET alone $lg GETDEVICEINFO $di layouts given $g0 -> $g1"
 sudo rm -f "$f"
 rm -f "$src"
 sudo umount "$m"
+sudo rpcdebug -m nfs -c pnfs 2>/dev/null
+echo "--- client dmesg (pnfs)"
+sudo dmesg | grep -v 'NFS reply\|NFS call ' | tail -60
 sudo kill "$tp"
 wait "$tp" 2>/dev/null
 cat "$cap.err"; ls -l "$cap"
@@ -67,5 +74,21 @@ echo "bytes over 2049 (metadata server) $b49, over 2051 (data server) $b51"
 printf '%-6s %s\n' "$ok" "READ and WRITE went to the data server"
 [ "$b49" -lt 1048576 ] && ok=ok || ok=FAILED
 printf '%-6s %s\n' "$ok" "little went to the metadata server"
+# What went over each port, decoded: the operations, the EXCHANGE_ID
+# replies (flags, client ID, server owner) and GETDEVICEINFO's address.
+ts() { tshark -r "$cap" -d tcp.port==2049,rpc -d tcp.port==2051,rpc "$@" 2>/dev/null; }
+echo "--- operations by port (src dst type ops)"
+ts -Y nfs -T fields -e tcp.srcport -e tcp.dstport -e rpc.msgtyp \
+    -e nfs.opcode | sed 's/^2049\t[0-9]*/from 2049/; s/^[0-9]*\t2049/to 2049/;
+    s/^2051\t[0-9]*/from 2051/; s/^[0-9]*\t2051/to 2051/' | sort | uniq -c |
+    sort -rn | head -40
+echo "--- EXCHANGE_ID and CREATE_SESSION replies"
+ts -Y 'rpc.msgtyp == 1 && (nfs.opcode == 42 || nfs.opcode == 43)' -V |
+    grep -E 'Src Port|Dst Port|Opcode|[Ff]lags|clientid|major|minor_id|scope|Status' |
+    head -80
+echo "--- GETDEVICEINFO replies"
+ts -Y 'rpc.msgtyp == 1 && nfs.opcode == 47' -V |
+    sed -n '/GETDEVICEINFO/,/^$/p' | head -60
+mkdir -p out && cp "$cap" out/pnfs-linux.pcap
 rm -rf "$capd"
 ssh -o LogLevel=ERROR netbsd "sysctl -w vfs.nfsv4.pnfs_ds=; dmesg | tail -5"

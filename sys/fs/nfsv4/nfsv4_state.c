@@ -705,7 +705,12 @@ nfsv4_stateid_check(const struct nfsv4_stateid *si,
 		return NFS4ERR_BAD_STATEID;
 	if (st->st_revoked)
 		return NFS4ERR_DELEG_REVOKED;
-	if (cl->cl_expired || st->st_file == NULL)
+	/*
+	 * RFC 8881 s8.4.3: of 4.1, what the lease took away is EXPIRED, not
+	 * what was opened or locked after it.  Of 4.0, every stateid of an
+	 * expired client, as before; nfsv4_client_get() refuses it anyway.
+	 */
+	if ((cl->cl_expired && cl->cl_minor == 0) || st->st_file == NULL)
 		return NFS4ERR_EXPIRED;
 	if (st->st_file->f_vp != vp)
 		return NFS4ERR_BAD_STATEID;

@@ -1779,6 +1779,15 @@ blk_commit(struct vnode *vp, uint64_t size, kauth_cred_t cred, bool *changed)
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		error = UFS_UPDATE(vp, NULL, NULL, UPDATE_WAIT);
 	}
+	/*
+	 * The errata 4139 of RFC 5663 (Verified): what the client wrote may
+	 * be in the device's volatile write cache, which is to be on stable
+	 * storage before LAYOUTCOMMIT returns.  FSYNC_CACHE is how fsync(2)
+	 * with FDISKSYNC asks it of FFS, which then sends DIOCCACHESYNC to
+	 * the device (ffs_fsync()).
+	 */
+	if (error == 0)
+		error = VOP_FSYNC(vp, cred, FSYNC_WAIT | FSYNC_CACHE, 0, 0);
 	fstrans_done(mp);
 	return error;
 }

@@ -237,6 +237,14 @@ jobs:
           cp ci/nfsv4/blk.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 1500 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true
+      - name: Errata of RFC 5661 that RFC 8881 did not take in
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' errata41 '))
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          cp ci/nfsv4/errata41.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 120 python3 ./errata41.py /export/pynfs /export/acl 2>&1 | tee "$OLDPWD/out/errata41.txt" || true
       - name: A client of 4.1 whose lease runs out, by pynfs
         if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' expire41 '))
         timeout-minutes: 15
@@ -382,6 +390,7 @@ jobs:
             out/pnfs-blk.pcap
             out/lease-expire.txt
             out/expire41.txt
+            out/errata41.txt
             out/lease-expire.pcap
             out/named-attr.txt
             out/edge.txt

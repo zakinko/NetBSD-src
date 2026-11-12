@@ -23,8 +23,8 @@ for f in $(git diff --name-only "$base" "$head"); do
 	sys/fs/nfsv4/nfsv4_idmap.c)	add owner;;
 	sys/fs/nfsv4/nfsv4_state.c)	add fault pnfs pnfsff pnfsblk t41b leaseexp expire41;;
 	sys/fs/nfsv4/nfsv4_layout.c|sys/fs/nfsv4/nfsv4_session.c)
-					add pnfs pnfsff pnfsblk t41b leaseexp expire41;;
-	sys/fs/nfsv4/nfsv4_xattr.c)	add named retention;;
+					add pnfs pnfsff pnfsblk t41b leaseexp expire41 errata41;;
+	sys/fs/nfsv4/nfsv4_xattr.c)	add named retention errata41;;
 	sys/fs/nfsv4/nfsv4_cb.c|sys/fs/nfsv4/nfsv4_deleg.c)
 					add cbgetattr pnfs pnfsff t41b t40rm;;
 	sys/fs/nfsv4/nfsv4_ops.c)	add edge t41b;;
@@ -45,6 +45,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 					add pnfs;;
 	ci/nfsv4/lease-expire.sh|ci/nfsv4/rpcs.py)	add leaseexp;;
 	ci/nfsv4/expire41.py)		add expire41;;
+	ci/nfsv4/errata41.py)		add errata41;;
 	ci/nfsv4/pnfs-blk.sh|ci/nfsv4/blk.py|external/bsd/iscsi/*)
 					add pnfsblk;;
 	ci/nfsv4/pnfs-ff.sh|ci/nfsv4/nfs3tcp.c)	add pnfsff;;

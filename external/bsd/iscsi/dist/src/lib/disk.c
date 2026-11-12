@@ -147,6 +147,16 @@ enum {
 
 #define MB(x)	((x) * 1024 * 1024)
 
+/*
+ * The most one READ or WRITE moves.  The buffer is the command's whole
+ * transfer, which for a WRITE target_transfer_data() fills from the
+ * immediate data and the Data-Out PDUs its R2Ts ask for (RFC 7143
+ * 4.2.5.2).  It was 1 MB, below what an initiator sends unasked: the
+ * iSCSI driver of Linux allows 0xffff sectors, and its 2 MB WRITEs were
+ * refused with CHECK CONDITION before their immediate data was read.
+ */
+#define DISK_MAX_XFER	MB(32)
+
 /* this struct describes an iscsi LUN */
 typedef struct iscsi_disk_t {
 	int		 type;		/* type of disk - fs/mmap and fs */
@@ -1429,14 +1439,17 @@ disk_write(target_session_t *sess, iscsi_scsi_cmd_args_t *args, uint8_t lun,
 		" bytes from socket into device at byte offset %" PRIu64 "\n",
 		bytec, byte_offset);
 
-	if ((unsigned) bytec > MB(1)) {
-		iscsi_err(__FILE__, __LINE__, "bytec > %" PRIu64 "m\n", bytec);
+	if (bytec == 0 || bytec > DISK_MAX_XFER) {
+		iscsi_err(__FILE__, __LINE__, "bytec %" PRIu64 "\n", bytec);
 		NO_CLEANUP;
 		return -1;
 	}
 
 	/* Assign ptr for write data */
-	ptr = malloc(MB(1));
+	if ((ptr = malloc((size_t)bytec)) == NULL) {
+		iscsi_err(__FILE__, __LINE__, "malloc failed\n");
+		return -1;
+	}
 
 	/* Have target do data transfer */
 	sg.iov_base = ptr;
@@ -1512,12 +1525,15 @@ disk_read(target_session_t *sess, iscsi_scsi_cmd_args_t *args, uint64_t lba,
 			disks.v[sess->d].blockc - 1, lba, len);
 		return -1;
 	}
-	if ((unsigned) bytec > MB(1)) {
-		iscsi_err(__FILE__, __LINE__, "bytec > %" PRIu64 "\n", bytec);
+	if (bytec > DISK_MAX_XFER) {
+		iscsi_err(__FILE__, __LINE__, "bytec %" PRIu64 "\n", bytec);
 		NO_CLEANUP;
 		return -1;
 	}
-	ptr = malloc(MB(1));
+	if ((ptr = malloc((size_t)bytec)) == NULL) {
+		iscsi_err(__FILE__, __LINE__, "malloc failed\n");
+		return -1;
+	}
 	n = 0;
 	do {
 		if (de_lseek(&disks.v[sess->d].lunv->v[lun].de,

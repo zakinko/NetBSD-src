@@ -30,11 +30,14 @@ ANY = 0xffffffffffffffff
 recalls = []
 # pynfs's own handler sends LAYOUTRETURN before it answers (run
 # 43076329181); this one only answers, so that the conflicts of
-# s12.5.5.2.1.3 can be seen before the return.
-def spy(self, arg, env):
+# s12.5.5.2.1.3 can be seen before the return.  pynfs's encode_status
+# takes the type of the reply from the caller's name, so each of these
+# is named op_cb_<operation>; named otherwise they answered
+# NFS4ERR_SERVERFAULT (run 43132086169).
+def op_cb_layoutrecall(self, arg, env):
     recalls.append(arg)
     return nfs4client.encode_status(NFS4_OK)
-nfs4client.NFS4Client.op_cb_layoutrecall = spy
+nfs4client.NFS4Client.op_cb_layoutrecall = op_cb_layoutrecall
 seqs = []
 cb_sequence = nfs4client.NFS4Client.op_cb_sequence
 def seqspy(self, arg, env):
@@ -42,20 +45,20 @@ def seqspy(self, arg, env):
     return cb_sequence(self, arg, env)
 nfs4client.NFS4Client.op_cb_sequence = seqspy
 devnotes = []
-def devspy(self, arg, env):
+def op_cb_notify_deviceid(self, arg, env):
     devnotes.append(arg)
     return nfs4client.encode_status(NFS4_OK)
-nfs4client.NFS4Client.op_cb_notify_deviceid = devspy
+nfs4client.NFS4Client.op_cb_notify_deviceid = op_cb_notify_deviceid
 rcas = []
-def rcaspy(self, arg, env):
+def op_cb_recall_any(self, arg, env):
     rcas.append(arg)
     return nfs4client.encode_status(NFS4_OK)
-nfs4client.NFS4Client.op_cb_recall_any = rcaspy
+nfs4client.NFS4Client.op_cb_recall_any = op_cb_recall_any
 avails = []
-def availspy(self, arg, env):
+def op_cb_recallable_obj_avail(self, arg, env):
     avails.append(arg)
     return nfs4client.encode_status(NFS4_OK)
-nfs4client.NFS4Client.op_cb_recallable_obj_avail = availspy
+nfs4client.NFS4Client.op_cb_recallable_obj_avail = op_cb_recallable_obj_avail
 def wait(l, n=10):
     for i in range(n):
         if l:
@@ -264,8 +267,10 @@ try:
     ref = [a for a in seqs if a.csa_referring_call_lists]
     t("s2.10.6.3 CB_LAYOUTRECALL refers to the LAYOUTGET", len(ref) > 0,
       True)
+    # s18.40.3: the last bitmap asked for is the one used, and an empty
+    # one turns the notifications off, so ask for DELETE again.
     res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES, 4096,
-        0)])
+        nfs4lib.list2bitmap([NOTIFY_DEVICEID4_DELETE]))])
     t("s18.43.4 the old device ID while the layout is held", res.status,
       NFS4_OK)
     t("s20.12.3 no DELETE while the layout is held", len(devnotes), 0)

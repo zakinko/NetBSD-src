@@ -56,8 +56,9 @@ try:
     t("errata 3065-3068: LAYOUTCOMMIT of offset 0, length 0", res.status,
       NFS4_OK)
     if res.status == NFS4_OK:
-        t("errata 3065-3068: the size", res.resarray[-1].locr_newsize,
-          newsize4(True, 10000))
+        ns = res.resarray[-1].locr_newsize
+        t("errata 3065-3068: the size", (ns.ns_sizechanged, ns.ns_size),
+          [(True, 10000)])
     print(vm("sysctl -w vfs.nfsv4.layoutcommit_range=1"))
     t("layoutcommit_range: the range is checked, s18.42.3",
       commit(19999).status, NFS4ERR_INVAL)

@@ -37,9 +37,8 @@ vm "set -x
 sysctl kern.securelevel
 mkdir -p /var/tmp/blkt /export/blk
 mount | grep -q ' /var/tmp/blkt ' || mount_tmpfs -s 80m tmpfs /var/tmp/blkt
-dd if=/dev/zero of=/var/tmp/blkt/blk.img bs=1m count=64 2>/dev/null
+newfs -O 2 -b 4096 -f 4096 -F -s 64m /var/tmp/blkt/blk.img | tail -1
 vnconfig vnd3 /var/tmp/blkt/blk.img
-newfs -O 2 -b 4096 -f 4096 /dev/rvnd3d | tail -1
 mount /dev/vnd3d /export/blk
 chmod 1777 /export/blk
 dumpfs -s /dev/rvnd3d 2>/dev/null | grep -E '^(magic|id|bsize|fsize|sblkno)' | head
@@ -64,13 +63,15 @@ d=$(lsblk -dn -o NAME,TRAN | awk '$2 == "iscsi" { print $1; exit }')
 sudo dd if="/dev/$d" bs=4096 skip=16 count=1 2>/dev/null | od -A d -t x1 | head -4
 
 # blkmapd answers the kernel's upcall with the device whose bytes match
-# the volume's signature; it reads them from the disks it finds.
+# the volume's signature; it reads them from the disks it finds.  Not
+# -d, which is to discover the disks once and exit.
 mount | grep rpc_pipefs || {
 	sudo mkdir -p /run/rpc_pipefs
 	sudo mount -t rpc_pipefs sunrpc /run/rpc_pipefs
 }
 sudo pkill -x blkmapd
-sudo sh -c 'blkmapd -f -d >/tmp/blkmapd.log 2>&1 &'
+bl=$(mktemp -d)
+sudo sh -c "blkmapd -f >$bl/blkmapd.log 2>&1 &"
 sleep 2
 pgrep -x blkmapd >/dev/null && echo "ok     blkmapd" || echo "FAILED blkmapd"
 
@@ -89,6 +90,8 @@ sudo mkdir -p "$m"
 # answering keeps its processes, and the step, waiting for good.
 T="timeout -k 5 120"
 sudo $T mount -t nfs -o vers=4.1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/blk "$m" || echo "FAILED mount"
+# Without the mount the writes below would go to the directory under it.
+mountpoint -q "$m" || m=/nonexistent
 f=$m/blk.$$
 src=$(mktemp)
 dd if=/dev/urandom of="$src" bs=64k count=64 2>/dev/null
@@ -112,7 +115,7 @@ sudo rpcdebug -m nfs -c pnfs 2>/dev/null
 echo "--- client dmesg (pnfs)"
 sudo dmesg | grep -v 'NFS reply\|NFS call ' | tail -60
 echo "--- blkmapd"
-sudo tail -40 /tmp/blkmapd.log
+sudo tail -40 "$bl/blkmapd.log"
 sudo kill "$tp"
 wait "$tp" 2>/dev/null
 cat "$cap.err"; ls -l "$cap"

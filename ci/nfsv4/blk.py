@@ -70,6 +70,7 @@ def size(s, fh):
     res = s.compound([op.putfh(fh), op.getattr(nfs4lib.list2bitmap(
         [FATTR4_SIZE]))])
     return res.resarray[-1].obj_attributes.get(FATTR4_SIZE)
+opened = []
 try:
     s = c.new_pnfs_client_session(stamp + b"a")
     time.sleep(2)

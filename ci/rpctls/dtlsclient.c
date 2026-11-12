@@ -58,6 +58,8 @@ static int cw3;			/* records written under epoch 3 */
 static int hsw;			/* next handshake message_seq of ours */
 static int rx_keyupdate, rx_ack, rx_alert = -1;
 static bool verbose;
+static double tw, tr;		/* bench: in SSL_write, in SSL_read */
+static int nslow;		/* bench: calls over 100 ms */
 
 static void
 check(bool ok, const char *what)
@@ -271,6 +273,8 @@ associate(SSL_CTX *ctx, int *fdp, bool spurious)
 	return ssl;
 }
 
+static double now(void);
+
 /* What OpenSSL said, for the log. */
 static void
 why(const char *what, SSL *ssl, int n)
@@ -293,6 +297,7 @@ dtlscall(SSL *ssl)
 {
 	uint8_t buf[2048], call[64];
 	uint32_t xid = nextxid++;
+	double t, t2;
 	int n, i, len;
 
 	len = (int)mkcall(call, xid, AUTH_NONE);
@@ -301,12 +306,16 @@ dtlscall(SSL *ssl)
 		 * After our KeyUpdate OpenSSL writes nothing until it has
 		 * read the ACK, RFC 9147 s8, and says so with WANT_READ.
 		 */
+		t = now();
 		if (i % 2 == 0 && (n = SSL_write(ssl, call, len)) != len &&
 		    SSL_get_error(ssl, n) != SSL_ERROR_WANT_READ) {
 			why("SSL_write", ssl, n);
 			return false;
 		}
+		t2 = now();
+		tw += t2 - t;
 		n = SSL_read(ssl, buf, sizeof(buf));
+		tr += now() - t2;
 		if (n > 0 && isreply(buf, n, xid, NULL, 0))
 			return true;
 		if (n <= 0 && SSL_get_error(ssl, n) != SSL_ERROR_WANT_READ &&
@@ -385,10 +394,23 @@ bench(SSL_CTX *ctx, bool dtls, int nproc, int ncalls)
 				fd = udpsock();
 			ok = 0;
 			t0 = now();
-			for (k = 0; k < ncalls; k++)
+			for (k = 0; k < ncalls; k++) {
+				double c0 = now();
+
 				ok += dtls ? dtlscall(ssl) :
 				    plaincall(fd, AUTH_NONE, NULL, 0);
+				if (now() - c0 > 0.1) {
+					nslow++;
+					printf("bench slow: call %d took %.3f s\n",
+					    k, now() - c0);
+				}
+			}
 			t1 = now() - t0;
+			if (dtls)
+				printf("bench child: per call %.0f us in SSL_write, "
+				    "%.0f us in SSL_read; %d calls over 100 ms\n",
+				    tw / ncalls * 1e6, tr / ncalls * 1e6, nslow);
+			fflush(stdout);		/* _exit() would drop it */
 			dprintf(pfd[1], "%d %f\n", ok, t1);
 			_exit(0);
 		}

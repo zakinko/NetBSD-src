@@ -198,6 +198,9 @@ jobs:
           timeout 300 python3 ./pnfs.py /export/pynfs 2>&1 | tee "$OLDPWD/out/pnfs.txt" || true
           cd "$OLDPWD"
           timeout 300 sh ci/nfsv4/pnfs-linux.sh 2>&1 | tee -a out/pnfs.txt || true
+          cp ci/nfsv4/ds-role.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 120 python3 ./ds-role.py /export/pynfs 2>&1 | tee -a "$OLDPWD/out/pnfs.txt" || true
       - name: pNFS, the flexible file layout, RFC 8435
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsff '))
         run: |

@@ -18,7 +18,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 	case $f in
 	sys/fs/nfsv4/nfsv4_acl.c)	add aclcreate dacl t41b;;
 	sys/fs/nfsv4/nfsv4_open.c|sys/fs/nfsv4/nfsv4_change.c)
-					add aclcreate retention t41b t40rm pnfsff;;
+					add aclcreate retention t41b t40rm pnfs pnfsff;;
 	sys/fs/nfsv4/nfsv4_attr.c)	add owner retention named dacl fault pnfs pnfsff t41b;;
 	sys/fs/nfsv4/nfsv4_idmap.c)	add owner;;
 	sys/fs/nfsv4/nfsv4_state.c)	add fault pnfs pnfsff t41b;;
@@ -41,7 +41,8 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/cbgetattr.sh|ci/nfsv4/more.py)	add cbgetattr;;
 	ci/nfsv4/edge.py)		add edge;;
 	ci/nfsv4/fault.py)		add fault;;
-	ci/nfsv4/pnfs.py|ci/nfsv4/pnfs-linux.sh)	add pnfs;;
+	ci/nfsv4/pnfs.py|ci/nfsv4/pnfs-linux.sh|ci/nfsv4/ds-role.py)
+					add pnfs;;
 	ci/nfsv4/pnfs-ff.sh|ci/nfsv4/nfs3tcp.c)	add pnfsff;;
 	ci/nfsv4/iscsi-probe.sh)	add iscsi;;
 	ci/nfsv4/t41b.py)		add t41b;;

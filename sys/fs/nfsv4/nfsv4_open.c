@@ -1149,6 +1149,15 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 		return NFS4ERR_GRACE;
 	mutex_enter(&nfsv4_state_lock);
 	open = NULL;
+	/*
+	 * s13.6, s13.9.1: at the data server's own server owner, never a
+	 * special stateid or one with a seqid.
+	 */
+	if (c->c_client != NULL && c->c_client->cl_ds &&
+	    (nfsv4_stateid_special(si) || si->si_seqid != 0)) {
+		status = NFS4ERR_BAD_STATEID;
+		goto out;
+	}
 	if (nfsv4_stateid_special(si)) {
 		if (!write && si->si_seqid != 0)
 			goto out;
@@ -1176,6 +1185,12 @@ nfsv4_io_check(struct nfsv4_compound *c, const struct nfsv4_stateid *si,
 			goto out;
 		}
 		self = st->st_owner->sw_client;
+		/* s12.5.1, s15.1.10.7: the data server's I/O is of a layout. */
+		if (c->c_client != NULL && c->c_client->cl_ds &&
+		    !nfsv4_layout_held(self, vp, write)) {
+			status = NFS4ERR_PNFS_NO_LAYOUT;
+			goto out;
+		}
 	}
 	/* s10.4.1: without an open, these are the equivalent of one. */
 	if (aname == NULL) {

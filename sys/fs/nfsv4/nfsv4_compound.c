@@ -102,6 +102,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	NFSV4_OPF_DRC		0x02	/* its reply is for the DRC */
 #define	NFSV4_OPF_V40		0x04	/* RFC 8881 s17: not in version 4.1 */
 #define	NFSV4_OPF_NOSEQ		0x08	/* RFC 8881 s18.46.3: can be first */
+#define	NFSV4_OPF_DS		0x10	/* RFC 8881 s13.6: of a data server */
 
 struct nfsv4_opdesc {
 	nfsv4_op_t	od_func;	/* NULL for NFS4ERR_NOTSUPP */
@@ -112,7 +113,7 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	/* Operations 0, 1 and 2 are not defined, RFC 7530 s15.2.4. */
 	[NFSV4_OP_ACCESS]	= { nfsv4_op_access,	NFSV4_OPF_FH },
 	[NFSV4_OP_CLOSE]	= { nfsv4_op_close,	NFSV4_OPF_FH },
-	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH },
+	[NFSV4_OP_COMMIT]	= { nfsv4_op_commit,	NFSV4_OPF_FH | NFSV4_OPF_DS },
 	[NFSV4_OP_CREATE]	= { nfsv4_op_create,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
 	[NFSV4_OP_DELEGPURGE]	= { nfsv4_op_delegpurge, 0 },
 	[NFSV4_OP_DELEGRETURN]	= { nfsv4_op_delegreturn, NFSV4_OPF_FH | NFSV4_OPF_DRC },
@@ -131,10 +132,10 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 				    NFSV4_OPF_FH | NFSV4_OPF_V40 },
 	[NFSV4_OP_OPEN_DOWNGRADE] =
 				  { nfsv4_op_open_downgrade, NFSV4_OPF_FH },
-	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	0 },
+	[NFSV4_OP_PUTFH]	= { nfsv4_op_putfh,	NFSV4_OPF_DS },
 	[NFSV4_OP_PUTPUBFH]	= { nfsv4_op_putpubfh,	0 },
 	[NFSV4_OP_PUTROOTFH]	= { nfsv4_op_putrootfh,	0 },
-	[NFSV4_OP_READ]		= { nfsv4_op_read,	NFSV4_OPF_FH },
+	[NFSV4_OP_READ]		= { nfsv4_op_read,	NFSV4_OPF_FH | NFSV4_OPF_DS },
 	[NFSV4_OP_READDIR]	= { nfsv4_op_readdir,	NFSV4_OPF_FH },
 	[NFSV4_OP_READLINK]	= { nfsv4_op_readlink,	NFSV4_OPF_FH },
 	[NFSV4_OP_RELEASE_LOCKOWNER] =
@@ -152,15 +153,21 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 				  { nfsv4_op_setclientid_confirm,
 				    NFSV4_OPF_DRC | NFSV4_OPF_V40 },
 	[NFSV4_OP_VERIFY]	= { nfsv4_op_verify,	NFSV4_OPF_FH },
-	[NFSV4_OP_WRITE]	= { nfsv4_op_write,	NFSV4_OPF_FH | NFSV4_OPF_DRC },
-	[NFSV4_OP_BACKCHANNEL_CTL] = { nfsv4_op_backchannel_ctl, 0 },
+	[NFSV4_OP_WRITE]	= { nfsv4_op_write,
+				    NFSV4_OPF_FH | NFSV4_OPF_DRC | NFSV4_OPF_DS },
+	[NFSV4_OP_BACKCHANNEL_CTL] =
+				  { nfsv4_op_backchannel_ctl, NFSV4_OPF_DS },
 	[NFSV4_OP_BIND_CONN_TO_SESSION] =
-				  { nfsv4_op_bind_conn,	NFSV4_OPF_NOSEQ },
-	[NFSV4_OP_EXCHANGE_ID]	= { nfsv4_op_exchange_id, NFSV4_OPF_NOSEQ },
+				  { nfsv4_op_bind_conn,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
+	[NFSV4_OP_EXCHANGE_ID]	= { nfsv4_op_exchange_id,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
 	[NFSV4_OP_CREATE_SESSION] =
-				  { nfsv4_op_create_session, NFSV4_OPF_NOSEQ },
+				  { nfsv4_op_create_session,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
 	[NFSV4_OP_DESTROY_SESSION] =
-				  { nfsv4_op_destroy_session, NFSV4_OPF_NOSEQ },
+				  { nfsv4_op_destroy_session,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
 	[NFSV4_OP_FREE_STATEID]	= { nfsv4_op_free_stateid, 0 },
 	[NFSV4_OP_GETDEVICEINFO] = { nfsv4_op_getdeviceinfo, 0 },
 	[NFSV4_OP_GETDEVICELIST] = { nfsv4_op_getdevicelist, NFSV4_OPF_FH },
@@ -172,13 +179,16 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_RECLAIM_COMPLETE + 1] = {
 	[NFSV4_OP_GET_DIR_DELEGATION] =
 				  { nfsv4_op_get_dir_delegation, NFSV4_OPF_FH },
 	[NFSV4_OP_SECINFO_NO_NAME] =
-				  { nfsv4_op_secinfo_no_name, NFSV4_OPF_FH },
-	[NFSV4_OP_SEQUENCE]	= { nfsv4_op_sequence,	NFSV4_OPF_NOSEQ },
-	[NFSV4_OP_SET_SSV]	= { nfsv4_op_set_ssv,	0 },
+				  { nfsv4_op_secinfo_no_name,
+				    NFSV4_OPF_FH | NFSV4_OPF_DS },
+	[NFSV4_OP_SEQUENCE]	= { nfsv4_op_sequence,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
+	[NFSV4_OP_SET_SSV]	= { nfsv4_op_set_ssv,	NFSV4_OPF_DS },
 	[NFSV4_OP_TEST_STATEID]	= { nfsv4_op_test_stateid, 0 },
 	[NFSV4_OP_WANT_DELEGATION] = { nfsv4_op_want_delegation, NFSV4_OPF_FH },
 	[NFSV4_OP_DESTROY_CLIENTID] =
-				  { nfsv4_op_destroy_clientid, NFSV4_OPF_NOSEQ },
+				  { nfsv4_op_destroy_clientid,
+				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
 	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },
 };
 
@@ -299,6 +309,13 @@ op_position(const struct nfsv4_compound *c, uint32_t op,
 {
 
 	if ((od->od_flags & NFSV4_OPF_V40) != 0)
+		return NFS4ERR_NOTSUPP;
+	/*
+	 * s13.6: a client of the data server's own server owner
+	 * (vfs.nfsv4.ds_owner) sends only its housekeeping and I/O.
+	 */
+	if (c->c_client != NULL && c->c_client->cl_ds &&
+	    (od->od_flags & NFSV4_OPF_DS) == 0)
 		return NFS4ERR_NOTSUPP;
 	if (op == NFSV4_OP_SEQUENCE && c->c_opi != 0)
 		return NFS4ERR_SEQUENCE_POS;

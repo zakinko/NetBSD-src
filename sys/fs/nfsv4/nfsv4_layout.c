@@ -532,6 +532,22 @@ layout_find(const struct nfsv4_client *cl, struct vnode *vp)
 	return NULL;
 }
 
+/*
+ * Whether cl holds a layout of vp, for writing if write: the data
+ * server's I/O is refused without one, RFC 8881 s12.5.1, s13.6.
+ */
+bool
+nfsv4_layout_held(const struct nfsv4_client *cl, struct vnode *vp, bool write)
+{
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	st = layout_find(cl, vp);
+	return st != NULL && !st->st_revoked && (!write ||
+	    (st->st_liomode & 1U << LAYOUTIOMODE4_RW) != 0);
+}
+
 /* RFC 8435: the data file of the metadata file vp, under the lock. */
 static struct ff_data *
 ff_find(struct vnode *vp)

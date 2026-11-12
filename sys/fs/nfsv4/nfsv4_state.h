@@ -431,6 +431,7 @@ void	nfsv4_layout_scan(struct nfsv4_reap *);
 void	nfsv4_layout_gone(struct nfsv4_state *);
 void	nfsv4_ff_reap(void);
 uint32_t nfsv4_layout_ff_conflict(struct vnode *);
+bool	nfsv4_layout_held(const struct nfsv4_client *, struct vnode *, bool);
 
 /* These do not. */
 void	nfsv4_layout_recall_all(void);

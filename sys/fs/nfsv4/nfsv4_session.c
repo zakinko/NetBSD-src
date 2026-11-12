@@ -581,6 +581,12 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_enter(&nfsv4_state_lock);
 	/* s13.1: the roles, MDS and DS together while pNFS is on. */
 	role = nfsv4_pnfs_flags(ea->flags, &pnfs);
+	/*
+	 * s13.1, s13.6: under its own server owner the data server has no
+	 * other personality, and refuses what is not its own.
+	 */
+	if (ds && pnfs)
+		role = EXCHGID4_FLAG_USE_PNFS_DS;
 	conf = nfsv4_client_find(ea->id, ea->idlen, true, 1, ds);
 	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1, ds);
 	same_verf = conf != NULL && memcmp(&conf->cl_verf, &ea->verifier,
@@ -612,7 +618,8 @@ existing:
 		id = conf->cl_id;
 		seq = conf->cl_csseq + 1;
 		/* The record's roles stay what they were made with. */
-		flags |= EXCHGID4_FLAG_CONFIRMED_R | (conf->cl_pnfs ?
+		flags |= EXCHGID4_FLAG_CONFIRMED_R | (conf->cl_ds ?
+		    EXCHGID4_FLAG_USE_PNFS_DS : conf->cl_pnfs ?
 		    EXCHGID4_FLAG_USE_PNFS_MDS | EXCHGID4_FLAG_USE_PNFS_DS :
 		    EXCHGID4_FLAG_USE_NON_PNFS);
 		mutex_exit(&nfsv4_state_lock);

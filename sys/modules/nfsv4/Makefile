@@ -60,6 +60,14 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # nfsv4_layout.c.
 #CPPFLAGS+=	-DNFSV4_BLK_NOHINT
 #
+# NFSV4_NO_RECLAIM_COMPLETE_OK: once the grace period is over, let a
+# client of version 4.1 that has sent no RECLAIM_COMPLETE take locks,
+# against RFC 8881 s18.51.3's NFS4ERR_GRACE.  The client of Linux sends
+# none for the client ID it makes after its lease ran out, and could
+# open nothing again.  Not set: vfs.nfsv4.no_reclaim_complete_ok turns
+# it on.  See nfsv4_session.c.
+#CPPFLAGS+=	-DNFSV4_NO_RECLAIM_COMPLETE_OK
+#
 # NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
 # file system mask the inherited ACEs by the server's default mode,
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not

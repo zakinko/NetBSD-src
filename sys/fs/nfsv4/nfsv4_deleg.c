@@ -832,7 +832,7 @@ nfsv4_op_get_dir_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_NOTDIR;
 	if (vp == NULL || cf->cf_attr != 0)
 		refuse = true;
-	else if (nfsv4_grace_active() || !cl->cl_reclaimed)
+	else if (nfsv4_grace_active() || !nfsv4_client_reclaimed(cl))
 		return NFS4ERR_GRACE;		/* s18.51.3 */
 	if (refuse)
 		return gdd_refuse(c);
@@ -976,7 +976,8 @@ nfsv4_op_want_delegation(struct nfsv4_compound *c, union nfsv4_args *a)
 			return st;
 		type = wa->delegate_type;
 		any = false;
-	} else if (nfsv4_grace_active() || !c->c_client->cl_reclaimed)
+	} else if (nfsv4_grace_active() ||
+	    !nfsv4_client_reclaimed(c->c_client))
 		return NFS4ERR_GRACE;		/* s18.51.3 */
 	else if (want != OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
 		type = OPEN_DELEGATE_WRITE;

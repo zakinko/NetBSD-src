@@ -14,6 +14,9 @@ sudo modprobe nfs_layout_nfsv41_files 2>/dev/null || :
 command -v tcpdump || sudo apt-get install -y -q tcpdump 2>&1 | tail -2
 # The file layout with this server as its own data server, at 2049.
 vm "sysctl -w 'vfs.nfsv4.pnfs_ds=tcp 127.0.0.1.8.1'"
+# Its new client ID sends no RECLAIM_COMPLETE (run 43238434245: OPEN met
+# NFS4ERR_GRACE 29 times); the option that lets it go is on for this.
+vm "sysctl -w vfs.nfsv4.no_reclaim_complete_ok=1"
 capd=$(mktemp -d)
 cap=$capd/lo.pcap
 sudo tcpdump -Z root -i lo -nn -q -U -w "$cap" 'tcp port 2049' 2>"$cap.err" &
@@ -49,7 +52,7 @@ sudo kill "$holder" 2>/dev/null
 sudo $T rm -f "$f" "$m/exp2.$$"
 sudo $T umount "$m" || sudo umount -f -l "$m"
 sudo kill "$tp"; wait "$tp" 2>/dev/null
-vm "sysctl -w vfs.nfsv4.pnfs_ds="
+vm "sysctl -w vfs.nfsv4.pnfs_ds=; sysctl -w vfs.nfsv4.no_reclaim_complete_ok=0"
 mkdir -p out && cp "$cap" out/lease-expire.pcap
 python3 "$(dirname "$0")/rpcs.py" "$cap" 2049 2>/dev/null | awk '{ $2 = $3 = ""; print }' |
     sort | uniq -c | sort -rn | head -30

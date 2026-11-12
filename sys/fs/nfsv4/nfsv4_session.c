@@ -299,8 +299,10 @@ session_lease(struct nfsv4_client *cl)
 {
 
 	if (cl->cl_expired) {
-		if (nfsv4_client_has_state(cl))
+		if (nfsv4_client_has_lost(cl, false)) {
+			cl->cl_expire = time_uptime + NFSV4_LEASE;
 			return SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED;
+		}
 		cl->cl_expired = false;
 	}
 	cl->cl_expire = time_uptime + NFSV4_LEASE;
@@ -552,6 +554,34 @@ exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
 	    xdr_u_int64_t(x, &minor) &&
 	    put_owner(x, ds) &&
 	    put_hostname(x) && put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
+}
+
+/*
+ * vfs.nfsv4.no_reclaim_complete_ok, from the option
+ * NFSV4_NO_RECLAIM_COMPLETE_OK (see the module's Makefile).  RFC 8881
+ * s18.51.3 (rfc8881.txt 28676-28680) has a client send RECLAIM_COMPLETE
+ * after making a client ID and before its first operation that takes a
+ * lock, and the server answer NFS4ERR_GRACE to such an operation until
+ * then.  The client of Linux, making a new client ID after its lease
+ * ran out (s8.4.3), sends none, and is told NFS4ERR_GRACE for good: it
+ * cannot open anything again.  On, a client that has not sent it is
+ * taken to have done so once the server's own grace period is over,
+ * when there is nothing left to reclaim anyway.  Off, or without the
+ * option, the RFC's NFS4ERR_GRACE stands.
+ */
+#ifdef NFSV4_NO_RECLAIM_COMPLETE_OK
+int nfsv4_no_reclaim_complete_ok = 1;
+#else
+int nfsv4_no_reclaim_complete_ok = 0;
+#endif
+
+/* Whether cl may take locks other than by reclaiming, s18.51.3. */
+bool
+nfsv4_client_reclaimed(const struct nfsv4_client *cl)
+{
+
+	return cl->cl_reclaimed ||
+	    (nfsv4_no_reclaim_complete_ok && !nfsv4_grace_active());
 }
 
 /* The numbered cases of s18.35.4 are marked. */
@@ -837,7 +867,8 @@ nfsv4_op_destroy_clientid(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = NFS4ERR_STALE_CLIENTID;
 	else if (cl == c->c_client || cl->cl_refs != 0 ||
 	    !LIST_EMPTY(&cl->cl_sessions) ||
-	    (nfsv4_client_has_state(cl) && !cl->cl_expired))
+	    (nfsv4_client_has_state(cl) && (!cl->cl_expired ||
+	    nfsv4_client_has_lost(cl, true))))
 		st = NFS4ERR_CLIENTID_BUSY;		/* s18.50.3 */
 	else
 		nfsv4_client_retire(cl);
@@ -1014,7 +1045,7 @@ nfsv4_op_free_stateid(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (status == NFS4_OK)
 		nfsv4_state_unlink(st, &reap, false);
 	nfsv4_owner_idle(sw);
-	if (cl->cl_expired && !nfsv4_client_has_state(cl)) {
+	if (cl->cl_expired && !nfsv4_client_has_lost(cl, false)) {
 		cl->cl_expired = false;
 		cl->cl_expire = time_uptime + NFSV4_LEASE;
 	}

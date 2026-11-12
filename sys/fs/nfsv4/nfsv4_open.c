@@ -629,7 +629,7 @@ open_do(struct nfsv4_compound *c, const struct nfsv4_args_open *oa,
 		return NFS4ERR_NOTSUPP;
 	}
 	/* RFC 8881 s18.51.3, s10.2.1: a held delegation needs no grace. */
-	if (c->c_minor != 0 && !sw->sw_client->cl_reclaimed &&
+	if (c->c_minor != 0 && !nfsv4_client_reclaimed(sw->sw_client) &&
 	    (oa->claim == CLAIM_NULL || oa->claim == CLAIM_FH))
 		return NFS4ERR_GRACE;
 	if (OPEN_BYFH(oa->claim)) {

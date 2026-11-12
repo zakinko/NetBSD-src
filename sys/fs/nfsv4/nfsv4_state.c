@@ -146,8 +146,16 @@ nfsv4_client_cur(struct nfsv4_compound *c, uint64_t id,
 
 	if (c->c_minor == 0)
 		return nfsv4_client_get(id, clp);
-	if (cl->cl_expired)
-		return NFS4ERR_EXPIRED;
+	/*
+	 * Under a session the lease of an expired client was renewed by its
+	 * SEQUENCE, which RFC 8881 s8.3 allows (rfc8881.txt 8087-8090), and
+	 * what it lost is told by SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED and
+	 * NFS4ERR_EXPIRED on the stateids that were revoked (s8.4.3, 8519-
+	 * 8524).  That error is of a stateid (s15.1.5.4, 18236-18240), so a
+	 * new OPEN or LOCK, which names none of them, is not refused with
+	 * it; refused, the client of Linux, back under the same client ID,
+	 * met it on every OPEN.
+	 */
 	cl->cl_expire = lease_end();
 	*clp = cl;
 	return NFS4_OK;
@@ -760,6 +768,30 @@ nfsv4_client_has_state(const struct nfsv4_client *cl)
 	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
 		if (!LIST_EMPTY(&sw->sw_states))
 			return true;
+	}
+	return false;
+}
+
+/*
+ * Whether cl has a stateid its lease took away and it has not freed,
+ * one kept with no file (client_release()), or with live, one it holds
+ * on a file.  What it opened after its lease ended is live, RFC 8881
+ * s8.4.3.
+ */
+bool
+nfsv4_client_has_lost(const struct nfsv4_client *cl, bool live)
+{
+	const struct nfsv4_owner_s *sw;
+	const struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+		LIST_FOREACH(st, &sw->sw_states, st_olist) {
+			if (live ? st->st_file != NULL :
+			    st->st_file == NULL && !st->st_closed)
+				return true;
+		}
 	}
 	return false;
 }

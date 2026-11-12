@@ -570,7 +570,7 @@ have_owner:
 		    NFS4ERR_NO_GRACE : nfsv4_reclaim_check(lo->sw_client);
 	/* RFC 8881 s18.51.3 */
 	else if (status == NFS4_OK && (nfsv4_grace_active() ||
-	    (c->c_minor != 0 && !c->c_client->cl_reclaimed)))
+	    (c->c_minor != 0 && !nfsv4_client_reclaimed(c->c_client))))
 		status = NFS4ERR_GRACE;
 	if (status == NFS4_OK)
 		status = lock_range(la->offset, la->length, &fl);

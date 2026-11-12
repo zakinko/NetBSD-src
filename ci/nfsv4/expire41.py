@@ -25,8 +25,14 @@ export = sys.argv[1].strip('/').encode().split(b'/')
 stamp = b"%d" % int(time.time())
 c = nfs4client.NFS4Client(b'127.0.0.1', 2049, 1)
 c.homedir = export
+# SessionRecord.compound() takes SEQUENCE's result out; keep it.
+remove_seq_op = nfs4client.SessionRecord.remove_seq_op
+def keep_seq(self, res):
+    self.last_seq = res.resarray[0]
+    return remove_seq_op(self, res)
+nfs4client.SessionRecord.remove_seq_op = keep_seq
 def flags(res):
-    return res.resarray[0].sr_resok4.sr_status_flags
+    return s.last_seq.sr_resok4.sr_status_flags
 try:
     s = c.new_client_session(stamp + b"x")
     res = create_file(s, stamp + b"old", path=export + [stamp + b"old"])

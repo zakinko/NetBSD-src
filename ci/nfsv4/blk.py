@@ -150,9 +150,9 @@ try:
         # dtrace(1) needs dtrace_sdt to open the device (run 43287083599:
         # "DTrace device not available", dtrace_sdt not found), and
         # tick- probes dtrace_profile.
-        dt = vm("cd /var/tmp/nfsv4/modules && ls; for m in solaris cyclic "
-                "dtrace dtrace_sdt dtrace_profile dtrace_fbt; do modstat $m "
-                ">/dev/null 2>&1 || modload ./$m.kmod; done; "
+        dt = vm("cd /var/tmp/nfsv4/modules && for m in solaris cyclic "
+                "dtrace dtrace_sdt dtrace_profile dtrace_fbt; do "
+                "modload /var/tmp/nfsv4/modules/$m.kmod 2>&1; done; "
                 "modstat | grep -E 'dtrace|solaris|cyclic'; "
                 "rm -f /var/tmp/blkt/dt.out; nohup /usr/sbin/dtrace -q -n "
                 "'fbt::vndioctl:entry /arg1 == 0x80046476/ { n++; } "

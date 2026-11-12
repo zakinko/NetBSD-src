@@ -85,13 +85,16 @@ given() { vm "sysctl -n vfs.nfsv4.layouts_given"; }
 g0=$(given)
 m=/mnt/nfsv4blk
 sudo mkdir -p "$m"
-sudo mount -t nfs -o vers=4.1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/blk "$m" || echo "FAILED mount"
+# Each step on the mount under timeout: a hard mount whose server stops
+# answering keeps its processes, and the step, waiting for good.
+T="timeout -k 5 120"
+sudo $T mount -t nfs -o vers=4.1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys,hard 127.0.0.1:/export/blk "$m" || echo "FAILED mount"
 f=$m/blk.$$
 src=$(mktemp)
 dd if=/dev/urandom of="$src" bs=64k count=64 2>/dev/null
-sudo dd if="$src" of="$f" bs=64k conv=fsync 2>/dev/null
+sudo $T dd if="$src" of="$f" bs=64k conv=fsync 2>/dev/null || echo "FAILED write"
 sudo sh -c "echo 3 >/proc/sys/vm/drop_caches"
-if sudo cmp -s "$src" "$f"; then echo "ok     data read back through the layout"
+if sudo $T cmp -s "$src" "$f"; then echo "ok     data read back through the layout"
 else echo "FAILED data read back through the layout"; fi
 # The server's own view: the size LAYOUTCOMMIT set and the bytes on disk.
 here=$(md5sum <"$src" | awk '{ print $1 }')
@@ -102,9 +105,9 @@ grep -E '^[[:space:]]+(OPEN|LAYOUTGET|GETDEVICEINFO|LAYOUTRETURN|LAYOUTCOMMIT|RE
 g1=$(given)
 echo "layouts given $g0 -> $g1"
 [ "$g1" -gt "$g0" ] && echo "ok     layouts given" || echo "FAILED layouts given"
-sudo rm -f "$f"
+sudo $T rm -f "$f"
 rm -f "$src"
-sudo umount "$m"
+sudo $T umount "$m" || sudo umount -f -l "$m"
 sudo rpcdebug -m nfs -c pnfs 2>/dev/null
 echo "--- client dmesg (pnfs)"
 sudo dmesg | grep -v 'NFS reply\|NFS call ' | tail -60

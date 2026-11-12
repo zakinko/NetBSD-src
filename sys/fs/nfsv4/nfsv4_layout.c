@@ -2229,6 +2229,23 @@ out:
 }
 
 /*
+ * vfs.nfsv4.layoutcommit_range, from the option NFSV4_LAYOUTCOMMIT_RANGE
+ * (see the module's Makefile).  RFC 8881 s18.42.3 has loca_last_write_offset
+ * within the range of loca_offset and loca_length (rfc8881.txt 27199-
+ * 27204), and the range checked.  The errata 3065 to 3068 of RFC 5661
+ * (Held for Document Update) take the two fields out: the client SHOULD
+ * send 0 for both and the server MUST ignore them, which RFC 8881 did not
+ * take in.  So by default they are ignored, and a client that follows the
+ * errata is not refused with NFS4ERR_INVAL.  On, they are checked as the
+ * text of RFC 8881 has it; set the option to make that the default.
+ */
+#ifdef NFSV4_LAYOUTCOMMIT_RANGE
+int nfsv4_layoutcommit_range = 1;
+#else
+int nfsv4_layoutcommit_range = 0;
+#endif
+
+/*
  * s18.42, LAYOUTCOMMIT.  The data server is this server, so what was
  * written is in the file already; only a size the client says is past
  * it is made so, s12.5.4.2.  loca_time_modify may be used or not, and
@@ -2255,7 +2272,7 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (la->reclaim)
 		return nfsv4_grace_active() ? NFS4ERR_RECLAIM_BAD :
 		    NFS4ERR_NO_GRACE;
-	if (la->length != NFS4_UINT64_MAX &&
+	if (nfsv4_layoutcommit_range && la->length != NFS4_UINT64_MAX &&
 	    la->offset > NFS4_UINT64_MAX - la->length)
 		return NFS4ERR_INVAL;
 	mutex_enter(&nfsv4_state_lock);
@@ -2269,11 +2286,11 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_exit(&nfsv4_state_lock);
 	if (status != NFS4_OK)
 		return status;
-	/* s18.42.3: within the range, and no more than NFS4_MAXFILEOFF. */
-	if (la->newoffset && (la->lastoffset < la->offset ||
+	/* s18.42.3: no more than NFS4_MAXFILEOFF; within the range, see above. */
+	if (la->newoffset && (la->lastoffset >= NFS4_UINT64_MAX ||
+	    (nfsv4_layoutcommit_range && (la->lastoffset < la->offset ||
 	    (la->length != NFS4_UINT64_MAX &&
-	    la->lastoffset >= la->offset + la->length) ||
-	    la->lastoffset >= NFS4_UINT64_MAX))
+	    la->lastoffset >= la->offset + la->length)))))
 		return NFS4ERR_INVAL;
 
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);

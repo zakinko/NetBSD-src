@@ -994,6 +994,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_ds_owner, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layoutcommit_range", SYSCTL_DESCR("Check LAYOUTCOMMIT's offset and length, which errata 3065-3068 ignore"),
+	    NULL, 0, &nfsv4_layoutcommit_range, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "no_reclaim_complete_ok", SYSCTL_DESCR("Let a client that sent no RECLAIM_COMPLETE take locks after the grace period"),
 	    NULL, 0, &nfsv4_no_reclaim_complete_ok, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

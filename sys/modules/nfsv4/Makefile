@@ -74,6 +74,12 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # it on.  See nfsv4_session.c.
 #CPPFLAGS+=	-DNFSV4_NO_RECLAIM_COMPLETE_OK
 #
+# LAYOUTCOMMIT's loca_offset and loca_length are ignored, as the errata
+# 3065-3068 of RFC 5661 have it, against the text of RFC 8881 s18.42.3.
+# NFSV4_LAYOUTCOMMIT_RANGE: check them as that text does.  Not set:
+# vfs.nfsv4.layoutcommit_range turns it on.  See nfsv4_layout.c.
+#CPPFLAGS+=	-DNFSV4_LAYOUTCOMMIT_RANGE
+#
 # NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
 # file system mask the inherited ACEs by the server's default mode,
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not

@@ -7,11 +7,16 @@ L=$OUT/nfsacl-omnios.txt
 scp "$H/omnios.sh" omnios:/var/tmp/omnios.sh
 # Both VMs are 192.168.122.10 to themselves and see the runner as
 # 192.168.122.2; the universal addresses the NetBSD rpcbind gives out
-# have to name the latter.
+# have to name the latter.  The runner's rpcbind is back on 0.0.0.0:111
+# by now although it was stopped before the NetBSD VM came up (seen in
+# run 43226914643), so it is stopped and masked here, where the port is
+# taken.
+sudo systemctl mask --now rpcbind.socket rpcbind.service >/dev/null 2>&1 || :
 sudo python3 "$H/rpcb-nat.py" 111 10111 192.168.122.10 192.168.122.2 \
     >"$OUT/nfsacl-rpcb-nat.txt" 2>&1 &
 NAT=$!
 sleep 1
+kill -0 $NAT 2>/dev/null || { cat "$OUT/nfsacl-rpcb-nat.txt"; exit 1; }
 # And what the runner's port 111 leads to.
 ss -lntup | grep -E ':(111|2049|4002) ' || :
 rpcinfo -p 127.0.0.1 2>&1 | head -30 || :

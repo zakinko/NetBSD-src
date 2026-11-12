@@ -177,7 +177,10 @@ const struct fileops vnops = {
  * this with the vnode unlocked before they act.  The hook sleeps until
  * the leases in the way are gone, which the server sees to in bounded
  * time.  VN_LEASE_READ is for reading and locking, which only an
- * exclusive lease minds.
+ * exclusive lease minds.  VN_LEASE_TRUNC comes with VN_LEASE_WRITE where
+ * the size may go down and blocks be freed: a pNFS block layout lets a
+ * client write the file's blocks on the device itself, and they must
+ * not be freed under it.
  */
 static void (*vn_lease_hook)(struct vnode *, u_int);
 static krwlock_t vn_lease_lock;

@@ -192,6 +192,8 @@ struct oncrpc_dtlspeer {
 	time_t			 dp_until;	/* time_uptime; not ESTABLISHED */
 	struct dtls_dgramq	 dp_hsq;	/* for the handshake daemon */
 	u_int			 dp_hsqlen;
+	struct dtls_dgramq	 dp_early;	/* epoch 3 before ESTABLISHED */
+	u_int			 dp_earlylen;
 	u_int			 dp_qn;		/* its records not yet opened */
 	/* Set before ESTABLISHED and constant after: */
 	uint8_t			 dp_rcid[DTLS13_MAXCID];	/* ours */
@@ -380,6 +382,7 @@ dtls_peer_free(struct oncrpc_dtlspeer *p)
 	if (p->dp_reap != NULL)
 		kmem_free(p->dp_reap, sizeof(*p->dp_reap));
 	dtls_dgramq_free(&p->dp_hsq);
+	dtls_dgramq_free(&p->dp_early);
 	dtls13_dir_fini(&p->dp_rx);
 	dtls13_dir_fini(&p->dp_rxnext);
 	dtls13_dir_fini(&p->dp_tx);
@@ -469,6 +472,8 @@ dtls_close(struct oncrpc_dtlspeer *p)
 	p->dp_until = time_uptime + ONCRPC_DTLS_CLOSEWAIT;
 	dtls_dgramq_free(&p->dp_hsq);
 	p->dp_hsqlen = 0;
+	dtls_dgramq_free(&p->dp_early);
+	p->dp_earlylen = 0;
 	dtls_unpair(p);
 }
 
@@ -608,6 +613,30 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 		 */
 		if (p->dp_state == DP_PROBED && b0 != TLS13_CT_HANDSHAKE)
 			break;
+		/*
+		 * The client may send under its application keys as soon
+		 * as its Finished is out, RFC 9147 s6.1: epoch 3, the low
+		 * bits of the unified header, s4.  The daemon is no place
+		 * for it, and it was lost there; it waits for
+		 * oncrpc_dtls_done() instead.
+		 */
+		if (p->dp_state == DP_HANDSHAKE &&
+		    dtls13_demux(b0) == DTLS13_CIPHERTEXT &&
+		    (b0 & 0x03) == (DTLS13_EPOCH_APP & 0x03)) {
+			if (p->dp_earlylen >= ONCRPC_DTLS_MAXHSQ ||
+			    (dg = kmem_intr_alloc(sizeof(*dg),
+			    KM_NOSLEEP)) == NULL)
+				break;
+			m_adj(m, off);
+			dg->dg_m = m;
+			dg->dg_peer = NULL;
+			dg->dg_plain = false;
+			SIMPLEQ_INSERT_TAIL(&p->dp_early, dg, dg_next);
+			p->dp_earlylen++;
+			mutex_exit(&d->d_lock);
+			*mp = NULL;
+			return 1;
+		}
 		if (p->dp_hsqlen >= ONCRPC_DTLS_MAXHSQ)
 			break;
 		dg = kmem_intr_alloc(sizeof(*dg), KM_NOSLEEP);
@@ -1231,6 +1260,7 @@ oncrpc_dtls_probed(struct oncrpc_dtls *d, const struct sockaddr *sa)
 	mutex_init(&np->dp_rxlock, MUTEX_DEFAULT, IPL_NONE);
 	mutex_init(&np->dp_txlock, MUTEX_DEFAULT, IPL_NONE);
 	SIMPLEQ_INIT(&np->dp_hsq);
+	SIMPLEQ_INIT(&np->dp_early);
 	memcpy(&np->dp_addr, sa, sa->sa_len);
 	np->dp_state = DP_PROBED;
 	np->dp_refs = 1;
@@ -1273,6 +1303,8 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
     uint16_t hstx, uint16_t hsrx, uint64_t txseq, uint64_t rxseq)
 {
 	struct oncrpc_dtls *d = p->dp_dtls;
+	struct dtls_dgram *dg;
+	bool early;
 
 	/* s4.2.1: sequence numbers stop at 2^48. */
 	if (rcidlen > DTLS13_MAXCID || tcidlen > DTLS13_MAXCID ||
@@ -1320,7 +1352,20 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
 	p->dp_hsqlen = 0;
 	dtls_unpair(p);
 	p->dp_state = DP_ESTABLISHED;
+	/* What came under the application keys meanwhile, in order. */
+	early = p->dp_earlylen != 0;
+	while ((dg = SIMPLEQ_FIRST(&p->dp_early)) != NULL) {
+		SIMPLEQ_REMOVE_HEAD(&p->dp_early, dg_next);
+		dg->dg_peer = p;
+		p->dp_refs++;
+		p->dp_qn++;
+		SIMPLEQ_INSERT_TAIL(&d->d_q, dg, dg_next);
+		d->d_qlen++;
+	}
+	p->dp_earlylen = 0;
 	mutex_exit(&d->d_lock);
+	if (early)
+		(*d->d_wake)(d->d_arg);
 	return 0;
 }
 

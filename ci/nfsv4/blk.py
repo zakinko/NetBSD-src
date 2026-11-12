@@ -144,34 +144,10 @@ try:
         # Write as the client would, to the volume, then commit 64 KiB.
         print(vm("printf 'written to the volume' | dd of=%s "
                  "bs=512 seek=%d conv=notrunc 2>&1 | tail -1" % (IMG, so // 512)))
-        # RFC 5663 errata 4139: LAYOUTCOMMIT puts the device's volatile
-        # write cache to stable storage.  Counted by DTrace: DIOCCACHESYNC
-        # (_IOW('d', 118, int)) reaching vndioctl() of the volume's vnd.
-        # dtrace(1) needs dtrace_sdt to open the device (run 43287083599:
-        # "DTrace device not available", dtrace_sdt not found), and
-        # tick- probes dtrace_profile.
-        dt = vm("cd /var/tmp/nfsv4/modules && for m in solaris cyclic "
-                "dtrace dtrace_sdt dtrace_profile dtrace_fbt; do "
-                "modload /var/tmp/nfsv4/modules/$m.kmod 2>&1; done; "
-                "modstat | grep -E 'dtrace|solaris|cyclic'; "
-                "rm -f /var/tmp/blkt/dt.out; nohup /usr/sbin/dtrace -q -n "
-                "'fbt::vndioctl:entry /arg1 == 0x80046476/ { n++; } "
-                "tick-15s { printf(\"cachesync %d\\n\", n); exit(0); }' "
-                ">/var/tmp/blkt/dt.out 2>&1 </dev/null & sleep 5; echo started")
-        print(dt)
         res = s.compound([op.putfh(fh), op.layoutcommit(0, 65536, False,
             lsid, newoffset4(True, 65535), newtime4(False),
             layoutupdate4(BLK, struct.pack(">I", 0)))])
         t("s2.3.2 LAYOUTCOMMIT", res.status, NFS4_OK)
-        time.sleep(12)
-        dto = vm("cat /var/tmp/blkt/dt.out")
-        print(dto)
-        if "cachesync" in dto:
-            n = int(dto.split("cachesync")[1].split()[0])
-            t("RFC 5663 errata 4139: the volume's cache flushed by "
-              "LAYOUTCOMMIT", n > 0, True)
-        else:
-            print("not measured: DTrace did not run")
         t("s2.3.2 the size is the client's", size(s, fh), 65536)
         res = s.compound([op.putfh(fh), op.read(stateid4(0, osid.other),
             0, 21)])

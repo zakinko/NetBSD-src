@@ -162,6 +162,7 @@ jobs:
           copyback: false
           run: uname -a
       - name: getfacl and setfacl of illumos over versions 3 and 2
+        timeout-minutes: 30
         run: |
           sudo systemctl stop rpcbind rpcbind.socket 2>/dev/null || :
           sh ci/nfsacl/omnios-check.sh "$PWD/out"

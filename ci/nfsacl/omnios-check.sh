@@ -8,7 +8,10 @@ scp "$H/omnios.sh" omnios:/var/tmp/omnios.sh
 # The calls of the illumos client, to see what runat and ls -l ask.
 sudo tcpdump -i any -s 0 -w "$OUT/nfsacl-omnios.pcap" 'tcp port 2049' >/dev/null 2>&1 &
 sleep 2
-ssh omnios 'sh /var/tmp/omnios.sh' >"$L" 2>&1
+# Bounded and shown as it goes: a call the server never answers holds
+# the client, and the line it stopped at is the one to see.
+timeout 1200 ssh omnios 'sh /var/tmp/omnios.sh' 2>&1 | tee "$L" |
+    sed 's/^/omnios: /'
 sudo pkill -x tcpdump
 sleep 1
 sudo chmod 644 "$OUT/nfsacl-omnios.pcap" 2>/dev/null

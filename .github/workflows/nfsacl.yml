@@ -104,7 +104,13 @@ jobs:
           cat /etc/apt/apt-mirrors.txt 2>/dev/null || :
           sudo apt-get update -q 2>&1 | tail -3 || :
       # For the OmniOS VM: it reaches the NetBSD one through the runner.
-      - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+      # The runner's own rpcbind holds port 111 and must go before the
+      # NetBSD VM forwards it, or OmniOS asks the runner's and its mount
+      # retries for ever ("RPC: Unknown protocol").
+      - run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+          sudo systemctl stop rpcbind.socket rpcbind 2>/dev/null || :
+          ss -lntup | grep -E ':111 ' || echo 'port 111 free on the runner'
       - uses: vmactions/netbsd-vm@v1
         with:
           release: '11.0'
@@ -164,7 +170,7 @@ jobs:
       - name: getfacl and setfacl of illumos over versions 3 and 2
         timeout-minutes: 30
         run: |
-          sudo systemctl stop rpcbind rpcbind.socket 2>/dev/null || :
+          ss -lnup | grep -E ':111 ' || :
           sh ci/nfsacl/omnios-check.sh "$PWD/out"
       - name: Wireshark reads it
         if: always()

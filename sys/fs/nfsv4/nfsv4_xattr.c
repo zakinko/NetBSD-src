@@ -827,6 +827,30 @@ nfsv4_xattr_prepare(struct nfsv4_cfh *cf, const char *name, bool create,
 }
 
 /* RFC 7530 s16.17 */
+/*
+ * Whether the file system of vp has named attributes, asked of its root.
+ * RFC 8881 s18.17.4 (rfc8881.txt 23602-23605) answers NFS4ERR_NOTSUPP
+ * when the current filehandle has none; the errata 4492 of RFC 5661 (Held
+ * for Document Update) keeps that for a file system without them, as
+ * the client takes it to mean, and has an object that alone cannot have
+ * them, a device node on FFS say, answered otherwise: NFS4ERR_WRONG_TYPE,
+ * as s18.17.3 does for named attributes themselves.
+ */
+static bool
+openattr_fs(struct vnode *vp, kauth_cred_t cred)
+{
+	struct vnode *rvp;
+	size_t size = 0;
+	int error;
+
+	if (VFS_ROOT(vp->v_mount, LK_SHARED, &rvp) != 0)
+		return false;
+	error = VOP_LISTEXTATTR(rvp, XA_NS, NULL, &size,
+	    EXTATTR_LIST_LENPREFIX, cred);
+	vput(rvp);
+	return error == 0;
+}
+
 uint32_t
 nfsv4_op_openattr(struct nfsv4_compound *c, union nfsv4_args *a)
 {
@@ -840,6 +864,9 @@ nfsv4_op_openattr(struct nfsv4_compound *c, union nfsv4_args *a)
 	error = VOP_LISTEXTATTR(cf->cf_vp, XA_NS, NULL, &size,
 	    EXTATTR_LIST_LENPREFIX, cf->cf_cred);
 	VOP_UNLOCK(cf->cf_vp);
+	if (error == EOPNOTSUPP && cf->cf_vp->v_type != VREG &&
+	    cf->cf_vp->v_type != VDIR && openattr_fs(cf->cf_vp, cf->cf_cred))
+		return NFS4ERR_WRONG_TYPE;
 	if (error != 0)
 		return nfsv4_errno(error);	/* s16.17.5 for EOPNOTSUPP */
 	if (size == 0 && !a->openattr.createdir)

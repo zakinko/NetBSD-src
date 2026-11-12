@@ -237,6 +237,14 @@ jobs:
           cp ci/nfsv4/blk.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 1000 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true
+      - name: A client of 4.1 whose lease runs out, by pynfs
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' expire41 '))
+        timeout-minutes: 10
+        continue-on-error: true
+        run: |
+          cp ci/nfsv4/expire41.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 300 python3 ./expire41.py /export/pynfs 2>&1 | tee "$OLDPWD/out/expire41.txt" || true
       - name: The client of Linux losing its lease with a layout held
         if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' leaseexp '))
         timeout-minutes: 15
@@ -373,6 +381,7 @@ jobs:
             out/pnfs-blk.txt
             out/pnfs-blk.pcap
             out/lease-expire.txt
+            out/expire41.txt
             out/lease-expire.pcap
             out/named-attr.txt
             out/edge.txt

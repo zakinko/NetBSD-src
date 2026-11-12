@@ -32,10 +32,16 @@ CPPFLAGS+=	-DNFSV4_REMOVE_PAST_DENY
 # NFS4ERR_BADOWNER stands either way.  See nfsv4_attr.c.
 CPPFLAGS+=	-DNFSV4_NUMERIC_OWNER_SYS
 #
-# NFSV4_CB_VERS1: when a client of version 4.1 refuses callback version
-# 4, use 1, the version in the XDR of RFC 5662, against RFC 8881
-# s18.36.3's MUST of 4.  Without it that client has no callbacks.  See
-# nfsv4_cb.c.
+# Callbacks of version 4.1 are sent as RPC version 1, as the errata 2291
+# of RFC 5661 corrects s18.36.3 and the other servers do, against the
+# text of RFC 8881 s18.36.3, which says 4.  See nfsv4_cb.c.
+#
+# NFSV4_CB_VERS4: send 4 instead, the text of RFC 8881.  Not set:
+# vfs.nfsv4.cb_vers4 turns it on.
+#CPPFLAGS+=	-DNFSV4_CB_VERS4
+#
+# NFSV4_CB_VERS1: under NFSV4_CB_VERS4, when a client refuses version
+# 4, use 1 from then on.  Without it that client has no callbacks.
 CPPFLAGS+=	-DNFSV4_CB_VERS1
 #
 # NFSV4_EXCL_INHERIT: let the file system inherit ACEs, masked by mode 0,

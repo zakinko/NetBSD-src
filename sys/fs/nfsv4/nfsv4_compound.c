@@ -998,7 +998,11 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_no_reclaim_complete_ok, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
-	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_vers1", SYSCTL_DESCR("Fall back to callback version 1"),
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_vers4", SYSCTL_DESCR("Send callbacks of 4.1 as RPC version 4, the text of RFC 8881"),
+	    NULL, 0, &nfsv4_cb_vers4, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "cb_vers1", SYSCTL_DESCR("Under cb_vers4, fall back to callback version 1"),
 	    NULL, 0, &nfsv4_cb_vers1, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,

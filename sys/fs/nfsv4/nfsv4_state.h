@@ -314,6 +314,7 @@ extern int nfsv4_dirdeleg;
 extern int nfsv4_gdd_unavail_ok;
 extern int nfsv4_remove_past_deny;
 extern int nfsv4_cb_vers1;
+extern int nfsv4_cb_vers4;
 extern int nfsv4_cb_trace;
 
 /* What to do with a request after looking at its seqid, s9.1.7. */

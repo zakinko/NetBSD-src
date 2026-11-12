@@ -557,8 +557,9 @@ cb_do_probe(struct nfsv4_client *cl)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL, NULL);
-	/* RFC 8881 s18.36.3: version 4, and what is tried first. */
-	if (error == EPROTO && ct.ct_sess != NULL && nfsv4_cb_vers1) {
+	/* nfsv4_cb_vers4: version 4 tried first, and 1 if it is refused. */
+	if (error == EPROTO && ct.ct_sess != NULL &&
+	    ct.ct_vers != NFSV4_CB_VERSION && nfsv4_cb_vers1) {
 		ct.ct_vers = NFSV4_CB_VERSION;
 		error = cb_call(&ct, NFSV4_CB_PROC_NULL, NULL, NULL, NULL,
 		    NULL);
@@ -572,14 +573,26 @@ cb_do_probe(struct nfsv4_client *cl)
 }
 
 /*
- * vfs.nfsv4.cb_vers1, from the option NFSV4_CB_VERS1 (see the module's
- * Makefile).  Deliberately on: s18.36.3 has the server call back with
- * version 4 and nothing else, but the XDR of RFC 5662 has "version NFS_CB
- * = 1", and a client that followed it refuses 4 with PROG_MISMATCH and
- * would never get a callback.  On, that refusal makes the session use 1
- * from then on.  Without the option, or with 0 here, only 4 is sent, and
- * such a client has no backchannel, as the RFC has it.
+ * The RPC version of callbacks of version 4.1: 1, against the text of
+ * RFC 8881 s18.36.3 (rfc8881.txt 26366-26369), which still says 4.  RFC
+ * 5661 had the same text, and its errata 2291 (Verified, 2011-03-07)
+ * corrects it to 1, the version of the XDR of RFC 5662 ("version NFS_CB
+ * = 1"); the servers of Linux, FreeBSD, illumos and NFS-Ganesha send 1,
+ * and the clients take it.
+ *
+ * vfs.nfsv4.cb_vers4, from the option NFSV4_CB_VERS4 (see the module's
+ * Makefile), puts the text of RFC 8881 back: version 4 is sent.  Then
+ * vfs.nfsv4.cb_vers1, from NFSV4_CB_VERS1, makes a session whose client
+ * refuses 4 with PROG_MISMATCH use 1 from then on; with 0 there only 4
+ * is sent, and such a client has no backchannel.  To go back to 4 by
+ * default, set NFSV4_CB_VERS4.  Version 4.0 (RFC 7530 s16.33) always
+ * uses 1.
  */
+#ifdef NFSV4_CB_VERS4
+int nfsv4_cb_vers4 = 1;
+#else
+int nfsv4_cb_vers4 = 0;
+#endif
 #ifdef NFSV4_CB_VERS1
 int nfsv4_cb_vers1 = 1;
 #else

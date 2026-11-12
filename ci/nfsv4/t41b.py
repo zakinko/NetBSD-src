@@ -296,10 +296,13 @@ if res.status == NFS4_OK:
     t("s11.18 fs_status", a[FATTR4_FS_STATUS].fss_type, STATUS4_WRITABLE)
     t("s14.4 fs_charset_cap", a[FATTR4_FS_CHARSET_CAP], FSCHARSET_CAP4_ALLOWS_ONLY_UTF8)
 
-# s18.36.3: callbacks of version 4, and the fallback to 1 of NFSV4_CB_VERS1.
-# pynfs's callback server takes 1 only unless told otherwise.
+# s18.36.3 and its errata 2291: callbacks of version 1 by default; 4, the
+# text of RFC 8881, under vfs.nfsv4.cb_vers4, with the fallback to 1 of
+# vfs.nfsv4.cb_vers1.  pynfs's callback server takes 1 only unless told
+# otherwise.
 sc = lambda v: subprocess.call(["ssh", "netbsd", "sudo sysctl -w %s || sysctl -w %s" % (v, v)])
-def cbvers(name, fallback, vers):
+def cbvers(name, v4, fallback, vers):
+    sc("vfs.nfsv4.cb_vers4=%d" % v4)
     sc("vfs.nfsv4.cb_vers1=%d" % fallback)
     saved = c.versions
     c.versions = vers
@@ -319,10 +322,13 @@ def cbvers(name, fallback, vers):
         return got
     finally:
         c.versions = saved
+        sc("vfs.nfsv4.cb_vers4=0")
         sc("vfs.nfsv4.cb_vers1=1")
-t("s18.36.3 version 4 taken", cbvers(b"a", 0, [4]), OPEN_DELEGATE_READ)
-t("s18.36.3 a client of 1 only, no backchannel", cbvers(b"b", 0, [1]), OPEN_DELEGATE_NONE_EXT)
-t("option: falls back to 1", cbvers(b"c", 1, [1]), OPEN_DELEGATE_READ)
+t("errata 2291: version 1 by default", cbvers(b"d", 0, 1, [1]), OPEN_DELEGATE_READ)
+t("errata 2291: a client of 4 only, no backchannel", cbvers(b"e", 0, 1, [4]), OPEN_DELEGATE_NONE_EXT)
+t("cb_vers4: version 4 taken", cbvers(b"a", 1, 0, [4]), OPEN_DELEGATE_READ)
+t("cb_vers4: a client of 1 only, no backchannel", cbvers(b"b", 1, 0, [1]), OPEN_DELEGATE_NONE_EXT)
+t("cb_vers4 and cb_vers1: falls back to 1", cbvers(b"c", 1, 1, [1]), OPEN_DELEGATE_READ)
 
 # s10.2: a change through the server of NFSv3 recalls too.  nfsd(8) on UDP
 # only, as the module has TCP 2049; the client is the VM's own.

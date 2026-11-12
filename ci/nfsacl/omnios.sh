@@ -27,10 +27,14 @@ show() {	# label server-path [-d] client-path
 	if [ "$d" = -d ]; then getfacl -d "$cp"; else getfacl -a "$cp"; fi | norm
 }
 uname -a
+# What the client sees of the server's rpcbind, before any mount.
+rpcinfo -p $S 2>&1 | head -30
+rpcinfo -T tcp $S 100003 3 2>&1
+rpcinfo -T tcp $S 100005 3 2>&1
 for v in 3 2; do
 	m=/mnt/p$v
 	mkdir -p $m
-	t mount -F nfs -o vers=$v,proto=tcp $S:/export/pacl $m || continue
+	t mount -F nfs -o vers=$v,proto=tcp,retry=2 $S:/export/pacl $m || continue
 	f=$m/o$v; d=$m/od$v
 	rm -rf $f $d
 	t touch $f
@@ -68,7 +72,7 @@ done
 for e in tmpfs acl; do
 	m=/mnt/$e
 	mkdir -p $m
-	t mount -F nfs -o vers=3,proto=tcp $S:/export/$e $m || continue
+	t mount -F nfs -o vers=3,proto=tcp,retry=2 $S:/export/$e $m || continue
 	rm -f $m/o
 	t touch $m/o
 	t chmod 754 $m/o

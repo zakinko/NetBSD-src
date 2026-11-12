@@ -805,6 +805,34 @@ nfsv4_client_has_lost(const struct nfsv4_client *cl, bool live)
 	return false;
 }
 
+/*
+ * Whether cl holds what keeps DESTROY_CLIENTID from it, s18.50.3: opens,
+ * locks, delegations, or stateids not yet freed of an unexpired lease;
+ * of an expired one, only what it took since.  Not layouts: the errata
+ * 3379 of RFC 5661 (Verified) takes them out of that list, which RFC
+ * 8881 s18.50.3 (rfc8881.txt 28604-28607) still has, as a client may
+ * well not return them; they go with the client, as with an expired
+ * lease (client_release()), fenced.
+ */
+bool
+nfsv4_client_busy(const struct nfsv4_client *cl)
+{
+	const struct nfsv4_owner_s *sw;
+	const struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(sw, &cl->cl_owners, sw_list) {
+		if (sw->sw_type == NFSV4_OWNER_LAYOUT)
+			continue;
+		LIST_FOREACH(st, &sw->sw_states, st_olist) {
+			if (!cl->cl_expired || st->st_file != NULL)
+				return true;
+		}
+	}
+	return false;
+}
+
 /* Forget cl.  Its owners must be idle. */
 static void
 client_free(struct nfsv4_client *cl)

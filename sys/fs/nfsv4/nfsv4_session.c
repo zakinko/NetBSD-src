@@ -867,9 +867,7 @@ nfsv4_op_destroy_clientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (cl == NULL)
 		st = NFS4ERR_STALE_CLIENTID;
 	else if (cl == c->c_client || cl->cl_refs != 0 ||
-	    !LIST_EMPTY(&cl->cl_sessions) ||
-	    (nfsv4_client_has_state(cl) && (!cl->cl_expired ||
-	    nfsv4_client_has_lost(cl, true))))
+	    !LIST_EMPTY(&cl->cl_sessions) || nfsv4_client_busy(cl))
 		st = NFS4ERR_CLIENTID_BUSY;		/* s18.50.3 */
 	else
 		nfsv4_client_retire(cl);

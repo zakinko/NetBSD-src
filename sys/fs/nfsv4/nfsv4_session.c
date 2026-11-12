@@ -541,7 +541,7 @@ put_impl(XDR *x)
 /* EXCHANGE_ID4resok, s18.35.2. */
 static uint32_t
 exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
-    uint32_t flags)
+    uint32_t flags, bool ds)
 {
 	uint64_t minor = 0;
 	uint32_t none = SP4_NONE;
@@ -550,7 +550,7 @@ exchange_reply(struct nfsv4_compound *c, uint64_t id, uint32_t seq,
 	return xdr_u_int64_t(x, &id) && xdr_u_int32_t(x, &seq) &&
 	    xdr_u_int32_t(x, &flags) && xdr_u_int32_t(x, &none) &&
 	    xdr_u_int64_t(x, &minor) &&
-	    put_owner(x, nfsv4_layout_ds_conn(c->c_rq->rq_so)) &&
+	    put_owner(x, ds) &&
 	    put_hostname(x) && put_impl(x) ? NFS4_OK : NFS4ERR_RESOURCE;
 }
 
@@ -567,6 +567,8 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t seq, st, role;
 	uint64_t id;
 	bool same_verf, same_uid, pnfs;
+	/* s2.10.5: the data server's own server owner, its own records */
+	bool ds = nfsv4_layout_ds_conn(c->c_rq->rq_so);
 
 	/* s18.35.3 */
 	if ((ea->flags & ~EXCHGID4_ARG_FLAGS) != 0)
@@ -579,8 +581,8 @@ nfsv4_op_exchange_id(struct nfsv4_compound *c, union nfsv4_args *a)
 	mutex_enter(&nfsv4_state_lock);
 	/* s13.1: the roles, MDS and DS together while pNFS is on. */
 	role = nfsv4_pnfs_flags(ea->flags, &pnfs);
-	conf = nfsv4_client_find(ea->id, ea->idlen, true, 1);
-	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
+	conf = nfsv4_client_find(ea->id, ea->idlen, true, 1, ds);
+	unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1, ds);
 	same_verf = conf != NULL && memcmp(&conf->cl_verf, &ea->verifier,
 	    sizeof(ea->verifier)) == 0;
 	/*
@@ -615,7 +617,7 @@ existing:
 		    EXCHGID4_FLAG_USE_NON_PNFS);
 		mutex_exit(&nfsv4_state_lock);
 		kmem_free(n, sizeof(*n));
-		return exchange_reply(c, id, seq, flags);
+		return exchange_reply(c, id, seq, flags, ds);
 	}
 	if (conf != NULL && !same_uid) {		/* 3 */
 		if (!conf->cl_expired && time_uptime <= conf->cl_expire &&
@@ -626,7 +628,7 @@ existing:
 			return NFS4ERR_CLID_INUSE;
 		}
 		nfsv4_client_retire(conf);
-		unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1);
+		unconf = nfsv4_client_find(ea->id, ea->idlen, false, 1, ds);
 	}
 	if (unconf != NULL)				/* 4, and 5 */
 		nfsv4_client_retire(unconf);
@@ -638,6 +640,7 @@ existing:
 	n->cl_uid = uid;
 	n->cl_pflavor = c->c_rq->rq_flavor;
 	n->cl_pnfs = pnfs;
+	n->cl_ds = ds;
 	flags |= role;
 	n->cl_idlen = ea->idlen;
 	memcpy(n->cl_idstr, ea->id, ea->idlen);
@@ -647,7 +650,7 @@ existing:
 	n->cl_csstatus = NFS4ERR_SEQ_MISORDERED;
 	(void)nfsv4_client_insert(n);
 	mutex_exit(&nfsv4_state_lock);
-	return exchange_reply(c, id, seq, flags);
+	return exchange_reply(c, id, seq, flags, ds);
 }
 
 static uint32_t
@@ -747,7 +750,8 @@ nfsv4_op_create_session(struct nfsv4_compound *c, union nfsv4_args *a)
 	}
 	old = NULL;
 	if (!cl->cl_confirmed) {
-		old = nfsv4_client_find(cl->cl_idstr, cl->cl_idlen, true, 1);
+		old = nfsv4_client_find(cl->cl_idstr, cl->cl_idlen, true, 1,
+		    cl->cl_ds);
 		cl->cl_confirmed = true;
 	}
 	cl->cl_expire = time_uptime + NFSV4_LEASE;

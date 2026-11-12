@@ -627,6 +627,20 @@ nfsv4_stateid_out(const struct nfsv4_state *st, struct nfsv4_stateid *si)
 	other_encode(si->si_other, st->st_other);
 }
 
+/*
+ * Whether ds, a client record of the data server's own server owner
+ * (vfs.nfsv4.ds_owner), is of the same client as cl at the metadata
+ * server: the same co_ownerid, RFC 8881 s2.4.
+ */
+static bool
+ds_peer(const struct nfsv4_client *ds, const struct nfsv4_client *cl)
+{
+
+	return ds != NULL && ds->cl_ds && !cl->cl_ds && cl->cl_minor != 0 &&
+	    cl->cl_idlen == ds->cl_idlen &&
+	    memcmp(cl->cl_idstr, ds->cl_idstr, ds->cl_idlen) == 0;
+}
+
 /* The state a stateid names, with no regard to its seqid or its file. */
 uint32_t
 nfsv4_stateid_lookup(const struct nfsv4_compound *c,
@@ -651,9 +665,13 @@ nfsv4_stateid_lookup(const struct nfsv4_compound *c,
 		return c->c_minor != 0 ? NFS4ERR_BAD_STATEID :
 		    NFS4ERR_STALE_STATEID;
 	}
-	/* RFC 8881 s8.2.4: another client's is unknown. */
+	/*
+	 * RFC 8881 s8.2.4: another client's is unknown.  s13.9.1: the data
+	 * server takes those of the client at the metadata server.
+	 */
 	if ((st = nfsv4_state_byother(other)) != NULL &&
-	    (c->c_minor == 0 || st->st_owner->sw_client == c->c_client)) {
+	    (c->c_minor == 0 || st->st_owner->sw_client == c->c_client ||
+	    ds_peer(c->c_client, st->st_owner->sw_client))) {
 		*stp = st;
 		return NFS4_OK;
 	}
@@ -942,13 +960,18 @@ client_newverf(struct nfsv4_client *cl)
 
 struct nfsv4_client *
 nfsv4_client_find(const uint8_t *id, uint32_t len, bool confirmed,
-    uint32_t minor)
+    uint32_t minor, bool ds)
 {
 	struct nfsv4_client *cl;
 
+	/*
+	 * ds: of the data server's server owner (vfs.nfsv4.ds_owner), whose
+	 * client records are apart from the metadata server's, as those of
+	 * two servers are (RFC 8881 s2.10.5).
+	 */
 	LIST_FOREACH(cl, &nfsv4_clients, cl_list) {
 		if (cl->cl_confirmed == confirmed && cl->cl_idlen == len &&
-		    (cl->cl_minor != 0) == (minor != 0) &&
+		    (cl->cl_minor != 0) == (minor != 0) && cl->cl_ds == ds &&
 		    memcmp(cl->cl_idstr, id, len) == 0)
 			return cl;
 	}
@@ -1033,8 +1056,8 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	n = kmem_zalloc(sizeof(*n), KM_SLEEP);
 
 	mutex_enter(&nfsv4_state_lock);
-	conf = nfsv4_client_find(sa->id, sa->idlen, true, 0);
-	unconf = nfsv4_client_find(sa->id, sa->idlen, false, 0);
+	conf = nfsv4_client_find(sa->id, sa->idlen, true, 0, false);
+	unconf = nfsv4_client_find(sa->id, sa->idlen, false, 0, false);
 
 	/* What expired is of no use to compare with. */
 	if (conf != NULL && (conf->cl_expired ||
@@ -1068,7 +1091,7 @@ nfsv4_op_setclientid(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (dead != NULL) {
 		client_wait_idle(dead);
 		/* client_free() drops the lock; it is still ours to free. */
-		if (nfsv4_client_find(sa->id, sa->idlen, true, 0) == dead)
+		if (nfsv4_client_find(sa->id, sa->idlen, true, 0, false) == dead)
 			client_free(dead);
 	}
 
@@ -1138,7 +1161,8 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 			goto out;
 		}
 		/* { *, x, c, k, s }, and any { *, x, d, *, t } goes. */
-		old = nfsv4_client_find(unconf->cl_idstr, unconf->cl_idlen, true, 0);
+		old = nfsv4_client_find(unconf->cl_idstr, unconf->cl_idlen, true, 0,
+		    false);
 		if (old != NULL) {
 			struct nfsv4_reap reap;
 
@@ -1149,7 +1173,7 @@ nfsv4_op_setclientid_confirm(struct nfsv4_compound *c, union nfsv4_args *a)
 			 */
 			client_wait_idle(old);
 			if (nfsv4_client_find(unconf->cl_idstr,
-			    unconf->cl_idlen, true, 0) == old) {
+			    unconf->cl_idlen, true, 0, false) == old) {
 				old->cl_idlen = UINT32_MAX;
 				old->cl_expired = true;
 				old->cl_expire = time_uptime;

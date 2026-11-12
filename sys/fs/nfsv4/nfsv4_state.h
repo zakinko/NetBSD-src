@@ -134,6 +134,7 @@ struct nfsv4_client {
 	bool		cl_retired;	/* being forgotten; no name finds it */
 	bool		cl_reclaimed;	/* RECLAIM_COMPLETE was done, s18.51 */
 	bool		cl_pnfs;	/* USE_PNFS_MDS and _DS, RFC 8881 s13.1 */
+	bool		cl_ds;		/* of the data server's own owner */
 	u_int		cl_nrevoked;	/* of st_revoked */
 	uint32_t	cl_csseq;	/* the CREATE_SESSION slot, s18.36.4 */
 	uint32_t	cl_csstatus;
@@ -340,7 +341,7 @@ uint32_t nfsv4_client_get(uint64_t, struct nfsv4_client **);
 uint32_t nfsv4_client_cur(struct nfsv4_compound *, uint64_t,
 	    struct nfsv4_client **);
 struct nfsv4_client *
-	nfsv4_client_find(const uint8_t *, uint32_t, bool, uint32_t);
+	nfsv4_client_find(const uint8_t *, uint32_t, bool, uint32_t, bool);
 struct nfsv4_client *
 	nfsv4_client_byid(uint64_t);
 struct nfsv4_client *

@@ -366,10 +366,14 @@ nfsv4_layout_setff(const char *line)
  * of the layouts over its connection to the metadata server, never to
  * the data server's address.  On, a connection to that address is given a
  * so_major_id of its own, so that the client makes a second nfs_client
- * and sends the I/O there; the client ID and its state are the same, as
- * s2.10.5's client ID is only unique under a so_major_id (rfc8881.txt
- * 25448), so nothing else changes.  Off, or without the option, the
- * RFC's single server owner is given.
+ * and sends the I/O there.  As for another server, its client records
+ * are its own (nfsv4_client_find()); sharing them, the client's two
+ * nfs_clients took the one record from each other with new verifiers
+ * and the state at the metadata server was lost (run 43139914022).  A
+ * client ID is only unique under a so_major_id (rfc8881.txt 25448).  Its
+ * READ and WRITE take the stateids of the same client at the metadata
+ * server, s13.9.1 (nfsv4_stateid_lookup()).  Off, or without the option,
+ * the RFC's single server owner is given.
  */
 #ifdef NFSV4_DS_OWNER
 int nfsv4_ds_owner = 1;

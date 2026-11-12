@@ -918,6 +918,12 @@ nfsacl_getattr2(struct oncrpc_req *rq)
  * or DELETE for a file or directory; a special file is left to the
  * client.  Linux's map [L2] asks the same of each bit.  Then the
  * attributes, read after the checks.
+ *
+ * A node of named attributes goes by its own type, not by the file's
+ * vnode, and by the rules of xa_access3(): VREAD of the file to read
+ * or look up, VWRITE to change, and nothing executes.  Taking the
+ * file's type left the directory without LOOKUP, and illumos' runat
+ * over version 2 then failed with EACCES.
  */
 static enum oncrpc_dispatch
 nfsacl_access2(struct oncrpc_req *rq)
@@ -929,7 +935,8 @@ nfsacl_access2(struct oncrpc_req *rq)
 	nfsrvfh_t nsfh;
 	struct nfsacl_node nn;
 	uint32_t want, got = 0, status;
-	int error, rdonly;
+	int error, rdonly, lookmode;
+	enum vtype type;
 	bool ok, wperm;
 
 	if (!nfsacl_get_fh(ax, &nsfh, false) || !xdr_u_int32_t(ax, &want))
@@ -938,20 +945,23 @@ nfsacl_access2(struct oncrpc_req *rq)
 	error = nfsacl_fhtovp(rq, cred, &nsfh, &vp, &rdonly, &nn);
 	if (error != 0)
 		goto out;
+	type = nn.nn_xattr ? nn.nn_va.va_type : vp->v_type;
+	lookmode = nn.nn_xattr ? VREAD : VEXEC;
 	wperm = !((rdonly || (vp->v_mount->mnt_flag & MNT_RDONLY)) &&
-	    (vp->v_type == VREG || vp->v_type == VDIR));
+	    (type == VREG || type == VDIR));
 	if ((want & ACCESS2_READ) && VOP_ACCESS(vp, VREAD, cred) == 0)
 		got |= ACCESS2_READ;
-	if ((want & ACCESS2_LOOKUP) && vp->v_type == VDIR &&
-	    VOP_ACCESS(vp, VEXEC, cred) == 0)
+	if ((want & ACCESS2_LOOKUP) && type == VDIR &&
+	    VOP_ACCESS(vp, lookmode, cred) == 0)
 		got |= ACCESS2_LOOKUP;
 	if (wperm && (want & (ACCESS2_MODIFY | ACCESS2_EXTEND)) &&
 	    VOP_ACCESS(vp, VWRITE, cred) == 0)
 		got |= want & (ACCESS2_MODIFY | ACCESS2_EXTEND);
-	if (wperm && (want & ACCESS2_DELETE) && vp->v_type == VDIR &&
+	if (wperm && (want & ACCESS2_DELETE) && type == VDIR &&
 	    VOP_ACCESS(vp, VWRITE, cred) == 0)
 		got |= ACCESS2_DELETE;
-	if ((want & ACCESS2_EXECUTE) && VOP_ACCESS(vp, VEXEC, cred) == 0)
+	if ((want & ACCESS2_EXECUTE) && !nn.nn_xattr &&
+	    VOP_ACCESS(vp, VEXEC, cred) == 0)
 		got |= ACCESS2_EXECUTE;
 	error = nfsacl_getattr(vp, cred, &nn, &va);
 out:

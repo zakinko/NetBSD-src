@@ -61,6 +61,14 @@ for w in "$OUT"/acl.*.where; do
 	c=${w%.where}
 	read sp d <"$w"
 	ssh -o LogLevel=ERROR netbsd "sh /var/tmp/nfsv4/sacl.sh $d '$sp'" >"$c.server"
+	# The server sends an ACL of three entries as four, with a mask of
+	# the group's (design: the encode of 3 to 4), and illumos prints
+	# it; the server's own has none.  Such a mask is dropped here.
+	if ! grep -q '^user:[^:]' "$c" && ! grep -q '^group:[^:]' "$c" &&
+	    ! grep -q '^mask::' "$c.server" &&
+	    [ "$(sed -n 's/^mask:://p' "$c")" = "$(sed -n 's/^group:://p' "$c")" ]; then
+		grep -v '^mask::' "$c" >"$c.n" && mv "$c.n" "$c"
+	fi
 	if cmp -s "$c" "$c.server"; then echo "same: ${c##*/acl.}"; else
 		echo "DIFFERENT: ${c##*/acl.}"; diff "$c" "$c.server"; fi
 done | tee -a "$L"

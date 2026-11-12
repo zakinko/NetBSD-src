@@ -564,6 +564,9 @@ nfsv4_op_setattr(struct nfsv4_compound *c, union nfsv4_args *a)
 			st = NFS4ERR_INVAL;
 		else
 			st = nfsv4_io_check(c, &sa->stateid, true);
+		/* RFC 5663 s2.3.8: blocks of a block layout stay. */
+		if (st == NFS4_OK)
+			st = nfsv4_layout_blk_truncate(vp, va.va_size);
 	} else if (st == NFS4_OK && c->c_minor != 0)
 		st = nfsv4_setattr_stateid(c, &sa->stateid);	/* RFC 8881 s8.2.6 */
 	/*

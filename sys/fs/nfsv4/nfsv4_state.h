@@ -50,6 +50,7 @@ struct flock;
 struct nfsv4_owner_s;
 struct nfsv4_state;
 struct vnode;
+struct blk_fence;
 
 /* What is known of a client's callback path, s10.2. */
 #define	NFSV4_CB_UNKNOWN	0
@@ -109,15 +110,15 @@ struct nfsv4_session {
 
 /*
  * RFC 8881 s18.40.3: the device ID notifications asked of one device ID,
- * as bits 1 << NOTIFY_DEVICEID4_*.  Two layout types, each with a device
- * and one retired, nfsv4_layout.c.
+ * as bits 1 << NOTIFY_DEVICEID4_*.  Three layout types, each with a
+ * device and one retired, nfsv4_layout.c.
  */
 struct nfsv4_devnote {
 	uint32_t	dn_type;	/* LAYOUT4_* */
 	uint32_t	dn_gen;		/* of the device ID */
 	uint32_t	dn_mask;	/* 0 for a free one */
 };
-#define	NFSV4_DEVNOTES	(2 * 2)
+#define	NFSV4_DEVNOTES	(3 * 2)
 
 /*
  * RFC 7530 s16.33.5, a record { v, x, c, k, s }, or the 5-tuple of
@@ -167,6 +168,8 @@ struct nfsv4_client {
 	uint8_t		cl_idstr[NFS4_OPAQUE_LIMIT];
 	struct nfsv4_devnote cl_devnote[NFSV4_DEVNOTES];
 	uint32_t	cl_lwant;	/* RCA4_TYPE_MASK_* bits, s18.43.3 */
+	uint8_t		cl_blkhint;	/* RFC 5663 s2.3.8, nfsv4_layout.c */
+	uint64_t	cl_blkio;	/* blh_maximum_io_time, seconds */
 };
 
 #define	NFSV4_OWNER_OPEN	1
@@ -281,6 +284,7 @@ struct nfsv4_state {
 	bool		st_lrecall;	/* CB_LAYOUTRECALL sent, s12.5.5.2 */
 	bool		st_lanswered;	/* and the client has answered it */
 	time_t		st_lrend;	/* when it is let go regardless */
+	struct blk_fence *st_lblk;	/* RFC 5663 s2.3.8, if not returned */
 };
 
 SLIST_HEAD(nfsv4_reap, nfsv4_state);
@@ -431,6 +435,9 @@ void	nfsv4_layout_scan(struct nfsv4_reap *);
 void	nfsv4_layout_gone(struct nfsv4_state *);
 void	nfsv4_ff_reap(void);
 uint32_t nfsv4_layout_ff_conflict(struct vnode *);
+void	nfsv4_blk_reap(bool);
+uint32_t nfsv4_layout_blkhint(struct nfsv4_client *, uint64_t);
+uint32_t nfsv4_layout_blk_truncate(struct vnode *, uint64_t);
 bool	nfsv4_layout_held(const struct nfsv4_client *, struct vnode *, bool);
 
 /* These do not. */

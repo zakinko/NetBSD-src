@@ -242,6 +242,7 @@
 
 /* RFC 8881 s20.6.1; RFC 8435 s13.1, ff_cb_recall_any_mask */
 #define	RCA4_TYPE_MASK_FILE_LAYOUT	3
+#define	RCA4_TYPE_MASK_BLK_LAYOUT	4
 #define	PNFS_FF_RCA4_TYPE_MASK_READ	16
 #define	PNFS_FF_RCA4_TYPE_MASK_RW	17
 

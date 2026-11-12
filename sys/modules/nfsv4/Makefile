@@ -51,6 +51,15 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # nfsv4_layout.c.
 #CPPFLAGS+=	-DNFSV4_DS_OWNER
 #
+# NFSV4_BLK_NOHINT: give block layouts (RFC 5663) to a client that has
+# set no layout_hint, taking its maximum I/O time to be 60 seconds,
+# against RFC 5663 s2.3.8's SHOULD that it be refused them with
+# NFS4ERR_LAYOUTUNAVAILABLE.  The client of Linux never sets the hint,
+# so it has no block layouts without this.  Not set: vfs.nfsv4.blk_nohint
+# turns it on, and 0 there, or this left out, is the RFC's way.  See
+# nfsv4_layout.c.
+#CPPFLAGS+=	-DNFSV4_BLK_NOHINT
+#
 # NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
 # file system mask the inherited ACEs by the server's default mode,
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not

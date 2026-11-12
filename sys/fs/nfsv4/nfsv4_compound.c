@@ -814,6 +814,13 @@ nfsv4_sysctl_ff_ds(SYSCTLFN_ARGS)
 	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_layout_setff);
 }
 
+static int
+nfsv4_sysctl_pnfs_blk(SYSCTLFN_ARGS)
+{
+
+	return nfsv4_sysctl_line(SYSCTLFN_CALL(rnode), nfsv4_layout_setblk);
+}
+
 /* Writing anything fences every data file, RFC 8435 s2.2. */
 static int
 nfsv4_sysctl_ff_fence(SYSCTLFN_ARGS)
@@ -1017,6 +1024,18 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "ff_ds", SYSCTL_DESCR("netid, uaddr and directory of the flexible file layout's NFSv3 storage device; empty for none"),
 	    nfsv4_sysctl_ff_ds, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "pnfs_blk", SYSCTL_DESCR("Path of the FFS file system of the block layout; empty for none"),
+	    nfsv4_sysctl_pnfs_blk, 0, NULL, MAXPATHLEN,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "blk_nohint", SYSCTL_DESCR("Give block layouts to a client that set no layout_hint"),
+	    NULL, 0, &nfsv4_blk_nohint, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READONLY, CTLTYPE_INT, "blk_fences", SYSCTL_DESCR("Files of block layouts held fenced"),
+	    NULL, 0, &nfsv4_blk_fences, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "ff_fence", SYSCTL_DESCR("Fence every flexible file layout data file"),

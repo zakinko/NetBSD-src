@@ -55,6 +55,22 @@
  * there is one, READ, WRITE and SETATTR of the size on the metadata
  * server recall the layouts and are told NFS4ERR_DELAY, so the two
  * files are never both written.
+ *
+ * The block layout, RFC 5663, is of the FFS file system mounted on the
+ * path in vfs.nfsv4.pnfs_blk, whose device the client reaches by itself
+ * (over iSCSI, say): the one volume, simple, known by the fs_id in its
+ * superblock (s2.2.1).  As in the block layout server of Linux (its
+ * fs/nfsd/blocklayout.c and fs/xfs/xfs_pnfs.c), LAYOUTGET writes the
+ * file's cached pages out and drops them, so that the client reads what
+ * is on the device, and LAYOUTCOMMIT drops them again and sets the size
+ * the client wrote to.  FFS has no mark for allocated but unwritten
+ * blocks, so the holes of a layout for writing are allocated and zeroed
+ * at LAYOUTGET and given as PNFS_BLOCK_READ_WRITE_DATA; INVALID_DATA is
+ * never given, and the size does not move until LAYOUTCOMMIT.  There is
+ * no LUN masking, so fencing is timed-lease (s2.3.8): the blocks of a
+ * layout let go without being returned stay the file's, and no other
+ * layout of the file is given, for a lease and the client's maximum I/O
+ * time.
  */
 
 #include <sys/cdefs.h>
@@ -62,9 +78,11 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <sys/param.h>
 #include <sys/atomic.h>
+#include <sys/buf.h>
 #include <sys/cprng.h>
 #include <sys/endian.h>
 #include <sys/fcntl.h>
+#include <sys/fstrans.h>
 #include <sys/kmem.h>
 #include <sys/mount.h>
 #include <sys/namei.h>
@@ -76,6 +94,13 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/vnode.h>
 
 #include <netinet/in.h>
+
+#include <miscfs/genfs/genfs_node.h>
+
+#include <ufs/ufs/quota.h>
+#include <ufs/ufs/ufsmount.h>
+#include <ufs/ufs/inode.h>
+#include <ufs/ffs/fs.h>
 
 #include <fs/nfsv4/nfsv4_var.h>
 #include <fs/nfsv4/nfsv4_state.h>
@@ -97,9 +122,14 @@ __KERNEL_RCSID(0, "$NetBSD$");
  */
 struct pnfs_dev {
 	char		d_netid[NFSV4_DS_NETID];
-	char		d_uaddr[NFSV4_DS_UADDR];
+	char		d_uaddr[NFSV4_DS_UADDR];	/* or blk_dev's path */
 	uint32_t	d_gen;
 	u_int		d_refs;		/* layouts that refer to it */
+	/* RFC 5663, of the block layout's volume */
+	fsid_t		d_fsid;		/* of the file system on it */
+	int64_t		d_sigoff;	/* bsc_sig_offset, s2.2.1 */
+	uint8_t		d_sig[8];	/* bsc_contents: the fs_id */
+	uint32_t	d_bsize;	/* fs_bsize, layout_blksize */
 };
 
 static struct pnfs_dev ds_dev, ds_old;	/* the file layout's */
@@ -143,6 +173,77 @@ int nfsv4_ff_fences;			/* vfs.nfsv4.ff_fences */
 
 static volatile u_int layout_count;	/* d_refs of all the devices */
 
+/* RFC 5663: the volume, and its retired one. */
+static struct pnfs_dev blk_dev, blk_old;
+
+/*
+ * s2.3.8: the client's maximum I/O time when it has given none, under
+ * vfs.nfsv4.blk_nohint (option NFSV4_BLK_NOHINT): "often 30 seconds or
+ * 60 seconds"; the longer.  A hint above NFSV4_BLK_IOMAX is refused as
+ * one "significantly greater" would be, the bound being this server's.
+ */
+#define	NFSV4_BLK_IOTIME	60
+#define	NFSV4_BLK_IOMAX		(24 * 60 * 60)
+
+/* cl_blkhint */
+#define	NFSV4_BLKHINT_NONE	0
+#define	NFSV4_BLKHINT_SET	1	/* cl_blkio holds it */
+#define	NFSV4_BLKHINT_INVAL	2	/* refused: no block layouts */
+
+/*
+ * s2.3.1: what one layout maps, of this server's choosing; the client
+ * asks again for the rest.
+ */
+#define	NFSV4_BLK_EXTMAX	64
+#define	NFSV4_BLK_LENMAX	(8 * 1024 * 1024)
+
+/* pnfs_block_extent4, s2.3 */
+struct blk_ext {
+	uint64_t	be_off;		/* bex_file_offset */
+	uint64_t	be_len;
+	uint64_t	be_soff;	/* bex_storage_offset */
+	uint32_t	be_state;
+};
+#define	NFSV4_BLK_EXTSIZE	(NFS4_DEVICEID4_SIZE + 8 + 8 + 8 + 4)
+
+/* s2.3, enum pnfs_block_extent_state4 */
+#define	PNFS_BLOCK_READ_WRITE_DATA	0
+#define	PNFS_BLOCK_READ_DATA		1
+#define	PNFS_BLOCK_NONE_DATA		3
+
+/* s2.2.1, enum pnfs_block_volume_type4 */
+#define	PNFS_BLOCK_VOLUME_SIMPLE	0
+
+/*
+ * s2.3.8, timed-lease fencing: the file of a block layout that was let
+ * go without being returned, held until bf_until so that its blocks are
+ * not freed, and given in no other layout.  Allocated with the layout,
+ * st_lblk, as it is taken under the lock.
+ */
+struct blk_fence {
+	LIST_ENTRY(blk_fence) bf_list;
+	struct vnode	*bf_vp;		/* referenced */
+	time_t		bf_until;
+};
+static LIST_HEAD(, blk_fence) blk_fences = LIST_HEAD_INITIALIZER(blk_fences);
+int nfsv4_blk_fences;			/* vfs.nfsv4.blk_fences, held now */
+
+/*
+ * vfs.nfsv4.blk_nohint, from the option NFSV4_BLK_NOHINT (see the
+ * module's Makefile).  RFC 5663 s2.3.8 has a client set layout_hint
+ * before its first LAYOUTGET, and the server refuse a block layout to one
+ * that has not, with NFS4ERR_LAYOUTUNAVAILABLE (SHOULD).  The client of
+ * Linux never sets it (fs/nfs/blocklayout/ has no layout_hint), so it
+ * would never have a block layout.  On, such a client is taken to have
+ * a maximum I/O time of NFSV4_BLK_IOTIME; a hint refused stays refused.
+ * Off, or without the option, the RFC's refusal stands.
+ */
+#ifdef NFSV4_BLK_NOHINT
+int nfsv4_blk_nohint = 1;
+#else
+int nfsv4_blk_nohint = 0;
+#endif
+
 /*
  * vfs.nfsv4.layout_max, 0 for no bound: past it LAYOUTGET has none
  * readily available (s18.43.3).  From three quarters of it, the holders
@@ -152,6 +253,7 @@ int nfsv4_layout_max;
 static time_t layout_rca_next;
 static bool layout_wanted;		/* some cl_lwant is set */
 
+static void layout_recall(struct nfsv4_state *);
 static void layout_recall_type(uint32_t);
 static void layout_avail(const struct nfsv4_state *);
 static void layout_crowded(void);
@@ -163,7 +265,8 @@ bool
 nfsv4_pnfs_on(void)
 {
 
-	return ds_dev.d_uaddr[0] != '\0' || ff_dev.d_uaddr[0] != '\0';
+	return ds_dev.d_uaddr[0] != '\0' || ff_dev.d_uaddr[0] != '\0' ||
+	    blk_dev.d_uaddr[0] != '\0';
 }
 
 /* Layouts of type t are given. */
@@ -176,26 +279,46 @@ layout_on(uint32_t t)
 		return ds_dev.d_uaddr[0] != '\0';
 	case LAYOUT4_FLEX_FILES:
 		return ff_dev.d_uaddr[0] != '\0';
+	case LAYOUT4_BLOCK_VOLUME:
+		return blk_dev.d_uaddr[0] != '\0';
 	default:
 		return false;
 	}
 }
 
+/* The block layout is known while it is on, or its old volume held. */
 static bool
 layout_known(uint32_t t)
 {
 
-	return t == LAYOUT4_NFSV4_1_FILES || t == LAYOUT4_FLEX_FILES;
+	return t == LAYOUT4_NFSV4_1_FILES || t == LAYOUT4_FLEX_FILES ||
+	    (t == LAYOUT4_BLOCK_VOLUME &&
+	    (layout_on(t) || blk_old.d_refs != 0));
 }
 
-/* fs_layout_type and layout_type, s5.12.1, s5.12.3; at most 2. */
+/* Whether vp is on the block layout's file system, d being blk_dev. */
+static bool
+blk_vp(const struct pnfs_dev *d, struct vnode *vp)
+{
+
+	return d->d_uaddr[0] != '\0' && vp != NULL && vp->v_mount != NULL &&
+	    memcmp(&vp->v_mount->mnt_stat.f_fsidx, &d->d_fsid,
+	    sizeof(d->d_fsid)) == 0;
+}
+
+/*
+ * fs_layout_type and layout_type, s5.12.1, s5.12.3, of the file system
+ * of vp; at most NFSV4_LAYOUT_TYPES.  The block layout is of one.
+ */
 u_int
-nfsv4_layout_typelist(uint32_t *types)
+nfsv4_layout_typelist(struct vnode *vp, uint32_t *types)
 {
 	u_int n = 0;
 
 	if (layout_on(LAYOUT4_NFSV4_1_FILES))
 		types[n++] = LAYOUT4_NFSV4_1_FILES;
+	if (blk_vp(&blk_dev, vp))
+		types[n++] = LAYOUT4_BLOCK_VOLUME;
 	if (layout_on(LAYOUT4_FLEX_FILES))
 		types[n++] = LAYOUT4_FLEX_FILES;
 	return n;
@@ -208,6 +331,8 @@ dev_of(uint32_t type, bool old)
 
 	if (type == LAYOUT4_FLEX_FILES)
 		return old ? &ff_old : &ff_dev;
+	if (type == LAYOUT4_BLOCK_VOLUME)
+		return old ? &blk_old : &blk_dev;
 	return old ? &ds_old : &ds_dev;
 }
 
@@ -222,8 +347,8 @@ ds_devid(uint8_t *id, uint32_t type, uint32_t gen)
 	memset(id, 0, NFS4_DEVICEID4_SIZE);
 	be32enc(id, nfsv4_boot);
 	be32enc(id + 4, gen);
-	memcpy(id + 8, type == LAYOUT4_FLEX_FILES ? "NetBSDff" : "NetBSDds",
-	    8);
+	memcpy(id + 8, type == LAYOUT4_FLEX_FILES ? "NetBSDff" :
+	    type == LAYOUT4_BLOCK_VOLUME ? "NetBSDbl" : "NetBSDds", 8);
 }
 
 /*
@@ -354,6 +479,187 @@ nfsv4_layout_setff(const char *line)
 	}
 	mutex_exit(&nfsv4_state_lock);
 	return error;
+}
+
+/*
+ * The volume of the block layout, of mp, to d.  RFC 5663 s2.2.1: it is
+ * known by content, here the fs_id of the superblock, at its offset on
+ * the device; so the device given out must be the one the file system
+ * is on, from its start, as Linux asks too.  Only FFS, in its own byte
+ * order and without a log, whose metadata is written as it is here, and
+ * with fragments as large as blocks: a client writes whole blocks
+ * (s2.3.2), and a fragment's block is shared with other files.
+ */
+static int
+blk_volume(struct mount *mp, struct pnfs_dev *d)
+{
+	struct ufsmount *ump;
+	struct fs *fs;
+
+	if (strcmp(mp->mnt_stat.f_fstypename, MOUNT_FFS) != 0)
+		return EOPNOTSUPP;
+	ump = VFSTOUFS(mp);
+	fs = ump->um_fs;
+	if ((ump->um_flags & UFS_NEEDSWAP) != 0 || mp->mnt_wapbl != NULL ||
+	    fs->fs_fsize != fs->fs_bsize || fs->fs_bsize > MAXBSIZE)
+		return EOPNOTSUPP;
+	CTASSERT(sizeof(d->d_sig) == sizeof(fs->fs_id));
+	d->d_fsid = mp->mnt_stat.f_fsidx;
+	d->d_sigoff = fs->fs_sblockloc + offsetof(struct fs, fs_id);
+	memcpy(d->d_sig, fs->fs_id, sizeof(d->d_sig));
+	d->d_bsize = fs->fs_bsize;
+	return 0;
+}
+
+/*
+ * vfs.nfsv4.pnfs_blk: the path of a file system for the block layout,
+ * RFC 5663, or "" for none.  A new one is a new device ID; the old one
+ * goes as dev_replace() says.
+ */
+int
+nfsv4_layout_setblk(const char *line)
+{
+	struct pnfs_dev nd;
+	struct vnode *vp;
+	uint32_t gen;
+	u_int refs;
+	int error;
+
+	memset(&nd, 0, sizeof(nd));
+	if (*line != '\0') {
+		if (*line != '/' || strlen(line) >= sizeof(nd.d_uaddr))
+			return EINVAL;
+		error = namei_simple_kernel(line, NSM_FOLLOW_NOEMULROOT, &vp);
+		if (error != 0)
+			return error;
+		error = blk_volume(vp->v_mount, &nd);
+		vrele(vp);
+		if (error != 0)
+			return error;
+		strlcpy(nd.d_uaddr, line, sizeof(nd.d_uaddr));
+	}
+	mutex_enter(&nfsv4_state_lock);
+	error = dev_replace(LAYOUT4_BLOCK_VOLUME);
+	if (error == 0) {
+		gen = blk_dev.d_gen;
+		refs = blk_dev.d_refs;
+		blk_dev = nd;
+		blk_dev.d_gen = gen;
+		blk_dev.d_refs = refs;
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return error;
+}
+
+/*
+ * RFC 5663 s2.3.8: the blh_maximum_io_time of a SETATTR of layout_hint,
+ * kept for the client, and applied to every layout it has (fences are
+ * reckoned from it when they are made).  Unbounded, all ones, and above
+ * NFSV4_BLK_IOMAX it is NFS4ERR_INVAL (SHOULD), and the client is given
+ * no block layout from then on (MUST).
+ */
+uint32_t
+nfsv4_layout_blkhint(struct nfsv4_client *cl, uint64_t io)
+{
+	uint32_t status = NFS4_OK;
+
+	if (cl == NULL)
+		return NFS4ERR_INVAL;
+	mutex_enter(&nfsv4_state_lock);
+	if (io > NFSV4_BLK_IOMAX) {
+		cl->cl_blkhint = NFSV4_BLKHINT_INVAL;
+		status = NFS4ERR_INVAL;
+	} else if (cl->cl_blkhint != NFSV4_BLKHINT_INVAL) {
+		cl->cl_blkio = io;
+		cl->cl_blkhint = NFSV4_BLKHINT_SET;
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return status;
+}
+
+/* The maximum I/O time of cl, s2.3.8; -1 if it is to have no layout. */
+static int64_t
+blk_iotime(const struct nfsv4_client *cl)
+{
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if (cl->cl_blkhint == NFSV4_BLKHINT_SET)
+		return (int64_t)cl->cl_blkio;
+	if (cl->cl_blkhint == NFSV4_BLKHINT_NONE && nfsv4_blk_nohint)
+		return NFSV4_BLK_IOTIME;
+	return -1;
+}
+
+/* Whether vp is held by a fence, s2.3.8. */
+static bool
+blk_fenced(struct vnode *vp)
+{
+	struct blk_fence *bf;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	LIST_FOREACH(bf, &blk_fences, bf_list) {
+		if (bf->bf_vp == vp && time_uptime < bf->bf_until)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The lease thread, and unloading with all: let go of the fences whose
+ * time has come.  The vnodes are released outside the lock.
+ */
+void
+nfsv4_blk_reap(bool all)
+{
+	LIST_HEAD(, blk_fence) done = LIST_HEAD_INITIALIZER(done);
+	struct blk_fence *bf, *nbf;
+
+	mutex_enter(&nfsv4_state_lock);
+	LIST_FOREACH_SAFE(bf, &blk_fences, bf_list, nbf) {
+		if (all || time_uptime >= bf->bf_until) {
+			LIST_REMOVE(bf, bf_list);
+			LIST_INSERT_HEAD(&done, bf, bf_list);
+			nfsv4_blk_fences--;
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	while ((bf = LIST_FIRST(&done)) != NULL) {
+		LIST_REMOVE(bf, bf_list);
+		vrele(bf->bf_vp);
+		kmem_free(bf, sizeof(*bf));
+	}
+}
+
+/*
+ * SETATTR of a size below vp's: the blocks past it would be freed, so
+ * not while a block layout of vp is held, which is recalled, s12.5.5, nor
+ * while vp is fenced, s2.3.8.  NFS4ERR_DELAY until then.
+ */
+uint32_t
+nfsv4_layout_blk_truncate(struct vnode *vp, uint64_t size)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+	uint32_t status = NFS4_OK;
+
+	if (size >= (uint64_t)vp->v_size)
+		return NFS4_OK;
+	mutex_enter(&nfsv4_state_lock);
+	if (blk_fenced(vp))
+		status = NFS4ERR_DELAY;
+	if ((f = nfsv4_file_find(vp)) != NULL) {
+		LIST_FOREACH(st, &f->f_states, st_flist) {
+			if (st->st_type == NFSV4_ST_LAYOUT &&
+			    st->st_ltype == LAYOUT4_BLOCK_VOLUME) {
+				layout_recall(st);
+				status = NFS4ERR_DELAY;
+			}
+		}
+	}
+	mutex_exit(&nfsv4_state_lock);
+	return status;
 }
 
 /*
@@ -742,6 +1048,40 @@ ff_unref(struct ff_data *fd)
 	}
 }
 
+/*
+ * A block layout ends.  RFC 5663 s2.3.8: if it was not returned (recalled
+ * and not returned in time, or its client's lease ended or the client
+ * was replaced), the client may still be writing to its blocks for a
+ * lease and its maximum I/O time, so the file is fenced that long:
+ * referenced, its blocks are not freed, and no other layout of it is
+ * given.  The fence is st_lblk, allocated by LAYOUTGET.
+ */
+static void
+blk_gone(struct nfsv4_state *st)
+{
+	struct nfsv4_client *cl = st->st_owner->sw_client;
+	struct blk_fence *bf = st->st_lblk;
+	int64_t io;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	st->st_lblk = NULL;
+	if (bf == NULL)
+		return;
+	if (st->st_file == NULL ||
+	    (!st->st_lfence && !cl->cl_expired && !cl->cl_retired)) {
+		kmem_free(bf, sizeof(*bf));
+		return;
+	}
+	io = cl->cl_blkhint == NFSV4_BLKHINT_SET ? (int64_t)cl->cl_blkio :
+	    NFSV4_BLK_IOTIME;
+	bf->bf_vp = st->st_file->f_vp;
+	vref(bf->bf_vp);
+	bf->bf_until = time_uptime + NFSV4_LEASE + io;
+	LIST_INSERT_HEAD(&blk_fences, bf, bf_list);
+	nfsv4_blk_fences++;
+}
+
 /* Of a layout ending, from nfsv4_state_unlink(). */
 void
 nfsv4_layout_gone(struct nfsv4_state *st)
@@ -762,6 +1102,8 @@ nfsv4_layout_gone(struct nfsv4_state *st)
 	    --o->d_refs == 0)
 		dev_deleted(st->st_ltype, o->d_gen);
 	layout_avail(st);
+	if (st->st_ltype == LAYOUT4_BLOCK_VOLUME)
+		blk_gone(st);
 	if (st->st_ltype != LAYOUT4_FLEX_FILES || st->st_file == NULL)
 		return;
 	fd = ff_find(st->st_file->f_vp);
@@ -942,6 +1284,12 @@ ds_addr_len(uint32_t type, const struct pnfs_dev *d)
 {
 	size_t n, u;
 
+	/*
+	 * RFC 5663 s2.2.1, pnfs_block_deviceaddr4: bda_volumes<1> of a
+	 * simple volume, bsv_ds<1> of one component.
+	 */
+	if (type == LAYOUT4_BLOCK_VOLUME)
+		return 4 + 4 + 4 + 8 + 4 + roundup(sizeof(d->d_sig), 4);
 	n = strlen(d->d_netid);
 	u = strlen(d->d_uaddr);
 	/* netaddrs<1>, versions<1> of five words */
@@ -956,6 +1304,14 @@ ds_addr_put(XDR *x, uint32_t type, struct pnfs_dev *d)
 {
 	char *n = d->d_netid, *u = d->d_uaddr;
 
+	if (type == LAYOUT4_BLOCK_VOLUME) {
+		return nfsv4_xdr_u32(x, 1) &&
+		    nfsv4_xdr_u32(x, PNFS_BLOCK_VOLUME_SIMPLE) &&
+		    nfsv4_xdr_u32(x, 1) &&
+		    xdr_int64_t(x, &d->d_sigoff) &&
+		    nfsv4_xdr_u32(x, sizeof(d->d_sig)) &&
+		    XDR_PUTBYTES(x, (char *)d->d_sig, sizeof(d->d_sig));
+	}
 	if (type == LAYOUT4_FLEX_FILES) {
 		/* s4.1: version 3 MUST have minor 0 and not tightly coupled */
 		return nfsv4_xdr_u32(x, 1) &&
@@ -1123,9 +1479,234 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 }
 
 /*
+ * Write the cached pages of vp out and drop them, so that what the
+ * client reads or wrote on the device is what the server sees.  vp is
+ * locked.
+ */
+static int
+blk_flush(struct vnode *vp)
+{
+
+	rw_enter(vp->v_uobj.vmobjlock, RW_WRITER);
+	return VOP_PUTPAGES(vp, 0, 0,
+	    PGO_ALLPAGES | PGO_CLEANIT | PGO_FREE | PGO_SYNCIO);
+}
+
+/*
+ * Allocate the block of vp at pos, a hole, and write zeros to it on the
+ * device, since FFS cannot mark it as not yet written; the size stays.
+ * vp is locked.  The device block is put in *bnp.
+ */
+static int
+blk_alloc(struct vnode *vp, off_t pos, int bsize, kauth_cred_t cred,
+    daddr_t *bnp)
+{
+	struct ufsmount *ump = VFSTOUFS(vp->v_mount);
+	struct buf *bp;
+	int error;
+
+	genfs_node_wrlock(vp);
+	error = UFS_BALLOC(vp, pos, bsize, cred, 0, NULL);
+	genfs_node_unlock(vp);
+	if (error == 0)
+		error = VOP_BMAP(vp, pos / bsize, NULL, bnp, NULL);
+	if (error == 0 && *bnp == (daddr_t)-1)
+		error = EIO;
+	if (error != 0)
+		return error;
+	bp = getblk(ump->um_devvp, *bnp, bsize, 0, 0);
+	memset(bp->b_data, 0, bsize);
+	bp->b_cflags |= BC_NOCACHE;
+	return bwrite(bp);
+}
+
+/*
+ * RFC 5663 s2.3.1: the extents of vp for la, into ex[max], their number
+ * in *np.  From the block holding loga_offset, at most NFSV4_BLK_LENMAX
+ * or loga_length: for reading, mapped blocks as READ_DATA and holes and
+ * what is past the end as NONE_DATA; for writing, every block as
+ * READ_WRITE_DATA, holes allocated first.  Adjacent ones are merged.
+ */
+static uint32_t
+blk_map(struct vnode *vp, uint32_t bsize, const struct nfsv4_args_layoutget *la,
+    kauth_cred_t cred, struct blk_ext *ex, u_int max, u_int *np)
+{
+	struct mount *mp = vp->v_mount;
+	struct vattr va;
+	struct blk_ext *e;
+	uint64_t pos, end, want, eof, soff, len;
+	daddr_t bn;
+	uint32_t state;
+	bool rw = la->iomode == LAYOUTIOMODE4_RW, alloc = false;
+	u_int n = 0;
+	int run, error;
+
+	want = la->length == NFS4_UINT64_MAX ?
+	    NFS4_UINT64_MAX - la->offset : la->length;
+	want = MIN(want, NFSV4_BLK_LENMAX);
+	if (la->minlength > want)
+		return NFS4ERR_LAYOUTUNAVAILABLE;
+	pos = rounddown(la->offset, bsize);
+	end = roundup(la->offset + want, bsize);
+	if (end <= pos)
+		return NFS4ERR_INVAL;
+
+	fstrans_start(mp);
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	error = blk_flush(vp);
+	if (error == 0)
+		error = VOP_GETATTR(vp, &va, cred);
+	eof = error == 0 ? roundup(va.va_size, bsize) : 0;
+	while (error == 0 && pos < end) {
+		if (!rw && pos >= eof) {
+			/* s2.3.1: past the end, a hole to what was asked */
+			run = (end - pos) / bsize;
+			bn = (daddr_t)-1;
+		} else {
+			error = VOP_BMAP(vp, pos / bsize, NULL, &bn, &run);
+			if (error != 0)
+				break;
+			run = bn == (daddr_t)-1 ? 1 :
+			    MIN((uint64_t)run + 1, (end - pos) / bsize);
+			if (!rw && pos + (uint64_t)run * bsize > eof)
+				run = (eof - pos) / bsize;
+		}
+		if (bn == (daddr_t)-1 && rw) {
+			error = blk_alloc(vp, pos, bsize, cred, &bn);
+			if (error != 0)
+				break;
+			alloc = true;
+			run = 1;
+		}
+		len = (uint64_t)run * bsize;
+		if (bn == (daddr_t)-1) {
+			state = PNFS_BLOCK_NONE_DATA;
+			soff = 0;
+		} else {
+			state = rw ? PNFS_BLOCK_READ_WRITE_DATA :
+			    PNFS_BLOCK_READ_DATA;
+			soff = (uint64_t)bn << DEV_BSHIFT;
+		}
+		e = n > 0 ? &ex[n - 1] : NULL;
+		if (e != NULL && e->be_state == state &&
+		    e->be_off + e->be_len == pos &&
+		    (state == PNFS_BLOCK_NONE_DATA ||
+		    e->be_soff + e->be_len == soff))
+			e->be_len += len;
+		else if (n == max)
+			break;
+		else {
+			ex[n].be_off = pos;
+			ex[n].be_len = len;
+			ex[n].be_soff = soff;
+			ex[n].be_state = state;
+			n++;
+		}
+		pos += len;
+	}
+	/* As Linux's: the allocation is on the disk before it is used. */
+	if (alloc) {
+		int e2 = VOP_FSYNC(vp, cred, FSYNC_WAIT, 0, 0);
+
+		if (error == 0)
+			error = e2;
+	}
+	VOP_UNLOCK(vp);
+	fstrans_done(mp);
+	if (error != 0 && n == 0)
+		return nfsv4_errno(error);
+	*np = n;
+	/* s2.3.1: the minimum covered, but reading may stop at the end. */
+	if (n == 0 || ex[n - 1].be_off + ex[n - 1].be_len - la->offset <
+	    la->minlength)
+		return NFS4ERR_LAYOUTUNAVAILABLE;
+	return NFS4_OK;
+}
+
+/*
+ * RFC 5663 s2.3.2, LAYOUTCOMMIT of a block layout, vp locked: drop the
+ * cached pages the client's writes went around, and set the size and
+ * the times.  The size is set on the inode, not by VOP_SETATTR(), whose
+ * extending of a file would make zeroed pages over the blocks past the
+ * old end and write them out over what the client wrote there; those
+ * blocks were allocated by LAYOUTGET.  If the last block is a hole after
+ * all, it has nothing of the client's, and VOP_SETATTR() is used.
+ */
+static int
+blk_commit(struct vnode *vp, uint64_t size, kauth_cred_t cred, bool *changed)
+{
+	struct inode *ip = VTOI(vp);
+	struct mount *mp = vp->v_mount;
+	struct vattr va;
+	daddr_t bn = 0;
+	int error;
+
+	fstrans_start(mp);
+	error = blk_flush(vp);
+	if (error == 0 && size > ip->i_size)
+		error = VOP_BMAP(vp, (size - 1) >> mp->mnt_fs_bshift, NULL,
+		    &bn, NULL);
+	if (error == 0 && size > ip->i_size && bn == (daddr_t)-1) {
+		vattr_null(&va);
+		va.va_size = size;
+		error = VOP_SETATTR(vp, &va, cred);
+		*changed = error == 0;
+	} else if (error == 0 && size > ip->i_size) {
+		genfs_node_wrlock(vp);
+		ip->i_size = size;
+		DIP_ASSIGN(ip, size, size);
+		uvm_vnp_setsize(vp, size);
+		genfs_node_unlock(vp);
+		*changed = true;
+	}
+	if (error == 0) {
+		ip->i_flag |= IN_CHANGE | IN_UPDATE;
+		error = UFS_UPDATE(vp, NULL, NULL, UPDATE_WAIT);
+	}
+	fstrans_done(mp);
+	return error;
+}
+
+/*
+ * What a block layout needs before blocks are mapped and allocated for
+ * it, under the lock; LAYOUTGET looks again when it makes the layout.
+ * RFC 5663 s2.3.8: none to a client that has no maximum I/O time, and
+ * none of a file that is fenced, for a time.  *bsizep is the volume's
+ * block size.
+ */
+static uint32_t
+blk_precheck(struct nfsv4_compound *c, const struct nfsv4_args_layoutget *la,
+    struct vnode *vp, uint32_t *bsizep)
+{
+	struct nfsv4_state *st;
+	uint32_t status;
+
+	mutex_enter(&nfsv4_state_lock);
+	*bsizep = blk_dev.d_bsize;
+	if (!blk_vp(&blk_dev, vp) || vp->v_type != VREG ||
+	    blk_iotime(c->c_client) < 0)
+		status = NFS4ERR_LAYOUTUNAVAILABLE;
+	else if (blk_fenced(vp))
+		status = NFS4ERR_LAYOUTTRYLATER;
+	else {
+		status = nfsv4_stateid_lookup(c, &la->stateid, &st);
+		if (status == NFS4_OK && st->st_type == NFSV4_ST_LAYOUT)
+			status = layout_lookup(c, &la->stateid, vp, &st);
+		else if (status == NFS4_OK)
+			status = nfsv4_stateid_check(&la->stateid, st, vp, 0);
+	}
+	if (status == NFS4_OK && la->iomode == LAYOUTIOMODE4_RW &&
+	    !layout_may_write(c->c_client, vp))
+		status = NFS4ERR_OPENMODE;
+	mutex_exit(&nfsv4_state_lock);
+	return status;
+}
+
+/*
  * s18.43, LAYOUTGET.  The layout is all of the file, in the mode asked:
  * offset 0 and length NFS4_UINT64_MAX meet every row of Table 22 and
- * Table 23.
+ * Table 23.  The block layout's is the extents blk_map() gives; the
+ * state stands for all of the file still, as recalls are of all of it.
  */
 uint32_t
 nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -1138,11 +1719,16 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	struct nfsv4_stateid si;
 	struct nfsv4_fh fh = c->c_cur.cf_fh;
 	struct ff_snap sn;
+	struct blk_ext *ex = NULL;
+	struct blk_fence *bf = NULL;
 	uint8_t id[NFS4_DEVICEID4_SIZE];
 	char user[12], group[12];
-	uint32_t status, need, body, util;
+	uint64_t lo_off = 0, lo_len = NFS4_UINT64_MAX;
+	uint32_t status, need, body, util, bsize = 0;
 	size_t ul, gl;
+	u_int i, nex = 0, maxex = 0;
 	bool ff = la->type == LAYOUT4_FLEX_FILES, held = false, signal = false;
+	bool blk = la->type == LAYOUT4_BLOCK_VOLUME;
 	XDR *x = c->c_rx;
 
 	if ((status = layout_client(c)) != NFS4_OK)
@@ -1168,6 +1754,9 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		/* RFC 8435 s5.1, ff_layout4 of one mirror of one server. */
 		body = 8 + 4 + 4 + NFS4_DEVICEID4_SIZE + 4 + 16 + 4 +
 		    4 + NFSV4_FF_FHMAX + 4 + 12 + 4 + 12 + 4 + 4;
+	} else if (blk) {
+		/* RFC 5663 s2.3, pnfs_block_layout4 of one extent at least */
+		body = 4 + NFSV4_BLK_EXTSIZE;
 	} else {
 		/* nfl_fh_list<1>, s13.3, in layout_content4 of one layout4. */
 		body = NFS4_DEVICEID4_SIZE + 4 + 4 + 8 + 4 + 4 +
@@ -1181,6 +1770,26 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		if (status == NFS4ERR_LAYOUTTRYLATER)
 			(void)nfsv4_xdr_u32(x, 0);
 		return status;
+	}
+	if (blk) {
+		status = blk_precheck(c, la, vp, &bsize);
+		if (status == NFS4_OK) {
+			maxex = MIN((la->maxcount - need) / NFSV4_BLK_EXTSIZE +
+			    1, NFSV4_BLK_EXTMAX);
+			ex = kmem_alloc(maxex * sizeof(*ex), KM_SLEEP);
+			status = blk_map(vp, bsize, la, c->c_cur.cf_cred, ex,
+			    maxex, &nex);
+		}
+		if (status != NFS4_OK) {
+			if (ex != NULL)
+				kmem_free(ex, maxex * sizeof(*ex));
+			if (status == NFS4ERR_LAYOUTTRYLATER)
+				(void)nfsv4_xdr_u32(x, 0);
+			return status;
+		}
+		lo_off = ex[0].be_off;
+		lo_len = ex[nex - 1].be_off + ex[nex - 1].be_len - lo_off;
+		bf = kmem_zalloc(sizeof(*bf), KM_SLEEP);
 	}
 
 	ssw = kmem_zalloc(sizeof(*ssw), KM_SLEEP);
@@ -1259,6 +1868,8 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 		st = nfsv4_state_add(&sst, sw, &sf, vp, NFSV4_ST_LAYOUT);
 		st->st_ltype = la->type;
 		st->st_lgen = dev_of(la->type, false)->d_gen;
+		st->st_lblk = bf;		/* blk_gone() */
+		bf = NULL;
 		dev_of(la->type, false)->d_refs++;
 		atomic_inc_uint(&layout_count);
 		layout_crowded();
@@ -1284,8 +1895,8 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	if (!nfsv4_xdr_u32(x, 0) ||			/* return_on_close */
 	    !nfsv4_xdr_stateid(x, &si) ||
 	    !nfsv4_xdr_u32(x, 1) ||			/* logr_layout<> */
-	    !xdr_u_int64_t(x, &(uint64_t){ 0 }) ||
-	    !xdr_u_int64_t(x, &(uint64_t){ NFS4_UINT64_MAX }) ||
+	    !xdr_u_int64_t(x, &lo_off) ||
+	    !xdr_u_int64_t(x, &lo_len) ||
 	    !nfsv4_xdr_u32(x, la->iomode) ||
 	    !nfsv4_xdr_u32(x, la->type)) {
 		status = NFS4ERR_RESOURCE;
@@ -1325,6 +1936,21 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 			status = NFS4ERR_RESOURCE;
 		goto given;
 	}
+	if (blk) {
+		/* RFC 5663 s2.3: in order, all on the one volume */
+		if (!nfsv4_xdr_u32(x, 4 + nex * NFSV4_BLK_EXTSIZE) ||
+		    !nfsv4_xdr_u32(x, nex))
+			status = NFS4ERR_RESOURCE;
+		for (i = 0; status == NFS4_OK && i < nex; i++) {
+			if (!XDR_PUTBYTES(x, (char *)id, sizeof(id)) ||
+			    !xdr_u_int64_t(x, &ex[i].be_off) ||
+			    !xdr_u_int64_t(x, &ex[i].be_len) ||
+			    !xdr_u_int64_t(x, &ex[i].be_soff) ||
+			    !nfsv4_xdr_u32(x, ex[i].be_state))
+				status = NFS4ERR_RESOURCE;
+		}
+		goto given;
+	}
 	/* s13.3: sparse, so the offsets are the file's own; one stripe. */
 	util = NFSV4_STRIPE_UNIT & NFL4_UFLG_STRIPE_UNIT_SIZE_MASK;
 	if (!nfsv4_xdr_u32(x, body) ||
@@ -1348,6 +1974,10 @@ out:
 	if (status == NFS4ERR_LAYOUTTRYLATER)
 		(void)nfsv4_xdr_u32(x, signal);
 done:
+	if (ex != NULL)
+		kmem_free(ex, maxex * sizeof(*ex));
+	if (bf != NULL)
+		kmem_free(bf, sizeof(*bf));
 	if (ssw != NULL)
 		kmem_free(ssw, sizeof(*ssw));
 	if (sst != NULL)
@@ -1518,6 +2148,14 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 		return NFS4ERR_INVAL;
 
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	if (la->type == LAYOUT4_BLOCK_VOLUME) {
+		/* RFC 5663 s2.3.2: written to the device, not through here */
+		error = blk_commit(vp, la->newoffset ? la->lastoffset + 1 : 0,
+		    c->c_cur.cf_cred, &changed);
+		if (error == 0 && changed)
+			error = VOP_GETATTR(vp, &va, c->c_cur.cf_cred);
+		goto committed;
+	}
 	/* RFC 8435 s2.1: what was written to the data file, here. */
 	error = la->type == LAYOUT4_FLEX_FILES ? ff_commit(vp) : 0;
 	if (error == 0)
@@ -1528,6 +2166,7 @@ nfsv4_op_layoutcommit(struct nfsv4_compound *c, union nfsv4_args *a)
 		error = VOP_SETATTR(vp, &va, c->c_cur.cf_cred);
 		changed = error == 0;
 	}
+committed:
 	VOP_UNLOCK(vp);
 	if (error != 0)
 		return nfsv4_errno(error);
@@ -1565,6 +2204,8 @@ layout_rcamask(uint32_t type, uint32_t modes)
 
 	if (type == LAYOUT4_NFSV4_1_FILES)
 		return 1U << RCA4_TYPE_MASK_FILE_LAYOUT;
+	if (type == LAYOUT4_BLOCK_VOLUME)
+		return 1U << RCA4_TYPE_MASK_BLK_LAYOUT;
 	if ((modes & 1U << LAYOUTIOMODE4_READ) != 0)
 		m |= 1U << PNFS_FF_RCA4_TYPE_MASK_READ;
 	if ((modes & 1U << LAYOUTIOMODE4_RW) != 0)
@@ -1789,9 +2430,19 @@ nfsv4_layout_types(struct vnode *vp)
 	return vp != NULL && nfsv4_pnfs_on() ? LAYOUT4_NFSV4_1_FILES : 0;
 }
 
+/*
+ * layout_blksize and layout_alignment, s5.12.3, s5.12.2: the stripe
+ * unit, or the block size of the block layout's file system (RFC 5663
+ * s2.3.2).
+ */
 uint32_t
-nfsv4_layout_blksize(void)
+nfsv4_layout_blksize(struct vnode *vp)
 {
+	uint32_t b = NFSV4_STRIPE_UNIT;
 
-	return NFSV4_STRIPE_UNIT;
+	mutex_enter(&nfsv4_state_lock);
+	if (blk_vp(&blk_dev, vp))
+		b = blk_dev.d_bsize;
+	mutex_exit(&nfsv4_state_lock);
+	return b;
 }

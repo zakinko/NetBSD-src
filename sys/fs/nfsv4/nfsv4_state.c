@@ -835,6 +835,7 @@ lease_thread(void *arg)
 		mutex_exit(&nfsv4_state_lock);
 		nfsv4_reap_finish(&reap);
 		nfsv4_ff_reap();
+		nfsv4_blk_reap(false);
 		nfsv4_grace_scan();
 		nfsv4_retention_scan();
 		mutex_enter(&nfsv4_state_lock);
@@ -945,6 +946,7 @@ nfsv4_state_fini(void)
 	while ((cl = LIST_FIRST(&nfsv4_clients)) != NULL)
 		client_free(cl);
 	mutex_exit(&nfsv4_state_lock);
+	nfsv4_blk_reap(true);
 	nfsv4_session_fini();
 	nfsv4_retention_fini();
 	cv_destroy(&nfsv4_state_cv);

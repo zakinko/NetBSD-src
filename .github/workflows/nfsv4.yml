@@ -215,6 +215,13 @@ jobs:
             sleep 10
           done
           ssh netbsd "ls -l /export/ffds"
+      - name: pNFS, the block layout, RFC 5663, over iSCSI
+        if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' pnfsblk '))
+        run: |
+          timeout 600 sh ci/nfsv4/pnfs-blk.sh 2>&1 | tee out/pnfs-blk.txt || true
+          cp ci/nfsv4/blk.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 600 python3 ./blk.py /export/blk 2>&1 | tee -a "$OLDPWD/out/pnfs-blk.txt" || true
       - name: Whether the block layout, RFC 5663, can be measured (iSCSI)
         if: (github.event_name == 'workflow_dispatch' || contains(needs.build.outputs.tests, ' iscsi '))
         run: timeout 400 sh ci/nfsv4/iscsi-probe.sh 2>&1 | tee out/iscsi-probe.txt || true
@@ -343,6 +350,8 @@ jobs:
             out/pnfs-linux-*.pcap
             out/pnfs-ff.txt
             out/iscsi-probe.txt
+            out/pnfs-blk.txt
+            out/pnfs-blk.pcap
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

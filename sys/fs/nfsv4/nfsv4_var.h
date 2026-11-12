@@ -321,13 +321,17 @@ bool	nfsv4_layout_ds_conn(struct socket *);
 extern int nfsv4_ds_owner;
 int	nfsv4_layout_setds(const char *);
 int	nfsv4_layout_setff(const char *);
+int	nfsv4_layout_setblk(const char *);
+extern int nfsv4_blk_nohint;
+extern int nfsv4_blk_fences;
 void	nfsv4_ff_fence_all(void);
 extern int nfsv4_ff_fences;
-u_int	nfsv4_layout_typelist(uint32_t *);
+#define	NFSV4_LAYOUT_TYPES	3	/* at most, of nfsv4_layout_typelist() */
+u_int	nfsv4_layout_typelist(struct vnode *, uint32_t *);
 extern int nfsv4_layouts_given;
 extern int nfsv4_layout_max;
 uint32_t nfsv4_layout_types(struct vnode *);
-uint32_t nfsv4_layout_blksize(void);
+uint32_t nfsv4_layout_blksize(struct vnode *);
 extern int nfsv4_numeric_owner_sys;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);

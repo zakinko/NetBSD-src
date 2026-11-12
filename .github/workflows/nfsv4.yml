@@ -104,6 +104,7 @@ jobs:
           sparse-checkout: |
             ci/nfsv4
             ci/oncrpc/swap.sh
+            external/bsd/iscsi/dist
       - run: sh ci/nfsv4/apt-mirror.sh
       - uses: actions/download-artifact@v4
         with:

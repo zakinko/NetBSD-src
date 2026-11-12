@@ -271,14 +271,15 @@ try:
                 break
         t("s2.3.8 %s: done once the layout is back" % how,
           vm("test -f /var/tmp/blkt/tr.done && stat -f %%z %s" % path), "0")
-    n = stamp + b"trl"
-    outside(n, "/export/blk/" + n.decode(), "local O_TRUNC")
+    # newfile() puts the stamp in front; the paths are the same names.
+    outside(b"trl", "/export/blk/" + (stamp + b"trl").decode(),
+            "local O_TRUNC")
     print(vm("pgrep -x nfsd >/dev/null || /usr/sbin/nfsd -u -n 4; "
              "mkdir -p /mnt/blkv3; rpcinfo -p | grep -E 'nfs|mount'; "
-             "timeout 60 mount_nfs -3 -U -i 127.0.0.1:/export/blk "
+             "timeout 60 mount_nfs -3 -u -i 127.0.0.1:/export/blk "
              "/mnt/blkv3; echo mount_nfs $?"))
-    n = stamp + b"trv3"
-    outside(n, "/mnt/blkv3/" + n.decode(), "NFSv3 SETATTR")
+    outside(b"trv3", "/mnt/blkv3/" + (stamp + b"trv3").decode(),
+            "NFSv3 SETATTR")
     print(vm("umount /mnt/blkv3"))
 
     # OPEN with a size of 0 from another client: NFS4ERR_DELAY.

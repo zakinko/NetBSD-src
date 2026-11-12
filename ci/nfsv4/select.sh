@@ -43,7 +43,8 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/fault.py)		add fault;;
 	ci/nfsv4/pnfs.py|ci/nfsv4/pnfs-linux.sh|ci/nfsv4/ds-role.py)
 					add pnfs;;
-	ci/nfsv4/pnfs-blk.sh|ci/nfsv4/blk.py)	add pnfsblk;;
+	ci/nfsv4/pnfs-blk.sh|ci/nfsv4/blk.py|external/bsd/iscsi/*)
+					add pnfsblk;;
 	ci/nfsv4/pnfs-ff.sh|ci/nfsv4/nfs3tcp.c)	add pnfsff;;
 	ci/nfsv4/iscsi-probe.sh)	add iscsi;;
 	ci/nfsv4/t41b.py)		add t41b;;

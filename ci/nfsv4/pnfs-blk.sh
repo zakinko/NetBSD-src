@@ -25,6 +25,18 @@ r sudo modprobe blocklayoutdriver
 r sudo modprobe iscsi_tcp
 r sudo systemctl start iscsid
 
+# iscsi-target from this tree, whose disk_write() took no more than 1 MB
+# at once in the base system's (external/bsd/iscsi/dist/src/lib/disk.c).
+tar -C external/bsd/iscsi/dist -cf - include src/lib src/target |
+    vm "rm -rf /var/tmp/nfsv4/iscsi && mkdir -p /var/tmp/nfsv4/iscsi &&
+    cd /var/tmp/nfsv4/iscsi && tar -xf - &&
+    cc -O -w -pthread -DCONFIG_ISCSI_DEBUG -DHAVE_CONFIG_H -Iinclude \
+    -o iscsi-target src/target/iscsi-target.c src/lib/conffile.c \
+    src/lib/disk.c src/lib/util.c src/lib/parameters.c src/lib/protocol.c \
+    src/lib/storage.c src/lib/netmask.c src/lib/md5c.c src/lib/md5hl.c \
+    src/lib/crc32.c src/lib/uuid.c src/lib/target.c &&
+    echo ok     iscsi-target built || echo FAILED iscsi-target built"
+
 # The file system: FFS of 4 KiB blocks and fragments.  The client of
 # Linux takes no layout_blksize above its page size, and the server
 # refuses fragments smaller than blocks.  The image is on tmpfs, which
@@ -48,7 +60,7 @@ mount | grep ' /export/blk '
 if [ \$(sysctl -n kern.securelevel) -le 0 ]; then dev=/dev/rvnd3d; else dev=/var/tmp/blkt/blk.img; fi
 echo \"exported: \$dev\"
 printf 'extent0\t%s\t0\t64MB\ntarget0\trw\textent0\t0.0.0.0/0\n' \$dev >/var/tmp/nfsv4/targets
-nohup /usr/sbin/iscsi-target -f /var/tmp/nfsv4/targets </dev/null >/var/tmp/nfsv4/iscsi-target.log 2>&1 &
+nohup /var/tmp/nfsv4/iscsi/iscsi-target -f /var/tmp/nfsv4/targets </dev/null >/var/tmp/nfsv4/iscsi-target.log 2>&1 &
 sleep 2
 netstat -an -f inet | grep '\.3260 '
 sysctl -w vfs.nfsv4.pnfs_blk=/export/blk
@@ -61,12 +73,7 @@ sleep 3
 lsblk -o NAME,SIZE,TRAN,VENDOR,MODEL
 d=$(lsblk -dn -o NAME,TRAN | awk '$2 == "iscsi" { print $1; exit }')
 [ -n "$d" ] && echo "ok     iSCSI disk /dev/$d" || echo "FAILED no iSCSI disk"
-# iscsi-target answered a WRITE longer than its immediate data with CHECK
-# CONDITION and no R2T (the capture of the first run: 2 MB WRITE(10)s
-# with 256 KiB immediate, status 2, no sense), so the client's writes to
-# the volume failed and went to the metadata server.  Requests no longer
-# than the first burst have all their data immediate.
-echo 128 | sudo tee "/sys/block/$d/queue/max_sectors_kb"
+cat "/sys/block/$d/queue/max_sectors_kb"
 sudo dd if="/dev/$d" bs=4096 skip=16 count=1 2>/dev/null | od -A d -t x1 | head -4
 
 # blkmapd answers the kernel's upcall with the device whose bytes match

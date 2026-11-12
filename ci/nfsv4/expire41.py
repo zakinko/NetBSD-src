@@ -54,9 +54,27 @@ try:
             locker4(True, open_to_lock_owner4(0, nsid, 0,
             lock_owner4(0, stamp + b"lo"))))])
         t("s15.1.5.4 a new LOCK is not EXPIRED", res.status, NFS4_OK)
+        lksid = res.resarray[-1].lock_stateid if res.status == NFS4_OK \
+            else None
         res = s.compound([op.putfh(nfh), op.read(stateid4(0, nsid.other),
             0, 10)])
         t("the new open reads", res.status, NFS4_OK)
+        # The lease runs out again, with the old stateid not yet freed:
+        # what was taken since is taken away as well.
+        print("waiting for the lease to run out again")
+        sys.stdout.flush()
+        time.sleep(115)
+        res = s.compound([])
+        t("s8.3 SEQUENCE after the second expiry", res.status, NFS4_OK)
+        res = s.compound([op.putfh(nfh), op.read(stateid4(0, nsid.other),
+            0, 10)])
+        t("s8.4.3 READ with the new open after the second expiry",
+          res.status, NFS4ERR_EXPIRED)
+        if lksid is not None:
+            res = s.compound([op.free_stateid(lksid)])
+            t("s18.38.3 FREE_STATEID of the new lock", res.status, NFS4_OK)
+        res = s.compound([op.free_stateid(nsid)])
+        t("s18.38.3 FREE_STATEID of the new open", res.status, NFS4_OK)
     res = s.compound([op.test_stateid([osid])])
     t("s8.4.3 TEST_STATEID of the old open",
       res.resarray[-1].tsr_status_codes[0] if res.status == NFS4_OK

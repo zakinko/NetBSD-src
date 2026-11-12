@@ -64,11 +64,11 @@ def rewrite(m):
         while struct.unpack(">I", body[i:i + 4])[0]:
             out += body[i:i + 4]; i += 4
             ua, i = xstr(body, i)
-            nid, i = xstr(body, i)
-            fam, i = xstr(body, i)
+            nid, i = xstr(body, i)		# rpcb_entry, RFC 1833
             sem = body[i:i + 4]; i += 4
+            fam, i = xstr(body, i)
             pr, i = xstr(body, i)
-            out += pstr(fix(ua)) + pstr(nid) + pstr(fam) + sem + pstr(pr)
+            out += pstr(fix(ua)) + pstr(nid) + sem + pstr(fam) + pstr(pr)
         return head + out + body[i:]
     return m
 

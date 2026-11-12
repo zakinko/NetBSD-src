@@ -50,7 +50,7 @@ edquota -u -h 2000/0 -s 1000/0 -f /export/quota root
 repquota -u /export/quota || :
 # ZFS: the pool on a file, an ACL set by the port's own tools at the top.
 # Without the module or its tools the other exports are still served.
-if [ -f "$D/modules/zfs.kmod" ] && command -v zpool >/dev/null; then
+if [ -f "$D/modules/zfs.kmod" ] && [ -f /var/tmp/zu/installed ]; then
 	modload zfs
 	# The port installs its libraries in /lib, outside the default search.
 	export LD_LIBRARY_PATH=/lib

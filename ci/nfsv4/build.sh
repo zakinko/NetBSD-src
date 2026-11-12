@@ -23,4 +23,14 @@ for d in sys/modules/xdr sys/modules/oncrpc sys/modules/nfsv4; do
 	    >"$OUT/$m.log" 2>&1 || { tail -40 "$OUT/$m.log"; exit 1; }
 	cp "$O/$d/$m.kmod" "$OUT/modules/"
 done
+# DTrace, for tests that count what the kernel does (blk.py); its
+# failing to build leaves the rest standing.
+for d in sys/modules/solaris sys/modules/cyclic sys/modules/dtrace/dtrace \
+    sys/modules/dtrace/fbt; do
+	m=${d##*/}
+	(cd "$d" && "$T/bin/nbmake-amd64" MKDEBUG=no obj &&
+	    "$T/bin/nbmake-amd64" -j "$J" MKDEBUG=no dependall) \
+	    >"$OUT/dt-$m.log" 2>&1 && cp "$O/$d/"*.kmod "$OUT/modules/" ||
+	    { echo "no $d"; tail -20 "$OUT/dt-$m.log"; }
+done
 ls -l "$OUT" "$OUT/modules"

@@ -144,10 +144,30 @@ try:
         # Write as the client would, to the volume, then commit 64 KiB.
         print(vm("printf 'written to the volume' | dd of=%s "
                  "bs=512 seek=%d conv=notrunc 2>&1 | tail -1" % (IMG, so // 512)))
+        # RFC 5663 errata 4139: LAYOUTCOMMIT puts the device's volatile
+        # write cache to stable storage.  Counted by DTrace: DIOCCACHESYNC
+        # (_IOW('d', 118, int)) reaching vndioctl() of the volume's vnd.
+        dt = vm("cd /var/tmp/nfsv4/modules 2>/dev/null && for m in solaris "
+                "cyclic dtrace dtrace_fbt; do modstat $m >/dev/null 2>&1 || "
+                "modload ./$m.kmod; done; ls -l /usr/sbin/dtrace /dev/dtrace; "
+                "rm -f /var/tmp/blkt/dt.out; nohup /usr/sbin/dtrace -q -n "
+                "'fbt::vndioctl:entry /arg1 == 0x80046476/ { n++; } "
+                "tick-15s { printf(\"cachesync %d\\n\", n); exit(0); }' "
+                ">/var/tmp/blkt/dt.out 2>&1 </dev/null & sleep 5; echo started")
+        print(dt)
         res = s.compound([op.putfh(fh), op.layoutcommit(0, 65536, False,
             lsid, newoffset4(True, 65535), newtime4(False),
             layoutupdate4(BLK, struct.pack(">I", 0)))])
         t("s2.3.2 LAYOUTCOMMIT", res.status, NFS4_OK)
+        time.sleep(12)
+        dto = vm("cat /var/tmp/blkt/dt.out")
+        print(dto)
+        if "cachesync" in dto:
+            n = int(dto.split("cachesync")[1].split()[0])
+            t("RFC 5663 errata 4139: the volume's cache flushed by "
+              "LAYOUTCOMMIT", n > 0, True)
+        else:
+            print("not measured: DTrace did not run")
         t("s2.3.2 the size is the client's", size(s, fh), 65536)
         res = s.compound([op.putfh(fh), op.read(stateid4(0, osid.other),
             0, 21)])
@@ -338,6 +358,32 @@ try:
                     layoutreturn_file4(0, ANY,
                     res.resarray[-1].logr_stateid, b"")))])
             opened.append((s7, fh8, osid9))
+
+    # RFC 5661 errata 3379: DESTROY_CLIENTID of a client that holds only a
+    # layout is not CLIENTID_BUSY; the layout goes as one the lease took,
+    # fenced (1 s of hint, so a lease and 1 s).
+    c8 = nfs4client.NFS4Client(b'127.0.0.1', 2049, 1)
+    c8.homedir = export
+    s8 = c8.new_pnfs_client_session(stamp + b"k")
+    fh10, osid10 = newfile(s8, b"destroy")
+    hint(s8, fh10, osid10, 1)
+    res = lget(s8, fh10, osid10, LAYOUTIOMODE4_RW, 0, 65536, 4096)
+    t("LAYOUTGET to be left", res.status, NFS4_OK)
+    s8.compound([op.putfh(fh10), op.close(0, osid10)])
+    f0 = int(vm("sysctl -n vfs.nfsv4.blk_fences"))
+    res = c8.compound([op.destroy_session(s8.sessionid)])
+    t("DESTROY_SESSION", res.status, NFS4_OK)
+    res = c8.compound([op.destroy_clientid(s8.client.clientid)])
+    t("errata 3379: DESTROY_CLIENTID with only a layout left", res.status,
+      NFS4_OK)
+    t("errata 3379: the layout left is fenced",
+      int(vm("sysctl -n vfs.nfsv4.blk_fences")), f0 + 1)
+    for i in range(30):
+        if int(vm("sysctl -n vfs.nfsv4.blk_fences")) <= f0:
+            break
+        time.sleep(5)
+    t("errata 3379: its fence ends", int(vm("sysctl -n vfs.nfsv4.blk_fences")),
+      f0)
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")

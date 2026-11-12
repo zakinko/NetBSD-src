@@ -7,21 +7,18 @@ set -eu
 D=/var/tmp/nfsv4
 sysctl vfs.nfsserver.nfsacl
 (cd "$D/src/usr.sbin/nfsd" && cc -g -Wall -o "$D/nfsd" nfsd.c -lpthread)
-pkill -x nfsd || :
-# pkill only sends the signal; the threads of nfsd leave the kernel
-# after it returns.
+# The release's nfsd, which vm-kdc.sh started.  Not "pkill -x nfsd":
+# in the VM that matched nothing (pgrep -x nfsd exits 1 while plain
+# pgrep nfsd finds it), so the old nfsd went on holding port 2049 and
+# the new one could not bind it or register.
+pkill -f '^/usr/sbin/nfsd' || :
 i=0
-while pgrep -x nfsd >/dev/null; do
+while pgrep -f '^/usr/sbin/nfsd' >/dev/null; do
 	i=$((i + 1))
-	[ $i -le 60 ] || { echo 'nfsd still running'; ps -axl | grep nfsd; exit 1; }
+	[ $i -le 60 ] || { echo 'nfsd still running'; ps -axo pid,stat,wchan,args | grep '[n]fsd'; exit 1; }
 	sleep 1
 done
 echo "nfsd gone after ${i}s"
-# What still holds the port with no nfsd: a socket the kernel keeps has
-# no descriptor, so it shows in netstat and not in fstat or sockstat.
-echo '--- netstat'; netstat -an | grep '[.]2049 ' || :
-echo '--- sockstat'; sockstat | grep '[.:]2049' || :
-echo '--- fstat'; fstat | grep -w 2049 || :
 "$D/nfsd" -t -u -n 8
 sleep 2
 echo '--- netstat, the new nfsd'; netstat -an | grep '[.]2049 ' || :

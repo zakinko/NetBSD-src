@@ -66,11 +66,14 @@
  * the client wrote to.  FFS has no mark for allocated but unwritten
  * blocks, so the holes of a layout for writing are allocated and zeroed
  * at LAYOUTGET and given as PNFS_BLOCK_READ_WRITE_DATA; INVALID_DATA is
- * never given, and the size does not move until LAYOUTCOMMIT.  There is
- * no LUN masking, so fencing is timed-lease (s2.3.8): the blocks of a
- * layout let go without being returned stay the file's, and no other
- * layout of the file is given, for a lease and the client's maximum I/O
- * time.
+ * never given, and the size does not move until LAYOUTCOMMIT.  What was
+ * allocated past the end and not committed is freed when the file's last
+ * layout for writing ends: FFS takes blocks past the end for damage, so
+ * fsck_ffs clears a file of size 0 that has them, and the inode of one
+ * removed would be freed with them.  There is no LUN masking, so fencing
+ * is timed-lease (s2.3.8): the blocks of a layout let go without being
+ * returned stay the file's, and no other layout of the file is given,
+ * for a lease and the client's maximum I/O time.
  */
 
 #include <sys/cdefs.h>
@@ -215,15 +218,19 @@ struct blk_ext {
 #define	PNFS_BLOCK_VOLUME_SIMPLE	0
 
 /*
- * s2.3.8, timed-lease fencing: the file of a block layout that was let
- * go without being returned, held until bf_until so that its blocks are
- * not freed, and given in no other layout.  Allocated with the layout,
- * st_lblk, as it is taken under the lock.
+ * The end of a block layout, allocated with it (st_lblk), as it ends
+ * under the lock.  s2.3.8, timed-lease fencing: the file of one let go
+ * without being returned is held until bf_until so that its blocks are
+ * not freed, and given in no other layout (bf_fence).  Then, or at once
+ * if it was returned, the blocks past the end that a layout for writing
+ * allocated are freed, by the lease thread (bf_rw).
  */
 struct blk_fence {
 	LIST_ENTRY(blk_fence) bf_list;
 	struct vnode	*bf_vp;		/* referenced */
 	time_t		bf_until;
+	bool		bf_fence;
+	bool		bf_rw;		/* a layout for writing was given */
 };
 static LIST_HEAD(, blk_fence) blk_fences = LIST_HEAD_INITIALIZER(blk_fences);
 int nfsv4_blk_fences;			/* vfs.nfsv4.blk_fences, held now */
@@ -600,10 +607,68 @@ blk_fenced(struct vnode *vp)
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
 	LIST_FOREACH(bf, &blk_fences, bf_list) {
-		if (bf->bf_vp == vp && time_uptime < bf->bf_until)
+		if (bf->bf_vp == vp && bf->bf_fence &&
+		    time_uptime < bf->bf_until)
 			return true;
 	}
 	return false;
+}
+
+/* Whether a block layout for writing of vp is held. */
+static bool
+blk_rw_held(struct vnode *vp)
+{
+	struct nfsv4_file *f;
+	struct nfsv4_state *st;
+
+	KASSERT(mutex_owned(&nfsv4_state_lock));
+
+	if ((f = nfsv4_file_find(vp)) == NULL)
+		return false;
+	LIST_FOREACH(st, &f->f_states, st_flist) {
+		if (st->st_type == NFSV4_ST_LAYOUT &&
+		    st->st_ltype == LAYOUT4_BLOCK_VOLUME &&
+		    (st->st_liomode & 1U << LAYOUTIOMODE4_RW) != 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Free the blocks of vp past the block of its end, which a layout for
+ * writing allocated and no LAYOUTCOMMIT took in.  ffs_truncate() frees
+ * every block past the new end but does nothing when the size is that
+ * already, so the size is made one byte more first; the new end is a
+ * block boundary, so no page is zeroed.  Then the size is put back.
+ */
+static void
+blk_trim(struct vnode *vp)
+{
+	struct inode *ip = VTOI(vp);
+	struct mount *mp = vp->v_mount;
+	uint64_t size, keep;
+	int error;
+
+	fstrans_start(mp);
+	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+	size = ip->i_size;
+	keep = roundup(size, (uint64_t)1 << mp->mnt_fs_bshift);
+	genfs_node_wrlock(vp);
+	ip->i_size = keep + 1;
+	genfs_node_unlock(vp);
+	error = UFS_TRUNCATE(vp, keep, IO_NORMAL | IO_SYNC, lwp0.l_cred);
+	genfs_node_wrlock(vp);
+	ip->i_size = size;
+	DIP_ASSIGN(ip, size, size);
+	uvm_vnp_setsize(vp, size);
+	genfs_node_unlock(vp);
+	ip->i_flag |= IN_CHANGE;
+	if (error == 0)
+		error = UFS_UPDATE(vp, NULL, NULL, UPDATE_WAIT);
+	VOP_UNLOCK(vp);
+	fstrans_done(mp);
+	if (error != 0)
+		printf("nfsv4: blocks past the end not freed: %d\n", error);
 }
 
 /*
@@ -621,12 +686,18 @@ nfsv4_blk_reap(bool all)
 		if (all || time_uptime >= bf->bf_until) {
 			LIST_REMOVE(bf, bf_list);
 			LIST_INSERT_HEAD(&done, bf, bf_list);
-			nfsv4_blk_fences--;
+			if (bf->bf_fence)
+				nfsv4_blk_fences--;
+			/* Another's layout may be writing past the end. */
+			if (bf->bf_rw && blk_rw_held(bf->bf_vp))
+				bf->bf_rw = false;
 		}
 	}
 	mutex_exit(&nfsv4_state_lock);
 	while ((bf = LIST_FIRST(&done)) != NULL) {
 		LIST_REMOVE(bf, bf_list);
+		if (bf->bf_rw)
+			blk_trim(bf->bf_vp);
 		vrele(bf->bf_vp);
 		kmem_free(bf, sizeof(*bf));
 	}
@@ -1054,7 +1125,9 @@ ff_unref(struct ff_data *fd)
  * was replaced), the client may still be writing to its blocks for a
  * lease and its maximum I/O time, so the file is fenced that long:
  * referenced, its blocks are not freed, and no other layout of it is
- * given.  The fence is st_lblk, allocated by LAYOUTGET.
+ * given.  After that, or now if it was returned, the lease thread frees
+ * what a layout for writing allocated past the end (blk_trim()).  The
+ * record is st_lblk, allocated by LAYOUTGET.
  */
 static void
 blk_gone(struct nfsv4_state *st)
@@ -1068,8 +1141,8 @@ blk_gone(struct nfsv4_state *st)
 	st->st_lblk = NULL;
 	if (bf == NULL)
 		return;
-	if (st->st_file == NULL ||
-	    (!st->st_lfence && !cl->cl_expired && !cl->cl_retired)) {
+	bf->bf_fence = st->st_lfence || cl->cl_expired || cl->cl_retired;
+	if (st->st_file == NULL || (!bf->bf_fence && !bf->bf_rw)) {
 		kmem_free(bf, sizeof(*bf));
 		return;
 	}
@@ -1077,9 +1150,12 @@ blk_gone(struct nfsv4_state *st)
 	    NFSV4_BLK_IOTIME;
 	bf->bf_vp = st->st_file->f_vp;
 	vref(bf->bf_vp);
-	bf->bf_until = time_uptime + NFSV4_LEASE + io;
+	bf->bf_until = bf->bf_fence ? time_uptime + NFSV4_LEASE + io :
+	    time_uptime;
 	LIST_INSERT_HEAD(&blk_fences, bf, bf_list);
-	nfsv4_blk_fences++;
+	if (bf->bf_fence)
+		nfsv4_blk_fences++;
+	cv_broadcast(&nfsv4_state_cv);
 }
 
 /* Of a layout ending, from nfsv4_state_unlink(). */
@@ -1879,6 +1955,8 @@ nfsv4_op_layoutget(struct nfsv4_compound *c, union nfsv4_args *a)
 	} else
 		layout_bump(st);		/* s12.5.3 */
 	st->st_liomode |= 1U << la->iomode;
+	if (blk && la->iomode == LAYOUTIOMODE4_RW && st->st_lblk != NULL)
+		st->st_lblk->bf_rw = true;	/* blk_trim() at the end */
 	/* s2.10.6.3: what a recall of it is to refer to. */
 	if (c->c_sess != NULL && c->c_slot != NULL) {
 		st->st_refset = true;
@@ -2438,11 +2516,7 @@ nfsv4_layout_types(struct vnode *vp)
 uint32_t
 nfsv4_layout_blksize(struct vnode *vp)
 {
-	uint32_t b = NFSV4_STRIPE_UNIT;
 
-	mutex_enter(&nfsv4_state_lock);
-	if (blk_vp(&blk_dev, vp))
-		b = blk_dev.d_bsize;
-	mutex_exit(&nfsv4_state_lock);
-	return b;
+	/* A hint without the lock, as in nfsv4_layout_typelist(). */
+	return blk_vp(&blk_dev, vp) ? blk_dev.d_bsize : NFSV4_STRIPE_UNIT;
 }

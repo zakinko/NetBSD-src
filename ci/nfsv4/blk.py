@@ -235,16 +235,20 @@ finally:
             traceback.print_exc()
     print(vm("sysctl -w vfs.nfsv4.pnfs_blk=; sysctl -w vfs.nfsv4.blk_nohint=0"))
 
-# fsck_ffs, read only, of the file system with blocks past the end of
-# stamp+"past" (size 0, 64 blocks), then after removing it.
+# fsck_ffs, read only, once the layouts for writing have ended: of the
+# file system where stamp+"past" (size 0) had 64 blocks past its end and
+# stamp+"f" 240, then after removing the first.
 name = (stamp + b"past").decode()
 def fsck(what):
     print("=== fsck_ffs -n, %s" % what)
     print(vm("ls -ls /export/blk; umount /export/blk || umount -f /export/blk"))
-    print(vm("fsck_ffs -n -f /dev/rvnd3d; echo fsck exit $?"))
+    out = vm("fsck_ffs -n -f /dev/rvnd3d; echo fsck exit $?")
+    print(out)
     print(vm("mount /dev/vnd3d /export/blk; echo mount $?"))
-fsck("blocks past the end of three files")
+    t("fsck_ffs finds nothing, " + what, out.endswith("fsck exit 0"), True)
+# The layouts have ended, so what they allocated past the ends is freed.
+fsck("the layouts for writing over")
 print(vm("rm -f /export/blk/%s; echo rm $?" % name))
-fsck("after removing %s, of size 0 with blocks past its end" % name)
+fsck("after removing %s" % name)
 print("failures:", fails)
 sys.exit(0)

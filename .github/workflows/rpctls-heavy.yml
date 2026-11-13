@@ -198,16 +198,19 @@ jobs:
         with:
           path: ossl41
           key: ossl41-netbsd11-amd64-${{ hashFiles('ci/rpctls/ossl41.sh') }}
-      - name: OpenSSL 4.1 in the VM, built once and cached
-        timeout-minutes: 45
+      - name: OpenSSL 4.1 with the DTLS connection ID in the VM, built once and cached
+        # 4.1.0 took 100 s here (run 43074102622); the series, 101 s against
+        # 81 s for 4.1.0 on a Mac, about a quarter more.
+        timeout-minutes: 6
         run: |
           if [ -f ossl41/openssl41.tar ]; then
             ssh netbsd 'mkdir -p /usr/local && tar -C /usr/local -xf -' <ossl41/openssl41.tar
           else
-            curl -fsSL --retry 3 -o openssl-4.1.0.tar.gz https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz
-            echo '50c17baf54cb008f6ce42d50deb4b28050a1aad711636cabd4b241c7e90cc2fd  openssl-4.1.0.tar.gz' | sha256sum -c -
-            scp openssl-4.1.0.tar.gz ci/rpctls/ossl41.sh netbsd:/var/tmp/
-            ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/ossl41.sh /var/tmp/openssl-4.1.0.tar.gz'
+            # dtls-cid-series-4.1; see ci/rpctls/ossl41.sh
+            curl -fsSL --retry 3 -o openssl-cid.tar.gz https://github.com/zakinko/openssl/archive/d6fec127eae208f4721cbf4678c7cb66fe763ee6.tar.gz
+            echo 'a9010e585365aa5046d86d378b050ffb0e0a7adddaaf301cf68be0cc71ea9cd6  openssl-cid.tar.gz' | sha256sum -c -
+            scp openssl-cid.tar.gz ci/rpctls/ossl41.sh netbsd:/var/tmp/
+            ssh -o ServerAliveInterval=30 netbsd 'sh /var/tmp/ossl41.sh /var/tmp/openssl-cid.tar.gz'
             mkdir -p ossl41
             ssh netbsd 'tar -C /usr/local -cf - openssl41' >ossl41/openssl41.tar
           fi
@@ -220,7 +223,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: |
-          tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c ci/rpctls/cidpcap.c ci/rpctls/cidcheck.sh | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/rpctls/dtls-vm.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/dtls-vm.sh heavy' 2>&1 | tee out/probe-dtls.txt; exit ${PIPESTATUS[0]}
         shell: bash
@@ -240,6 +243,7 @@ jobs:
           if grep -h -E '^FAIL|failures [1-9]' out/probe*.txt out/cb-client.txt; then exit 1; fi
           grep -q 'io ok' out/linux-tls.txt && grep -q 'io ok' out/linux-mtls.txt
           grep -q '^probe-dtls failures 0$' out/probe-dtls.txt
+          grep -q '^probe-dtls-pcap failures 0$' out/probe-dtls.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:

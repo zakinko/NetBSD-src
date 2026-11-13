@@ -1,5 +1,7 @@
 #!/bin/sh
-# OpenSSL 4.1, for DTLS 1.3 (RFC 9147), in the NetBSD VM: rpc.tlsservd and
+# OpenSSL 4.1 with the DTLS connection ID (RFC 9146, RFC 9147 s9), the
+# branch dtls-cid-series-4.1 of github.com/zakinko/openssl, which is
+# 4.1.0 and four commits: for DTLS 1.3 in the NetBSD VM.  rpc.tlsservd and
 # dtlsclient link it statically from /usr/local/openssl41.  The tarball is
 # fetched and checked on the runner and handed over in $1.
 #   ossl41.sh TARBALL

@@ -38,7 +38,10 @@
  * datagram pair the kernel carries the peer's datagrams over, and the
  * handshake is DTLS 1.3, RFC 9147.  That needs OpenSSL 4.1; built with
  * an older one, the daemon does not tell the kernel it can, and the
- * kernel offers no UDP client STARTTLS.
+ * kernel offers no UDP client STARTTLS.  The connection IDs RFC 9289
+ * s5.1.2 makes a MUST need an OpenSSL with SSL_set1_dtls_cid(); without
+ * it the handshake has none, and the kernel refuses the association
+ * unless built with options ONCRPC_DTLS_NOCID.
  */
 
 #include <sys/cdefs.h>
@@ -62,6 +65,13 @@ __RCSID("$NetBSD$");
 
 #if OPENSSL_VERSION_NUMBER >= 0x40100000L
 #define	HAVE_DTLS13
+/*
+ * The DTLS connection ID, RFC 9146 and RFC 9147 s9: not in OpenSSL 4.1
+ * itself, so told by the API's own name rather than a version.
+ */
+#ifdef SSL_DTLS_CID_MAX_LEN
+#define	HAVE_DTLS_CID
+#endif
 #endif
 
 #include <err.h>
@@ -77,6 +87,14 @@ __RCSID("$NetBSD$");
 
 /* Not from the RFC: how long a client may take over its handshake. */
 #define	HANDSHAKE_TIMEOUT	30
+
+/*
+ * The length of the connection IDs of ours.  RFC 9289 s5.1.2: "Endpoints
+ * implementing RPC programs that expect a significant number of
+ * concurrent clients SHOULD employ ConnectionIDs of at least 4 bytes in
+ * length."  8 is ours: random, so that one is not guessed from another.
+ */
+#define	CID_LEN		8
 
 /* RFC 9289 s7.2, as a TLS ALPN ProtocolNameList entry, RFC 7301 s3.1 */
 static const unsigned char alpn_sunrpc[] = "\x06sunrpc";
@@ -247,6 +265,55 @@ dtls_setup(SSL_CTX *ctx)
 	    SSL_OP_NO_QUERY_MTU);
 	SSL_CTX_set_msg_callback(ctx, dtls_msg);
 }
+
+#ifdef HAVE_DTLS_CID
+/*
+ * RFC 9289 s5.1.2: "each DTLS handshake MUST include the
+ * connection_id(54) extension", with an ID of ours the client is to put
+ * on what it sends.  The Return Routability Check of RFC 9853 is not
+ * offered: its records would reach the kernel, which has none of it.
+ */
+static bool
+dtls_cid(SSL *ssl)
+{
+	uint8_t cid[CID_LEN];
+
+	if (RAND_bytes(cid, sizeof(cid)) != 1 ||
+	    !SSL_set1_dtls_cid(ssl, cid, sizeof(cid)) ||
+	    !SSL_set_dtls_rrc(ssl, 0)) {
+		logssl("connection ID");
+		return false;
+	}
+	return true;
+}
+
+/*
+ * The IDs the handshake agreed, RFC 9146 s3, for the kernel's records:
+ * ours on what the client sends, the client's on what we send.  A
+ * client that offered none leaves both empty, and the kernel decides.
+ */
+static bool
+dtls_cid_done(SSL *ssl)
+{
+	const unsigned char *own, *peer;
+	size_t ownlen, peerlen;
+
+	if (!SSL_get0_dtls_cid(ssl, &own, &ownlen, &peer, &peerlen))
+		return true;
+	if (ownlen > sizeof(nt.nt_rcid) || peerlen > sizeof(nt.nt_tcid)) {
+		syslog(LOG_WARNING, "conn %ju: connection ID of %zu bytes, "
+		    "more than %zu", (uintmax_t)nt.nt_cookie,
+		    ownlen > sizeof(nt.nt_rcid) ? ownlen : peerlen,
+		    sizeof(nt.nt_tcid));
+		return false;
+	}
+	memcpy(nt.nt_rcid, own, ownlen);
+	nt.nt_rcidlen = (uint8_t)ownlen;
+	memcpy(nt.nt_tcid, peer, peerlen);
+	nt.nt_tcidlen = (uint8_t)peerlen;
+	return true;
+}
+#endif
 #endif
 
 static SSL_CTX *
@@ -342,6 +409,10 @@ handshake(SSL_CTX *ctx, int fd, bool dgram)
 		/* RFC 9147 s4.4: the path's, which the kernel knows. */
 		if (dw.nt_pmtu != 0)
 			SSL_set_mtu(ssl, dw.nt_pmtu);
+#ifdef HAVE_DTLS_CID
+		if (!dtls_cid(ssl))
+			goto done;
+#endif
 	} else
 #endif
 	if (!SSL_set_fd(ssl, fd)) {
@@ -391,16 +462,21 @@ handshake(SSL_CTX *ctx, int fd, bool dgram)
 	    SSL_get_verify_result(ssl) == X509_V_OK)
 		nt.nt_flags |= NFSD_TLS_PEERCERT;
 	/*
-	 * RFC 9147 s9: OpenSSL negotiates no connection ID, so nt_rcidlen
-	 * and nt_tcidlen stay 0, which the kernel takes only with options
+	 * RFC 9147 s9: without connection IDs nt_rcidlen and nt_tcidlen
+	 * stay 0, which the kernel takes only with options
 	 * ONCRPC_DTLS_NOCID.
 	 */
-	syslog(LOG_INFO, "conn %ju: %s 1.3, suite 0x%04x, ALPN %.*s, %s",
+#ifdef HAVE_DTLS_CID
+	if (dgram && !dtls_cid_done(ssl))
+		goto done;
+#endif
+	syslog(LOG_INFO, "conn %ju: %s 1.3, suite 0x%04x, ALPN %.*s, %s, "
+	    "connection IDs %u/%u",
 	    (uintmax_t)nt.nt_cookie, dgram ? "DTLS" : "TLS", nt.nt_suite,
 	    (int)alpnlen, alpn,
 	    peer == NULL ? "anonymous client" :
 	    (nt.nt_flags & NFSD_TLS_PEERCERT) != 0 ? "client verified" :
-	    "client unverified");
+	    "client unverified", nt.nt_rcidlen, nt.nt_tcidlen);
 	error = 0;
 done:
 	nt.nt_error = error;

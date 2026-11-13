@@ -11,12 +11,13 @@ defflag	opt_oncrpc.h		ONCRPC_GSS_CB_SHA1
 defflag	opt_oncrpc.h		ONCRPC_GSS_CB_ANYMIC
 # Out of RFC 9289 s5.1.2 on purpose: establish DTLS associations that
 # carry no connection ID, where the RFC says each handshake MUST
-# negotiate a nonzero one.  OpenSSL, which rpc.tlsservd uses, does not
-# implement connection IDs for DTLS 1.3 (openssl/openssl#18724 is still
-# open, and its DTLS 1.3 design document leaves them out), so without
-# this no client built on it can associate.  The kernel's record layer
-# handles connection IDs either way: to go back to the RFC, drop this
-# option, and a handshake without them is refused at NFSSVC_TLSDONE.
+# negotiate a nonzero one.  OpenSSL 4.1 does not implement connection
+# IDs for DTLS 1.3 (openssl/openssl#18724, and its DTLS 1.3 design
+# document leaves them out), so a client built on it cannot associate
+# without this.  rpc.tlsservd negotiates them when its OpenSSL has
+# SSL_set1_dtls_cid(), and the kernel's record layer handles them either
+# way: without this option, which is the RFC, a handshake without them
+# is refused at NFSSVC_TLSDONE.
 defflag	opt_oncrpc.h		ONCRPC_DTLS_NOCID
 # Log every DTLS record after the handshake on the console; for tests.
 defflag	opt_oncrpc.h		ONCRPC_DTLS_DEBUG

@@ -1,0 +1,61 @@
+name: openssl-asm
+
+# Builds NetBSD's libcrypto from the commit before the fix (BASE) and from
+# the fix (this commit's parent) inside a NetBSD VM of each architecture,
+# and compares them.  Runs only on this test branch.
+on:
+  push:
+    branches: [openssl-asm-leaks-ci]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASE: fac75683d7a
+  P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
+
+jobs:
+  vm:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, riscv64, sparc64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 8
+          filter: blob:none
+          sparse-checkout: |
+            ci-openssl
+          sparse-checkout-cone-mode: false
+      - name: trees
+        run: |
+          git log --oneline $BASE~1..HEAD
+          git diff --stat $BASE HEAD~1
+          for t in base:$BASE new:HEAD~1; do
+            n=${t%%:*} r=${t#*:}
+            # a sparse checkout fetches the missing blobs in one batch
+            git worktree add -q --no-checkout tree-$n $r
+            git -C tree-$n sparse-checkout set --no-cone $P
+            git -C tree-$n checkout -q
+            tar -C tree-$n --transform 's,^,src/,' -czf nbsrc-$n.tgz $P
+          done
+          ls -l nbsrc-*.tgz
+      - name: packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy qemu-system-arm qemu-system-misc qemu-efi-aarch64 u-boot-qemu zstd
+      - name: image
+        run: sh ci-openssl/fetch.sh ${{ matrix.arch }}
+      - name: run
+        run: sh ci-openssl/run.sh ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-${{ matrix.arch }}
+          path: |
+            *.log
+            vm/*.console

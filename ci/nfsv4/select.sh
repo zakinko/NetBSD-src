@@ -33,6 +33,8 @@ for f in $(git diff --name-only "$base" "$head"); do
 					add t41b;;
 	sys/nfs/*|sys/kern/vfs_vnops.c|sys/kern/vfs_syscalls.c)
 					add t41b cbgetattr;;
+	sys/ufs/ufs/ufs_lookup.c|sys/ufs/ufs/ufs_rename.c|sys/ufs/ufs/ufs_vnops.c)
+					add errata41 dacl;;
 	ci/nfsv4/aclcreate.py)		add aclcreate;;
 	ci/nfsv4/owner.py)		add owner;;
 	ci/nfsv4/retention.py)		add retention;;

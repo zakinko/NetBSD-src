@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Two errata of RFC 5661 that RFC 8881 did not take in.  Run from
+"""Errata of RFC 5661 that RFC 8881 did not take in.  Run from
 pynfs's nfs4.1 directory: errata41.py PNFS_EXPORT ACL_EXPORT.
 
 3065-3068: LAYOUTCOMMIT's loca_offset and loca_length are to be
@@ -9,12 +9,19 @@ vfs.nfsv4.layoutcommit_range they are checked as s18.42.3 has it.
 4492: OPENATTR on an object that cannot have named attributes, in a
 file system that has them, is NFS4ERR_WRONG_TYPE, not NFS4ERR_NOTSUPP.
 
+4712: RENAME is allowed where the file grants ACE4_DELETE and its
+directory does not grant ACE4_DELETE_CHILD, as REMOVE is (RFC 8881,
+6.2.1.3.2).  The objects are made as uid 0 and renamed or removed as
+AUTH_SYS uid 1111 gid 37, who owns none of them; the answers wanted
+are FreeBSD's on UFS and ZFS, measured 2026-11-13.
+
 Failures are the measurement."""
 import subprocess, sys, time, traceback
 import nfs_ops, nfs4client, nfs4lib
 from xdrdef.nfs4_const import *
 from xdrdef.nfs4_type import *
 from server41tests.environment import create_file, check, use_obj
+from rpc.security import AuthSys
 op = nfs_ops.NFS4ops()
 fails = 0
 def t(name, got, want):
@@ -86,6 +93,98 @@ try:
         t("OPENATTR on the directory still answers", res.status,
           [NFS4_OK, NFS4ERR_NOENT])
         s2.compound(use_obj(aexp) + [op.remove(stamp + b"chr")])
+
+    # errata 4712
+    root = AuthSys().init_cred(uid=0, gid=0, name=b"errata41")
+    user = AuthSys().init_cred(uid=1111, gid=37, name=b"errata41")
+    c.set_cred(root)
+    s3 = c.new_client_session(stamp + b"e4712")
+    anon = stateid4(0, b'\0' * 12)
+    R = (ACE4_READ_DATA | ACE4_EXECUTE | ACE4_READ_ATTRIBUTES |
+         ACE4_READ_ACL | ACE4_READ_NAMED_ATTRS | ACE4_SYNCHRONIZE)
+    W = ACE4_ADD_FILE | ACE4_ADD_SUBDIRECTORY
+    A, D = ACE4_ACCESS_ALLOWED_ACE_TYPE, ACE4_ACCESS_DENIED_ACE_TYPE
+    own = nfsace4(A, 0, 0x1f01ff, b"OWNER@")
+    def ev(t, m):
+        return nfsace4(t, 0, m, b"EVERYONE@")
+    ACLS = {
+        "nodc-nowrite": [own, ev(D, W | ACE4_DELETE_CHILD), ev(A, R)],
+        "nodc-write": [own, ev(D, ACE4_DELETE_CHILD), ev(A, R | W)],
+        "nodc-absent-write": [own, ev(A, R | W)],
+        "nodc-absent-nowrite": [own, ev(A, R)],
+        "full": [own, ev(A, R | W | ACE4_DELETE_CHILD)],
+        "del": [own, ev(A, R | ACE4_DELETE)],
+        "nodel": [own, ev(D, ACE4_DELETE), ev(A, R)],
+        "plain": [own, ev(A, R)],
+    }
+    res = s3.compound(use_obj(aexp) + [op.create(createtype4(NF4DIR),
+        stamp + b"e4712", {FATTR4_MODE: 0o777}), op.getfh()])
+    check(res)
+    top = res.resarray[-1].object
+    def mk(parent, n, kind, dir):
+        if dir:
+            res = s3.compound([op.putfh(parent), op.create(
+                createtype4(NF4DIR), n, {FATTR4_MODE: 0o755}), op.getfh()])
+            check(res)
+            fh = res.resarray[-1].object
+        else:
+            res = s3.compound([op.putfh(parent), op.open(0,
+                OPEN4_SHARE_ACCESS_WRITE | OPEN4_SHARE_ACCESS_WANT_NO_DELEG,
+                OPEN4_SHARE_DENY_NONE,
+                open_owner4(s3.client.clientid, stamp + n),
+                openflag4(OPEN4_CREATE, createhow4(GUARDED4,
+                    {FATTR4_MODE: 0o644})),
+                open_claim4(CLAIM_NULL, n)), op.getfh()])
+            check(res)
+            fh = res.resarray[-1].object
+            s3.compound([op.putfh(fh),
+                op.close(0, res.resarray[-2].stateid)])
+        if kind:
+            check(s3.compound([op.putfh(fh),
+                op.setattr(anon, {FATTR4_ACL: ACLS[kind]})]))
+        return fh
+    def rename(case, sdir, file, tdir, want):
+        d = mk(top, b"rename " + case.encode(), None, True)
+        sd = mk(d, b"src", sdir, True)
+        td = mk(d, b"tgt", tdir, True) if tdir else sd
+        mk(sd, b"f", file, False)
+        res = s3.compound([op.putfh(sd), op.savefh(), op.putfh(td),
+            op.rename(b"f", b"g")], credinfo=user)
+        t("errata 4712: RENAME, %s" % case, res.status, want)
+    def remove(case, dir, file, want):
+        d = mk(top, b"remove " + case.encode(), None, True)
+        sd = mk(d, b"src", dir, True)
+        mk(sd, b"f", file, False)
+        res = s3.compound([op.putfh(sd), op.remove(b"f")], credinfo=user)
+        t("errata 4712: REMOVE, %s" % case, res.status, want)
+    # The file grants DELETE; the directory denies DELETE_CHILD, or
+    # neither grants nor denies it.
+    rename("dir denies DELETE_CHILD and write, to another dir",
+           "nodc-nowrite", "del", "full", NFS4_OK)
+    rename("dir denies DELETE_CHILD, same dir", "nodc-write", "del", None,
+           NFS4_OK)
+    rename("dir silent on DELETE_CHILD, same dir", "nodc-absent-write",
+           "del", None, NFS4_OK)
+    rename("dir silent on DELETE_CHILD, no write, to another dir",
+           "nodc-absent-nowrite", "del", "full", NFS4_OK)
+    remove("dir denies DELETE_CHILD and write", "nodc-nowrite", "del",
+           NFS4_OK)
+    remove("dir denies DELETE_CHILD", "nodc-write", "del", NFS4_OK)
+    remove("dir silent on DELETE_CHILD, no write", "nodc-absent-nowrite",
+           "del", NFS4_OK)
+    # The directory grants DELETE_CHILD, which the file's denial of
+    # DELETE does not override.
+    rename("dir grants DELETE_CHILD, file denies DELETE", "full", "nodel",
+           None, NFS4_OK)
+    remove("dir grants DELETE_CHILD, file denies DELETE", "full", "nodel",
+           NFS4_OK)
+    # Neither grants: refused.  Both: allowed.
+    rename("neither grants", "nodc-write", "plain", None,
+           [NFS4ERR_PERM, NFS4ERR_ACCESS])
+    remove("neither grants", "nodc-write", "plain",
+           [NFS4ERR_PERM, NFS4ERR_ACCESS])
+    rename("dir grants DELETE_CHILD", "full", "plain", None, NFS4_OK)
+    remove("dir grants DELETE_CHILD", "full", "plain", NFS4_OK)
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")

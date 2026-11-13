@@ -187,6 +187,7 @@ ufs_gro_rename_check_permitted(struct mount *mp, kauth_cred_t cred,
     struct vnode *fdvp, struct vnode *fvp,
     struct vnode *tdvp, struct vnode *tvp)
 {
+	int error;
 
 	(void)mp;
 	KASSERT(mp != NULL);
@@ -209,10 +210,34 @@ ufs_gro_rename_check_permitted(struct mount *mp, kauth_cred_t cred,
 	KASSERT(VOP_ISLOCKED(tdvp) == LK_EXCLUSIVE);
 	KASSERT((tvp == NULL) || (VOP_ISLOCKED(tvp) == LK_EXCLUSIVE));
 
-	return genfs_ufslike_rename_check_permitted(cred,
-	    fdvp, VTOI(fdvp)->i_mode, VTOI(fdvp)->i_uid,
-	    fvp, VTOI(fvp)->i_uid,
-	    tdvp, VTOI(tdvp)->i_mode, VTOI(tdvp)->i_uid,
+	/*
+	 * Taking fvp's entry out of fdvp is a removal, and needs what
+	 * VOP_REMOVE needs, which ufs_delete_denied() decides.
+	 * genfs_ufslike_rename_check_permitted() asks for VWRITE on fdvp
+	 * instead, which with NFSv4 ACLs turns down ACE4_DELETE on fvp
+	 * (RFC 8881, 6.2.1.3.2) and refuses a rename the caller could do
+	 * as a link and a remove.
+	 */
+	error = ufs_delete_denied(fdvp, fvp, true, cred);
+	if (error)
+		return error;
+
+	/*
+	 * We need to write to the target directory to add or change an
+	 * entry.  If fvp is a directory moving elsewhere, we need to
+	 * write to it to change its `..' entry.
+	 */
+	error = VOP_ACCESS(tdvp, VWRITE, cred);
+	if (error)
+		return error;
+	if (fdvp != tdvp && fvp->v_type == VDIR) {
+		error = VOP_ACCESS(fvp, VWRITE, cred);
+		if (error)
+			return error;
+	}
+
+	return genfs_ufslike_check_sticky(cred,
+	    VTOI(tdvp)->i_mode, VTOI(tdvp)->i_uid,
 	    tvp, (tvp? VTOI(tvp)->i_uid : 0));
 }
 
@@ -263,8 +288,7 @@ ufs_gro_remove_check_permitted(struct mount *mp, kauth_cred_t cred,
 	KASSERT(VOP_ISLOCKED(dvp) == LK_EXCLUSIVE);
 	KASSERT(VOP_ISLOCKED(vp) == LK_EXCLUSIVE);
 
-	return genfs_ufslike_remove_check_permitted(cred,
-	    dvp, VTOI(dvp)->i_mode, VTOI(dvp)->i_uid, vp, VTOI(vp)->i_uid);
+	return ufs_delete_denied(dvp, vp, true, cred);
 }
 
 /*

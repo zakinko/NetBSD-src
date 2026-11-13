@@ -207,53 +207,62 @@ slot_estimate(const struct slotinfo *slot, int dirblksiz, int nameiop,
 }
 
 /*
- * Check if we can delete inode tdp in directory vdp with inode ip and creds.
+ * Check whether cred may remove the entry for vp from directory dvp.
+ * If vplocked is false, vp's own ACL is not consulted, and only the
+ * directory decides.
  */
-static int
-ufs_can_delete(struct vnode *tdp, struct vnode *vdp, struct inode *ip,
+int
+ufs_delete_denied(struct vnode *dvp, struct vnode *vp, bool vplocked,
     kauth_cred_t cred)
 {
+	struct inode *dp = VTOI(dvp);
 	int error;
 
 #ifdef UFS_ACL
 	/*
-	 * NFSv4 Minor Version 1, draft-ietf-nfsv4-minorversion1-03.txt
+	 * RFC 8881, 6.2.1.3.2. ACE4_DELETE vs. ACE4_DELETE_CHILD
 	 *
-	 * 3.16.2.1. ACE4_DELETE vs. ACE4_DELETE_CHILD
+	 * Either ACE4_DELETE on the target or ACE4_DELETE_CHILD on the
+	 * directory permits the removal, even where the other one is
+	 * explicitly denied.
 	 */
 
 	/*
 	 * XXX: Is this check required?
 	 */
-	error = VOP_ACCESS(vdp, VEXEC, cred);
+	error = VOP_ACCESS(dvp, VEXEC, cred);
 	if (error)
-		goto out;
+		return error;
 
-#if 0
-	/* Moved to ufs_remove, ufs_rmdir because they hold the lock */
-	error = VOP_ACCESSX(tdp, VDELETE, cred);
+	/*
+	 * Without NFSv4 ACLs, vfs_unixify_accmode() answers VDELETE and
+	 * VDELETE_CHILD with EPERM, meaning only that the mode bits
+	 * cannot express them; fall through to VWRITE on the directory.
+	 */
+	if (vplocked) {
+		error = VOP_ACCESSX(vp, VDELETE, cred);
+		if (error == 0)
+			return 0;
+	}
+
+	error = VOP_ACCESSX(dvp, VDELETE_CHILD, cred);
 	if (error == 0)
 		return 0;
-#endif
 
-	error = VOP_ACCESSX(vdp, VDELETE_CHILD, cred);
-	if (error == 0)
-		return 0;
-
-	error = VOP_ACCESSX(vdp, VEXPLICIT_DENY | VDELETE_CHILD, cred);
+	error = VOP_ACCESSX(dvp, VEXPLICIT_DENY | VDELETE_CHILD, cred);
 	if (error)
-		goto out;
+		return error;
 
 #endif /* !UFS_ACL */
 
 	/*
 	 * Write access to directory required to delete files.
 	 */
-	error = VOP_ACCESS(vdp, VWRITE, cred);
+	error = VOP_ACCESS(dvp, VWRITE, cred);
 	if (error)
-		goto out;
+		return error;
 
-	if (!(ip->i_mode & ISVTX))
+	if (!(dp->i_mode & ISVTX))
 		return 0;
 
 	/*
@@ -262,15 +271,38 @@ ufs_can_delete(struct vnode *tdp, struct vnode *vdp, struct inode *ip,
 	 * may not delete it (unless she's root). This
 	 * implements append-only directories.
 	 */
-	error = kauth_authorize_vnode(cred, KAUTH_VNODE_DELETE, tdp, vdp,
-	    genfs_can_sticky(vdp, cred, ip->i_uid, VTOI(tdp)->i_uid));
-	if (error) {
-		error = SET_ERROR(EPERM);	// Why override?
-		goto out;
-	}
+	error = kauth_authorize_vnode(cred, KAUTH_VNODE_DELETE, vp, dvp,
+	    genfs_can_sticky(dvp, cred, dp->i_uid, VTOI(vp)->i_uid));
+	if (error)
+		return SET_ERROR(EPERM);	// Why override?
 	return 0;
-out:
-	vrele(tdp);
+}
+
+/*
+ * Check if we can delete inode tdp in directory vdp with creds.
+ * Release tdp on failure.
+ *
+ * vdp is locked, and tdp comes from vcache_get() unlocked.  Locking a
+ * child under its locked parent is the usual order, so lock tdp to
+ * read its ACL.  ".." would reverse that order; it is never removable
+ * anyway, so let the directory decide alone there.
+ */
+static int
+ufs_can_delete(struct vnode *tdp, struct vnode *vdp,
+    struct componentname *cnp, kauth_cred_t cred)
+{
+	int error;
+
+	if (tdp == vdp)
+		error = ufs_delete_denied(vdp, tdp, true, cred);
+	else if (cnp->cn_flags & ISDOTDOT)
+		error = ufs_delete_denied(vdp, tdp, false, cred);
+	else if ((error = vn_lock(tdp, LK_SHARED)) == 0) {
+		error = ufs_delete_denied(vdp, tdp, true, cred);
+		VOP_UNLOCK(tdp);
+	}
+	if (error)
+		vrele(tdp);
 	return error;
 }
 
@@ -699,7 +731,7 @@ found:
 		if ((error = ufs_getino(vdp, dp, foundino, &tdp, false)) != 0)
 			goto out;
 
-		if ((error = ufs_can_delete(tdp, vdp, dp, cred)) != 0)
+		if ((error = ufs_can_delete(tdp, vdp, cnp, cred)) != 0)
 			goto out;
 
 		*vpp = tdp;

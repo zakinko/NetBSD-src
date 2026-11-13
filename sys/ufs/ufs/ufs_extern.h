@@ -118,6 +118,7 @@ int	ufs_dirremove(struct vnode *, const struct ufs_lookup_results *,
 int	ufs_dirrewrite(struct inode *, off_t,
 		       struct inode *, ino_t, int, int, int);
 int	ufs_dirempty(struct inode *, ino_t, kauth_cred_t);
+int	ufs_delete_denied(struct vnode *, struct vnode *, bool, kauth_cred_t);
 int	ufs_blkatoff(struct vnode *, off_t, void *, struct buf **, bool);
 
 /* ufs_rename.c -- for lfs */

@@ -840,17 +840,6 @@ ufs_remove(void *v)
 	mp = dvp->v_mount;
 	KASSERT(mp == vp->v_mount); /* XXX Not stable without lock.  */
 
-#ifdef UFS_ACL
-#ifdef notyet
-	/* We don't do this because if the filesystem is mounted without ACLs
-	 * this goes through vfs_unixify_accmode() and we get EPERM.
-	 */
-	error = VOP_ACCESSX(vp, VDELETE, ap->a_cnp->cn_cred);
-	if (error)
-		goto err;
-#endif
-#endif
-
 	/* XXX should handle this material another way */
 	ulr = &VTOI(dvp)->i_crap;
 	UFS_CHECK_CRAPCOUNTER(VTOI(dvp));
@@ -869,9 +858,6 @@ ufs_remove(void *v)
 			}
 		}
 	}
-#ifdef notyet
-err:
-#endif
 	if (dvp == vp)
 		vrele(vp);
 	else
@@ -1397,17 +1383,6 @@ ufs_rmdir(void *v)
 	cnp = ap->a_cnp;
 	ip = VTOI(vp);
 	dp = VTOI(dvp);
-
-#ifdef UFS_ACL
-#ifdef notyet
-	/* We don't do this because if the filesystem is mounted without ACLs
-	 * this goes through vfs_unixify_accmode() and we get EPERM.
-	 */
-	error = VOP_ACCESSX(vp, VDELETE, cnp->cn_cred);
-	if (error)
-		goto err;
-#endif
-#endif
 
 	/* XXX should handle this material another way */
 	ulr = &dp->i_crap;

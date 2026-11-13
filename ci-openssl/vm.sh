@@ -37,7 +37,8 @@ start)
 		    -device virtio-blk-device,drive=d0
 		;;
 	sparc64)
-		set -- $VMDIR/qemu-sparc64/bin/qemu-system-sparc64 -M sun4u \
+		q=$VMDIR/qemu-sparc64/qemu10-sparc64
+		set -- $q/bin/qemu-system-sparc64 -L $q/share/qemu -M sun4u \
 		    -m 2048 -vga none $net -device e1000,netdev=net0,bus=pciB \
 		    -drive file=$img,format=qcow2,if=ide,index=0 -boot order=c
 		;;

@@ -7,6 +7,8 @@ poly1305.c \
 
 SRCS += ${POLY1305_SRCS}
 
+CPPFLAGS+=${POLY1305CPPFLAGS}
+
 .for cryptosrc in ${POLY1305_SRCS}
 CPPFLAGS.${cryptosrc} += -I${OPENSSLSRC}/crypto/poly1305 ${POLY1305CPPFLAGS}
 .endfor

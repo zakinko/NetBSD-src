@@ -379,6 +379,9 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 			 */
 			if (error != 0)
 				nfsrv_updatecache(nd, false, NULL);
+			if (error != 0)
+				printf("GSSDBG nfs: proc %d error %d xid %x\n",
+				    nd->nd_procnum, error, rq->rq_xid);
 			nfsdreq_free(nd);
 			if (error == 0)
 				return ONCRPC_NOREPLY;

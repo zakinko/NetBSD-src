@@ -678,10 +678,19 @@ gss_unwrap_priv(struct oncrpc_gss_call *gg, struct mbuf **msgp,
 	blen = gss_get32(msg, pos);
 	if (!gss_copyin(msg, pos + 4, blen, total, &body))
 		return false;
-	if (oncrpc_gssk_unwrap(&gg->gg_ctx->gx_key, body, blen, NULL, &plain,
-	    &plen, &conf) != GSS_S_COMPLETE || !conf || plen < 4 ||
-	    be32dec(plain) != gg->gg_cred.gc_seq)
+	{
+	uint32_t maj = oncrpc_gssk_unwrap(&gg->gg_ctx->gx_key, body, blen,
+	    NULL, &plain, &plen, &conf);
+	if (maj != GSS_S_COMPLETE || !conf || plen < 4 ||
+	    be32dec(plain) != gg->gg_cred.gc_seq) {
+		printf("GSSDBG unwrap_priv: maj %x conf %d plen %zu seq %u/%u "
+		    "blen %u pos %u total %u\n", maj, conf,
+		    maj == GSS_S_COMPLETE ? plen : 0,
+		    maj == GSS_S_COMPLETE && plen >= 4 ? be32dec(plain) : 0,
+		    gg->gg_cred.gc_seq, blen, pos, total);
 		goto out;
+	}
+	}
 	n = gss_mbufof((char *)plain + 4, plen - 4);
 	if (n == NULL)
 		goto out;

@@ -35,7 +35,10 @@
  *   no association   plain RPC, left in the socket.  s5.1.2 leaves the
  *                    distinction to "existing DTLS session state", and
  *                    the xid an RPC call starts with is any value, so
- *                    the first byte alone cannot tell.
+ *                    the first byte alone cannot tell.  A DTLSCiphertext
+ *                    record carrying the connection ID of an association
+ *                    is that association's, moved to a new address; see
+ *                    dtls_cidlookup().
  *   PROBED           STARTTLS went out to the peer's AUTH_TLS probe:
  *                    only a DTLSPlaintext handshake record is kept for
  *                    the handshake, and anything else MUST be dropped
@@ -128,6 +131,15 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #define	ONCRPC_DTLS_NPENDRN	8	/* transmissions of one message kept */
 
 /*
+ * The connection IDs of ours an association is found by from another
+ * address are hashed on this many leading bytes, and shorter ones are
+ * not looked for.  Ours; RFC 9289 s5.1.2 SHOULD have IDs "of at least 4
+ * bytes in length" where there are many clients, and rpc.tlsservd makes
+ * them longer.
+ */
+#define	ONCRPC_DTLS_CIDKEY	4
+
+/*
  * RFC 9147 s5.8.2: "an initial timer value of 1000 ms and double the
  * value at each retransmission, up to no less than 60 seconds".  The
  * timer is looked at every ONCRPC_DTLS_TICK, ours.
@@ -166,6 +178,8 @@ struct dtls_dgram {
 	struct mbuf		*dg_m;
 	struct oncrpc_dtlspeer	*dg_peer;	/* a reference */
 	bool			 dg_plain;	/* RPC, not DTLS; see below */
+	bool			 dg_moved;	/* found by its connection ID */
+	struct sockaddr_storage	 dg_from;	/* dg_moved: its source */
 };
 SIMPLEQ_HEAD(dtls_dgramq, dtls_dgram);
 
@@ -177,12 +191,18 @@ struct dtls_reap {
 
 struct oncrpc_dtlspeer {
 	LIST_ENTRY(oncrpc_dtlspeer) dp_hash;
+	LIST_ENTRY(oncrpc_dtlspeer) dp_cidhash;	/* by dp_rcid */
 	LIST_ENTRY(oncrpc_dtlspeer) dp_glist;	/* dtls_ready, dtls_busy */
 	struct oncrpc_dtls	*dp_dtls;
+	/*
+	 * Changed only with both d_lock and dp_txlock held, when an
+	 * ESTABLISHED peer moves, RFC 9146 s6; read with either.
+	 */
 	struct sockaddr_storage	 dp_addr;
 	uint64_t		 dp_id;		/* the daemon's cookie */
 	/* Under d_lock: */
 	bool			 dp_hashed;
+	bool			 dp_cidhashed;
 	bool			 dp_queued;	/* on dtls_ready or after */
 	struct socket		*dp_kso;	/* HANDSHAKE: the pair, ours */
 	struct dtls_reap	*dp_reap;	/* for dp_kso */
@@ -195,10 +215,10 @@ struct oncrpc_dtlspeer {
 	struct dtls_dgramq	 dp_early;	/* epoch 3 before ESTABLISHED */
 	u_int			 dp_earlylen;
 	u_int			 dp_qn;		/* its records not yet opened */
-	/* Set before ESTABLISHED and constant after: */
+	/* Set before ESTABLISHED and constant after, but dp_tcid: */
 	uint8_t			 dp_rcid[DTLS13_MAXCID];	/* ours */
 	uint8_t			 dp_tcid[DTLS13_MAXCID];	/* the peer's */
-	size_t			 dp_rcidlen, dp_tcidlen;
+	size_t			 dp_rcidlen, dp_tcidlen;	/* dp_txlock */
 	uint8_t			 dp_exporter[ONCRPC_TLS_EXPORTERLEN];
 	/* One opener and one sealer at a time: */
 	kmutex_t		 dp_rxlock;
@@ -219,6 +239,12 @@ struct oncrpc_dtlspeer {
 	u_int			 dp_tries;
 	int			 dp_due;	/* getticks() */
 	bool			 dp_txpend;	/* under d_lock: dp_pendlen */
+	/*
+	 * dp_pend probes dp_newaddr, RFC 9146 s6: the peer moves there
+	 * when the ACK comes from there.  Under dp_txlock.
+	 */
+	bool			 dp_probing;
+	struct sockaddr_storage	 dp_newaddr;
 };
 
 /* What one datagram's records asked of the sending side. */
@@ -232,11 +258,16 @@ struct dtls_ctl {
 	uint8_t			 c_cid[DTLS13_MAXCID];
 	size_t			 c_cidlen;
 	int			 c_alert;	/* to send, fatal; or -1 */
+	/* The datagram came from c_from, not the peer's address: */
+	bool			 c_moved;
+	bool			 c_newer;	/* RFC 9146 s6, the second */
+	struct sockaddr_storage	 c_from;
 };
 
 struct oncrpc_dtls {
 	kmutex_t		 d_lock;
 	LIST_HEAD(, oncrpc_dtlspeer) d_hash[ONCRPC_DTLS_NHASH];
+	LIST_HEAD(, oncrpc_dtlspeer) d_cidhash[ONCRPC_DTLS_NHASH];
 	u_int			 d_npeers;
 	struct dtls_dgramq	 d_q;		/* ESTABLISHED, to be opened */
 	u_int			 d_qlen;
@@ -333,6 +364,17 @@ dtls_hash(const struct sockaddr *sa)
 	return h % ONCRPC_DTLS_NHASH;
 }
 
+static u_int
+dtls_cidhash(const uint8_t *cid)
+{
+	uint32_t h = 2166136261U;	/* FNV-1a */
+	u_int i;
+
+	for (i = 0; i < ONCRPC_DTLS_CIDKEY; i++)
+		h = (h ^ cid[i]) * 16777619U;
+	return h % ONCRPC_DTLS_NHASH;
+}
+
 static bool
 dtls_addrok(const struct sockaddr *sa)
 {
@@ -400,6 +442,10 @@ dtls_peer_unhash(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 	KASSERT(mutex_owned(&d->d_lock));
 	LIST_REMOVE(p, dp_hash);
 	p->dp_hashed = false;
+	if (p->dp_cidhashed) {
+		LIST_REMOVE(p, dp_cidhash);
+		p->dp_cidhashed = false;
+	}
 	d->d_npeers--;
 	if (--p->dp_refs == 0)
 		dtls_peer_free(p);
@@ -428,6 +474,35 @@ dtls_lookup(struct oncrpc_dtls *d, const struct sockaddr *sa)
 			return NULL;
 		}
 		return p;
+	}
+	return NULL;
+}
+
+/*
+ * The association whose connection ID of ours the DTLSCiphertext record
+ * at off in m carries, RFC 9146 s6 and RFC 9147 s9: a peer that moved.
+ * The header does not say how long the ID is, so each candidate's own
+ * length is tried.  Under d_lock.
+ */
+static struct oncrpc_dtlspeer *
+dtls_cidlookup(struct oncrpc_dtls *d, struct mbuf *m, int off)
+{
+	struct oncrpc_dtlspeer *p;
+	uint8_t h[1 + DTLS13_MAXCID];
+	size_t n;
+
+	KASSERT(mutex_owned(&d->d_lock));
+	n = MIN((size_t)(m->m_pkthdr.len - off), sizeof(h));
+	if (n < 1 + ONCRPC_DTLS_CIDKEY)
+		return NULL;
+	m_copydata(m, off, n, h);
+	if (dtls13_demux(h[0]) != DTLS13_CIPHERTEXT ||
+	    (h[0] & DTLS13_C) == 0)
+		return NULL;
+	LIST_FOREACH(p, &d->d_cidhash[dtls_cidhash(h + 1)], dp_cidhash) {
+		if (p->dp_rcidlen <= n - 1 &&
+		    memcmp(h + 1, p->dp_rcid, p->dp_rcidlen) == 0)
+			return p;
 	}
 	return NULL;
 }
@@ -496,8 +571,10 @@ oncrpc_dtls_create(struct socket *so, void (*wake)(void *), void *arg)
 	    IPL_NONE, WQ_MPSAFE) != 0)
 		d->d_wq = NULL;	/* no handshakes then; see dtls_kick() */
 	mutex_init(&d->d_lock, MUTEX_DEFAULT, IPL_NONE);
-	for (i = 0; i < ONCRPC_DTLS_NHASH; i++)
+	for (i = 0; i < ONCRPC_DTLS_NHASH; i++) {
 		LIST_INIT(&d->d_hash[i]);
+		LIST_INIT(&d->d_cidhash[i]);
+	}
 	SIMPLEQ_INIT(&d->d_q);
 	SIMPLEQ_INIT(&d->d_msgs);
 	d->d_wake = wake;
@@ -591,6 +668,7 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 	struct dtls_dgram *dg;
 	struct mbuf *m = *mp;
 	uint8_t b0;
+	bool moved = false;
 
 	if (m->m_pkthdr.len <= off)
 		return 0;
@@ -598,6 +676,20 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 
 	mutex_enter(&d->d_lock);
 	p = dtls_lookup(d, src);
+	if (p == NULL && dtls_addrok(src) &&
+	    src->sa_len <= sizeof(dg->dg_from) &&
+	    (p = dtls_cidlookup(d, m, off)) != NULL) {
+		/*
+		 * RFC 9289 s5.1.2: the peers "may send protected RPC
+		 * messages via network interfaces that were not involved
+		 * in the handshake", and it is for this that the IDs are
+		 * a MUST.  An association no longer ESTABLISHED has its
+		 * records dropped, as from its own address.
+		 */
+		if (p->dp_state != DP_ESTABLISHED)
+			goto drop;
+		moved = true;
+	}
 	if (p == NULL) {
 		mutex_exit(&d->d_lock);
 		return 0;
@@ -631,6 +723,7 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 			dg->dg_m = m;
 			dg->dg_peer = NULL;
 			dg->dg_plain = false;
+			dg->dg_moved = false;
 			SIMPLEQ_INSERT_TAIL(&p->dp_early, dg, dg_next);
 			p->dp_earlylen++;
 			mutex_exit(&d->d_lock);
@@ -645,6 +738,7 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 		m_adj(m, off);
 		dg->dg_m = m;
 		dg->dg_peer = NULL;
+		dg->dg_moved = false;
 		SIMPLEQ_INSERT_TAIL(&p->dp_hsq, dg, dg_next);
 		p->dp_hsqlen++;
 		if (p->dp_state == DP_HANDSHAKE) {
@@ -686,6 +780,7 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 			dg->dg_m = m;
 			dg->dg_peer = p;
 			dg->dg_plain = true;
+			dg->dg_moved = false;
 			p->dp_refs++;
 			SIMPLEQ_INSERT_TAIL(&d->d_q, dg, dg_next);
 			d->d_qlen++;
@@ -710,6 +805,9 @@ oncrpc_dtls_input(struct mbuf **mp, int off, struct socket *so,
 		dg->dg_m = m;
 		dg->dg_peer = p;
 		dg->dg_plain = false;
+		dg->dg_moved = moved;
+		if (moved)
+			memcpy(&dg->dg_from, src, src->sa_len);
 		p->dp_refs++;
 		p->dp_qn++;
 		SIMPLEQ_INSERT_TAIL(&d->d_q, dg, dg_next);
@@ -740,7 +838,9 @@ drop:
 struct dtls_out {
 	uint8_t		o_rec[DTLS_NOUT][DTLS_RECMAX];
 	size_t		o_len[DTLS_NOUT];
+	bool		o_probe[DTLS_NOUT];	/* to o_paddr, not dp_addr */
 	u_int		o_n;
+	struct sockaddr_storage o_paddr;
 };
 
 /*
@@ -770,7 +870,7 @@ dtls_send(struct oncrpc_dtlspeer *p, uint8_t type, const uint8_t *in,
 	DTLS_DPRINTF("seal type %u len %zu epoch %ju: %d\n", type, len,
 	    (uintmax_t)p->dp_tx.dd_epoch, error);
 	if (error == 0)
-		o->o_n++;
+		o->o_probe[o->o_n++] = false;
 	return error;
 }
 
@@ -779,10 +879,14 @@ static void
 dtls_flush(struct oncrpc_dtlspeer *p, struct dtls_out *o)
 {
 	struct oncrpc_dtls *d = p->dp_dtls;
+	struct sockaddr_storage to;
 	struct mbuf *m;
 	u_int i;
 	int error;
 
+	mutex_enter(&d->d_lock);
+	memcpy(&to, &p->dp_addr, sizeof(to));
+	mutex_exit(&d->d_lock);
 	for (i = 0; i < o->o_n; i++) {
 		m = m_gethdr(M_WAIT, MT_DATA);
 		m->m_len = m->m_pkthdr.len = 0;
@@ -791,9 +895,11 @@ dtls_flush(struct oncrpc_dtlspeer *p, struct dtls_out *o)
 			m_freem(m);
 			continue;	/* lost, as on the wire */
 		}
-		error = (*d->d_so->so_send)(d->d_so,
-		    (struct sockaddr *)&p->dp_addr, NULL, m, NULL, 0, curlwp);
-		DTLS_DPRINTF("sent %u bytes: %d\n", (u_int)o->o_len[i], error);
+		error = (*d->d_so->so_send)(d->d_so, (struct sockaddr *)
+		    (o->o_probe[i] ? &o->o_paddr : &to), NULL, m, NULL, 0,
+		    curlwp);
+		DTLS_DPRINTF("sent %u bytes%s: %d\n", (u_int)o->o_len[i],
+		    o->o_probe[i] ? " to the new address" : "", error);
 	}
 	o->o_n = 0;
 }
@@ -808,6 +914,10 @@ dtls_send_pend(struct oncrpc_dtlspeer *p, struct dtls_out *o)
 	if (dtls_send(p, TLS13_CT_HANDSHAKE, p->dp_pend, p->dp_pendlen,
 	    rn, o) != 0)
 		return;		/* the timer tries again */
+	if (p->dp_probing) {
+		o->o_probe[o->o_n - 1] = true;
+		memcpy(&o->o_paddr, &p->dp_newaddr, sizeof(o->o_paddr));
+	}
 	if (p->dp_npendrn < ONCRPC_DTLS_NPENDRN) {
 		p->dp_pendrn[p->dp_npendrn][0] = rn[0];
 		p->dp_pendrn[p->dp_npendrn][1] = rn[1];
@@ -848,6 +958,7 @@ dtls_unpend(struct oncrpc_dtlspeer *p)
 
 	KASSERT(mutex_owned(&p->dp_txlock));
 	p->dp_pendlen = 0;
+	p->dp_probing = false;
 	mutex_enter(&d->d_lock);
 	if (p->dp_txpend) {
 		p->dp_txpend = false;
@@ -857,10 +968,33 @@ dtls_unpend(struct oncrpc_dtlspeer *p)
 }
 
 /*
+ * The peer has moved to sa, RFC 9146 s6: the association is found by
+ * that address from now on and sends there.  With dp_txlock.  It stays
+ * where it was if another association has sa, or it is not ESTABLISHED.
+ */
+static void
+dtls_move(struct oncrpc_dtlspeer *p, const struct sockaddr *sa)
+{
+	struct oncrpc_dtls *d = p->dp_dtls;
+
+	KASSERT(mutex_owned(&p->dp_txlock));
+	mutex_enter(&d->d_lock);
+	if (p->dp_hashed && p->dp_state == DP_ESTABLISHED &&
+	    dtls_lookup(d, sa) == NULL) {
+		LIST_REMOVE(p, dp_hash);
+		memcpy(&p->dp_addr, sa, sa->sa_len);
+		LIST_INSERT_HEAD(&d->d_hash[dtls_hash(sa)], p, dp_hash);
+		DTLS_DPRINTF("moved to the new address\n");
+	}
+	mutex_exit(&d->d_lock);
+}
+
+/*
  * Do what the records of a datagram asked of the sending side: ACKs,
  * s7; acting on the ACK of our KeyUpdate, s8, which only then changes
  * our sending keys; our KeyUpdate when asked for, RFC 8446 s4.6.3; the
- * connection ID messages, s9; and a fatal alert, which closes.
+ * connection ID messages, s9; a move to a new address, RFC 9146 s6; and
+ * a fatal alert, which closes.
  */
 static void
 dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
@@ -869,6 +1003,7 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 	static const uint8_t nonecid[3] = { 0, 0, 1 };	/* cids<>, spare */
 	struct dtls_out o;
 	size_t n;
+	bool move = false;
 
 	o.o_n = 0;
 	mutex_enter(&p->dp_txlock);
@@ -897,8 +1032,14 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 			dtls13_dir_update(&p->dp_tx);
 		if (p->dp_tries == 0)
 			p->dp_rto = ONCRPC_DTLS_RTO0;
+		/* The probe was answered from where it went. */
+		move = p->dp_probing && c->c_moved &&
+		    dtls_sameaddr((struct sockaddr *)&c->c_from,
+		    (struct sockaddr *)&p->dp_newaddr);
 		dtls_unpend(p);
 	}
+	if (move)
+		dtls_move(p, (struct sockaddr *)&c->c_from);
 	if (c->c_newcid)
 		memcpy(p->dp_tcid, c->c_cid, p->dp_tcidlen = c->c_cidlen);
 	if (c->c_nack != 0) {
@@ -919,6 +1060,28 @@ dtls_ctl(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p, struct dtls_ctl *c)
 		/* s9 MAY: "fewer than num_cids CIDs, including no CIDs" */
 		dtls_pend(p, DTLS13_HS_NEW_CID, nonecid, sizeof(nonecid),
 		    &o);
+	} else if (c->c_moved && c->c_newer && !move &&
+	    p->dp_pendlen == 0 && p->dp_rcidlen != 0 &&
+	    !dtls_sameaddr((struct sockaddr *)&c->c_from,
+	    (struct sockaddr *)&p->dp_addr)) {
+		/*
+		 * RFC 9146 s6: the address we send to is not replaced
+		 * unless the datagram was verified, is newer than any
+		 * before it, and "there is a strategy for ensuring that
+		 * the new peer address is able to receive and process
+		 * DTLS records".  Ours is a message to the new address
+		 * that RFC 9147 s7.1 says "MUST be ACKed": a
+		 * NewConnectionId of no IDs, spare, which changes nothing
+		 * at the peer, s9.  The ACK, coming from there, moves
+		 * the peer.  Until then the replies go where they went,
+		 * and the client's RPC retransmission finds the server
+		 * at the new address.  A NewConnectionId with none is
+		 * ours to send only with an ID of ours, s9, as here.
+		 */
+		memcpy(&p->dp_newaddr, &c->c_from, sizeof(p->dp_newaddr));
+		p->dp_probing = true;
+		dtls_pend(p, DTLS13_HS_NEW_CID, nonecid, sizeof(nonecid),
+		    &o);
 	}
 	mutex_exit(&p->dp_txlock);
 	dtls_flush(p, &o);
@@ -936,7 +1099,6 @@ dtls_hs_input(struct oncrpc_dtlspeer *p, const uint8_t *q, size_t len,
 	uint8_t type;
 	uint16_t mseq;
 	size_t blen, used, n;
-	bool cids = p->dp_rcidlen != 0 || p->dp_tcidlen != 0;
 	bool processed = false;
 	int error;
 
@@ -980,8 +1142,21 @@ dtls_hs_input(struct oncrpc_dtlspeer *p, const uint8_t *q, size_t len,
 			break;
 		case DTLS13_HS_NEW_CID:
 		case DTLS13_HS_REQUEST_CID:
-			/* s9 MUST, without negotiated connection IDs */
-			if (!cids) {
+			/*
+			 * s9: "Implementations which either did not
+			 * negotiate the "connection_id" extension or which
+			 * have negotiated receiving an empty CID MUST NOT
+			 * send NewConnectionId.  Implementations MUST NOT
+			 * send RequestConnectionId when sending an empty
+			 * Connection ID", and a violation is
+			 * unexpected_message, MUST.  The peer receives
+			 * with dp_tcid and sends with dp_rcid; whether
+			 * either is empty does not change after the
+			 * handshake, so dp_tcidlen is read without
+			 * dp_txlock.
+			 */
+			if (type == DTLS13_HS_NEW_CID ? p->dp_tcidlen == 0 :
+			    p->dp_rcidlen == 0) {
 				c->c_alert = ONCRPC_TLS_UNEXPECTED_MESSAGE;
 				return;
 			}
@@ -1040,12 +1215,16 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 	struct mbuf *m;
 	uint8_t *buf, *rec, *content, type;
 	size_t len, rest, used, clen;
-	uint64_t epoch;
-	bool closed = false, any = false;
+	uint64_t epoch, top;
+	bool closed = false, any = false, seen;
 	int error;
 
 	memset(&c, 0, sizeof(c));
 	c.c_alert = -1;
+	if (dg->dg_moved) {
+		c.c_moved = true;
+		memcpy(&c.c_from, &dg->dg_from, sizeof(c.c_from));
+	}
 	len = dg->dg_m->m_pkthdr.len;
 	if (len == 0 || len > IP_MAXPACKET) {
 		m_freem(dg->dg_m);
@@ -1066,14 +1245,25 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 		if (dtls13_demux(rec[0]) != DTLS13_CIPHERTEXT)
 			break;
 		epoch = p->dp_rx.dd_epoch;
+		seen = p->dp_rx.dd_any;
+		top = p->dp_rx.dd_top;
 		error = dtls13_open(&p->dp_rx, p->dp_rcidlen, rec, rest,
 		    &used, &type, &content, &clen);
+		/*
+		 * RFC 9146 s6: "newer (in terms of both epoch and sequence
+		 * number) than the newest datagram received".  Nothing has
+		 * opened under dp_rxnext yet, so its records are newer than
+		 * any, and those of dp_rx are if above its highest.
+		 */
+		if (error == 0 && (!seen || p->dp_rx.dd_last > top))
+			c.c_newer = true;
 		if (error == EAGAIN && p->dp_rxnexton) {
 			/* s8: the peer's new keys, used for the first time? */
 			epoch = p->dp_rxnext.dd_epoch;
 			error = dtls13_open(&p->dp_rxnext, p->dp_rcidlen, rec,
 			    rest, &used, &type, &content, &clen);
 			if (error == 0) {
+				c.c_newer = true;
 				dtls13_dir_fini(&p->dp_rx);
 				p->dp_rx = p->dp_rxnext;
 				explicit_memset(&p->dp_rxnext, 0,
@@ -1109,6 +1299,7 @@ dtls_open_dgram(struct oncrpc_dtls *d, struct dtls_dgram *dg)
 			out->dg_m = m;
 			out->dg_peer = p;
 			out->dg_plain = false;
+			out->dg_moved = false;
 			mutex_enter(&d->d_lock);
 			p->dp_refs++;
 			SIMPLEQ_INSERT_TAIL(&d->d_msgs, out, dg_next);
@@ -1229,11 +1420,14 @@ oncrpc_dtls_getmsg(struct oncrpc_dtls *d, struct mbuf **namp,
 	p = dg->dg_peer;
 	plain = dg->dg_plain;
 	kmem_intr_free(dg, sizeof(*dg));
-	sa = (const struct sockaddr *)&p->dp_addr;
 	nam = m_get(M_WAIT, MT_SONAME);
+	/* The reply goes where the peer is now, RFC 9146 s6. */
+	mutex_enter(&d->d_lock);
+	sa = (const struct sockaddr *)&p->dp_addr;
 	KASSERT(sa->sa_len <= MLEN);
 	memcpy(mtod(nam, void *), sa, sa->sa_len);
 	nam->m_len = sa->sa_len;
+	mutex_exit(&d->d_lock);
 	*namp = nam;
 	if (plain) {
 		oncrpc_dtls_rele(p);
@@ -1331,6 +1525,11 @@ dtls_establish(struct oncrpc_dtlspeer *p, const uint8_t *csecret,
 	p->dp_rcidlen = rcidlen;
 	memcpy(p->dp_tcid, tcid, tcidlen);
 	p->dp_tcidlen = tcidlen;
+	if (rcidlen >= ONCRPC_DTLS_CIDKEY) {
+		LIST_INSERT_HEAD(&d->d_cidhash[dtls_cidhash(rcid)], p,
+		    dp_cidhash);
+		p->dp_cidhashed = true;
+	}
 	memcpy(p->dp_exporter, exporter, sizeof(p->dp_exporter));
 	p->dp_hstx = hstx;
 	p->dp_hsrx = hsrx;
@@ -1577,8 +1776,13 @@ dtls_retransmit(struct oncrpc_dtls *d, struct oncrpc_dtlspeer *p)
 	mutex_enter(&p->dp_txlock);
 	if (p->dp_pendlen != 0 && getticks() - p->dp_due >= 0) {
 		if (++p->dp_tries > ONCRPC_DTLS_MAXRETX) {
+			/*
+			 * A new address that never answered is given up,
+			 * not the association: the peer may still be
+			 * where it was, RFC 9146 s6.
+			 */
+			giveup = !p->dp_probing;
 			dtls_unpend(p);
-			giveup = true;
 		} else {
 			p->dp_rto = MIN(p->dp_rto * 2, ONCRPC_DTLS_RTOMAX);
 			dtls_send_pend(p, &o);

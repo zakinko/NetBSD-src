@@ -501,14 +501,6 @@ tls13_selftest(void)
  * encrypted, s4.2.3; and every record carries a unified header, s4.
  */
 
-/* RFC 9147 s4, the first byte of the unified header */
-#define	DTLS13_FIXED		0x20	/* 001 in the top three bits */
-#define	DTLS13_FIXEDMASK	0xe0
-#define	DTLS13_C		0x10	/* a connection ID */
-#define	DTLS13_S		0x08	/* a 16-bit sequence number */
-#define	DTLS13_L		0x04	/* a length */
-#define	DTLS13_E		0x03	/* the low bits of the epoch */
-
 /*
  * RFC 9147 s4.1, Figure 5: alert, handshake and ack are DTLSPlaintext,
  * 001 in the top bits is DTLSCiphertext, and anything else MUST be

@@ -236,9 +236,10 @@ ufs_gro_rename_check_permitted(struct mount *mp, kauth_cred_t cred,
 			return error;
 	}
 
-	return genfs_ufslike_check_sticky(cred,
-	    VTOI(tdvp)->i_mode, VTOI(tdvp)->i_uid,
-	    tvp, (tvp? VTOI(tvp)->i_uid : 0));
+	if (tvp != NULL && (VTOI(tdvp)->i_mode & ISVTX))
+		return genfs_can_sticky(tvp, cred, VTOI(tdvp)->i_uid,
+		    VTOI(tvp)->i_uid);
+	return 0;
 }
 
 /*

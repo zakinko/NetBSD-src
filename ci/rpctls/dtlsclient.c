@@ -79,6 +79,7 @@ static int nslow;		/* bench: calls over 100 ms */
 static uint8_t owncid[255], peercid[255], newcid[255];
 static size_t owncidlen, peercidlen, newcidlen;
 static int rx_newcid;		/* NewConnectionId messages received */
+static size_t cidwant = CID_LEN;	/* the length of ours to ask for */
 
 static void
 check(bool ok, const char *what)
@@ -331,10 +332,10 @@ associate(SSL_CTX *ctx, int *fdp, bool spurious, bool cid)
 		errx(1, "SSL_new");
 #ifdef HAVE_DTLS_CID
 	if (cid) {
-		uint8_t c[CID_LEN];
+		uint8_t c[255];
 
-		if (RAND_bytes(c, sizeof(c)) != 1 ||
-		    !SSL_set1_dtls_cid(ssl, c, sizeof(c)))
+		if (RAND_bytes(c, (int)cidwant) != 1 ||
+		    !SSL_set1_dtls_cid(ssl, c, cidwant))
 			errx(1, "SSL_set1_dtls_cid");
 	}
 #endif
@@ -354,7 +355,7 @@ associate(SSL_CTX *ctx, int *fdp, bool spurious, bool cid)
 
 		/* RFC 9289 s5.1.2: "a ConnectionID with a nonzero length" */
 		check(SSL_get0_dtls_cid(ssl, &o, &ol, &pe, &pl) == 1 &&
-		    ol == CID_LEN && pl != 0 && pl <= sizeof(peercid),
+		    ol == cidwant && pl != 0 && pl <= sizeof(peercid),
 		    "connection IDs both ways, nonzero, s5.1.2");
 		if (ol <= sizeof(owncid) && pl <= sizeof(peercid)) {
 			memcpy(owncid, o, owncidlen = ol);
@@ -710,7 +711,8 @@ static void
 cidchecks(SSL *ssl, int *fdp, const uint8_t *old, size_t oldlen)
 {
 	uint8_t junk[64];
-	int fd2, fd3, before, i;
+	int fd2, fd3, before;
+	int i;
 
 	/*
 	 * Which ID the server's records carry is read from a capture,
@@ -764,8 +766,47 @@ cidchecks(SSL *ssl, int *fdp, const uint8_t *old, size_t oldlen)
 	check(rx_newcid > before,
 	    "RequestConnectionId answered with a NewConnectionId, s9");
 	check(dtlscall(ssl), "a call after the connection ID messages");
+
 	fflush(stdout);
 }
+
+/*
+ * RFC 9147 s9, ConnectionId<0..2^8-1>, as RFC 9146 s3: an immediate
+ * NewConnectionId of the longest, by hand, as OpenSSL gives out IDs
+ * of the handshake's length only.  The server has to send with it,
+ * the ACK first (s7); OpenSSL, which never gave it, cannot read
+ * that, so it is read here off the socket.  The record is sealed under
+ * epoch 3, so on an association that has not rekeyed.
+ */
+static void
+longnewcid(int fd)
+{
+	uint8_t body[2 + 1 + 255 + 1], hs[512], rec[512], cid[255];
+	uint8_t buf[2048];
+	size_t len, n;
+	ssize_t r;
+	bool seen = false;
+	int i;
+
+	for (i = 0; i < 255; i++)
+		cid[i] = (uint8_t)(i ^ 0x5c);
+	body[0] = 0x01;		/* cids<0..2^16-1>: 256 bytes */
+	body[1] = 0x00;
+	body[2] = 255;
+	memcpy(body + 3, cid, 255);
+	body[3 + 255] = 0;	/* cid_immediate */
+	len = dtls13_hs_build(hs, DTLS13_HS_NEW_CID,
+	    (uint16_t)(hsw + 50), body, sizeof(body));
+	n = handseal(rec, TLS13_CT_HANDSHAKE, hs, len,
+	    (uint64_t)cw3 + 100);
+	(void)send(fd, rec, n, 0);
+	while (!seen && (r = recvwait(fd, buf, sizeof(buf))) > 0)
+		seen = r > 1 + 255 && (buf[0] & 0xf0) == 0x30 &&
+		    memcmp(buf + 1, cid, 255) == 0;
+	check(seen, "after a NewConnectionId of a 255-byte ID the "
+	    "server sends with it, s9");
+}
+
 #endif
 
 int
@@ -867,6 +908,28 @@ main(int argc, char **argv)
 	check(!plaincall(fd, AUTH_NONE, NULL, 0),
 	    "after close_notify the 5-tuple is discarded, s5.1.2");
 	close(fd);
+
+#ifdef HAVE_DTLS_CID
+	/*
+	 * RFC 9146 s3: cid<0..2^8-1>.  64 bytes in the handshake, past
+	 * the 20 the kernel once held; OpenSSL's own handshake failed with
+	 * 180 bytes and more when measured, so not the longest here.
+	 */
+	cidwant = 64;
+	if ((ssl = associate(ctx, &fd2, false, true)) != NULL) {
+		check(dtlscall(ssl), "a call with a 64-byte connection ID "
+		    "of ours, RFC 9146 s3");
+		SSL_free(ssl);
+		close(fd2);
+	}
+	cidwant = CID_LEN;
+	if ((ssl = associate(ctx, &fd2, false, true)) != NULL) {
+		check(dtlscall(ssl), "a call on a fresh association");
+		longnewcid(fd2);
+		SSL_free(ssl);
+		close(fd2);
+	}
+#endif
 
 	/*
 	 * RFC 9289 s5.1.2: "each DTLS handshake MUST include the

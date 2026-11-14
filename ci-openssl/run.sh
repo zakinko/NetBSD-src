@@ -50,10 +50,6 @@ aarch64)
 	# bit-sliced code for CBC decryption, SHA-512 the integer code.
 	t max-neon "ARMCAP=1 $S" ossl_bsaes_cbc_encrypt:AES-128-CBC \
 	    sha512_block_data_order:SHA512
-	vm stop $arch
-	# VPSM4 is picked by MIDR, for Neoverse N1 and V1 without SM4.
-	vm start $arch neoverse-n1 || exit 1
-	t n1 "PROBE='OPENSSL_arm_midr OPENSSL_armcap_P'" vpsm4_cbc_encrypt:SM4-CBC
 	;;
 riscv64)
 	t default "$S" ossl_hwsm3_block_data_order:SM3

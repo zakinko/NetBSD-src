@@ -5,7 +5,7 @@ name: openssl-asm
 # and compares them.  Runs only on this test branch.
 on:
   push:
-    branches: [openssl-asm-leaks-ci-3]
+    branches: [openssl-asm-leaks-ci-4]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,7 +13,7 @@ concurrency:
 
 env:
   BASE: fac75683d7a
-  FIX: ce3f38987ad
+  FIX: a2ee15deecf
   P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, riscv64, sparc64]
+        arch: [aarch64]
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     steps:

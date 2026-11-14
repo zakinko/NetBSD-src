@@ -170,6 +170,8 @@ session_rele(struct nfsv4_session *se)
 			kmem_free(se->se_slots[i].sl_reply,
 			    se->se_slots[i].sl_len);
 	}
+	if (se->se_cbsave != NULL)
+		kmem_free(se->se_cbsave, NFSV4_CB_SAVE_MAX);
 	nfsv4_ses_cost -= se->se_cost;
 	kmem_free(se, se->se_size);
 }
@@ -236,14 +238,24 @@ nfsv4_session_cbget(struct nfsv4_client *cl, uint64_t *idp)
 
 	KASSERT(mutex_owned(&nfsv4_state_lock));
 
+	/*
+	 * One with a call to send again first, so that it goes over the
+	 * session it was made on, s18.46.3; see cb_call().
+	 */
 	LIST_FOREACH(se, &cl->cl_sessions, se_list) {
-		if (!se->se_cbbusy && (*idp = session_cbconn(se)) != 0) {
-			se->se_cbbusy = true;
-			se->se_refs++;
-			return se;
-		}
+		if (!se->se_cbbusy && se->se_cbsavelen != 0 &&
+		    (*idp = session_cbconn(se)) != 0)
+			goto found;
+	}
+	LIST_FOREACH(se, &cl->cl_sessions, se_list) {
+		if (!se->se_cbbusy && (*idp = session_cbconn(se)) != 0)
+			goto found;
 	}
 	return NULL;
+found:
+	se->se_cbbusy = true;
+	se->se_refs++;
+	return se;
 }
 
 /* Has cl any backchannel, busy or not. */

@@ -64,6 +64,9 @@ struct blk_fence;
  */
 #define	NFSV4_SES_CONNS		8
 
+/* Room for the arguments of one callback kept to resend, a choice. */
+#define	NFSV4_CB_SAVE_MAX	2048
+
 struct nfsv4_sesconn {
 	uint64_t	sc_id;
 	uint32_t	sc_dir;		/* CDFS4_* */
@@ -98,6 +101,8 @@ struct nfsv4_session {
 	uint32_t	se_cbvers;	/* RPC version of calls on it */
 	uint32_t	se_cbseq;	/* of the one slot of the backchannel */
 	bool		se_cbbusy;	/* a call is out on it */
+	char		*se_cbsave;	/* a call with no reply, to resend */
+	u_int		se_cbsavelen;	/* 0: none */
 	size_t		se_cost;	/* of the reply cache budget */
 	size_t		se_size;
 	u_int		se_nconn;

@@ -459,8 +459,22 @@ cb_getattr_decode(XDR *x, void *res)
 	return ga->ga_got;
 }
 
+/* CB_COMPOUND4args kept from before, as they were. */
+struct cb_raw {
+	const char	*rw_buf;
+	u_int		rw_len;
+};
+
+static bool
+cb_raw_encode(XDR *x, void *arg)
+{
+	struct cb_raw *rw = arg;
+
+	return XDR_PUTBYTES(x, __UNCONST(rw->rw_buf), rw->rw_len);
+}
+
 static int
-cb_call(const struct cb_target *ct, uint32_t proc,
+cb_call1(const struct cb_target *ct, uint32_t proc,
     bool (*enc)(XDR *, void *), void *arg, bool (*dec)(XDR *, void *),
     void *res)
 {
@@ -487,6 +501,77 @@ cb_call(const struct cb_target *ct, uint32_t proc,
 	if (ct->ct_sess != NULL)
 		return nfsv4_conn_call(ct->ct_conn, &cc, NFSV4_CB_TIMEO);
 	return oncrpc_clnt_call(&ua.ca_sa, &cc, NFSV4_CB_TIMEO);
+}
+
+/*
+ * Did the client take in the call?  A reply that the results could not
+ * be read from is still a reply (EBADRPC, oncrpc_svc_call()); one the
+ * RPC layer refused never reached CB_SEQUENCE.
+ */
+static bool
+cb_replied(int error)
+{
+
+	return error == 0 || error == EBADRPC;
+}
+
+/*
+ * RFC 8881 s2.10.13.2.4: a callback outstanding when its connection is
+ * lost MUST be retried as s2.10.6.2 has it, with the session ID, slot
+ * ID and sequence ID of the first time, and s18.46.3 over the same
+ * session.  Nothing but a reply moves the slot's sequence ID on
+ * (nfsv4_session_cbdone(), s2.10.6.1), so before this the next call on
+ * the slot, whatever it was, went with the sequence ID of the one with
+ * no reply: a client that had seen that one took the next for its retry
+ * and answered from its reply cache, and the call itself was never
+ * retried unless it was a recall that happened to come next.  So the
+ * arguments of a sequenced call are kept with the session until it has
+ * a reply, and whoever next has the session's backchannel sends them
+ * again, as they were, before its own call.  nfsv4_session_cbget() gives
+ * such a session first.
+ */
+static int
+cb_call(struct cb_target *ct, uint32_t proc,
+    bool (*enc)(XDR *, void *), void *arg, bool (*dec)(XDR *, void *),
+    void *res)
+{
+	struct nfsv4_session *se = ct->ct_sess;
+	struct cb_raw rw;
+	XDR x;
+	int error;
+
+	if (se == NULL)
+		return cb_call1(ct, proc, enc, arg, dec, res);
+
+	/* se_cbsave is the holder's of se_cbbusy, which this thread is. */
+	if (se->se_cbsavelen != 0) {
+		rw.rw_buf = se->se_cbsave;
+		rw.rw_len = se->se_cbsavelen;
+		error = cb_call1(ct, NFSV4_CB_PROC_COMPOUND, cb_raw_encode,
+		    &rw, NULL, NULL);
+		if (!cb_replied(error))
+			return error;
+		se->se_cbsavelen = 0;
+		mutex_enter(&nfsv4_state_lock);
+		se->se_cbseq++;
+		ct->ct_seq = se->se_cbseq;
+		mutex_exit(&nfsv4_state_lock);
+	}
+	if (proc != NFSV4_CB_PROC_COMPOUND)
+		return cb_call1(ct, proc, enc, arg, dec, res);
+
+	if (se->se_cbsave == NULL)
+		se->se_cbsave = kmem_alloc(NFSV4_CB_SAVE_MAX, KM_SLEEP);
+	xdrmem_create(&x, se->se_cbsave, NFSV4_CB_SAVE_MAX, XDR_ENCODE);
+	if (!(*enc)(&x, arg))
+		return EMSGSIZE;
+	rw.rw_buf = se->se_cbsave;
+	rw.rw_len = xdr_getpos(&x);
+	error = cb_call1(ct, proc, cb_raw_encode, &rw, dec, res);
+	/* Sent, and no reply: the connection went, or the time is up. */
+	if (error == ETIMEDOUT || error == ECONNRESET)
+		se->se_cbsavelen = rw.rw_len;
+	return error;
 }
 
 /* False for a client of version 4.1 with no backchannel free. */
@@ -527,7 +612,7 @@ cb_target_put(struct cb_target *ct, int error)
 {
 
 	if (ct->ct_sess != NULL)
-		nfsv4_session_cbdone(ct->ct_sess, error == 0);
+		nfsv4_session_cbdone(ct->ct_sess, cb_replied(error));
 }
 
 /* What became of a call to the client of ct. */

@@ -121,8 +121,8 @@ nfsv4_errno(int error)
 int nfsv4_utf8_only = 1;
 
 /* RFC 3629 s4: no overlong form, no surrogate, nothing past U+10FFFF. */
-static bool
-utf8_valid(const uint8_t *p, size_t len)
+bool
+nfsv4_utf8_valid(const uint8_t *p, size_t len)
 {
 	const uint8_t *end = p + len;
 	uint8_t lo, hi;
@@ -183,7 +183,7 @@ nfsv4_name_check(const struct nfsv4_compound *c, const struct nfsv4_name *nm)
 	if (nm->nm_len == 0)
 		return NFS4ERR_INVAL;
 	if (c->c_minor != 0 && nfsv4_utf8_only &&
-	    !utf8_valid((const uint8_t *)nm->nm_str, nm->nm_len))
+	    !nfsv4_utf8_valid((const uint8_t *)nm->nm_str, nm->nm_len))
 		return NFS4ERR_INVAL;
 	if (memchr(nm->nm_str, '/', nm->nm_len) != NULL ||
 	    memchr(nm->nm_str, '\0', nm->nm_len) != NULL)

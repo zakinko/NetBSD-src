@@ -110,6 +110,15 @@ nfsv4_op_create(struct nfsv4_compound *c, union nfsv4_args *a)
 			return NFS4ERR_NAMETOOLONG;
 		if (ca->link.ln_len == 0)
 			return NFS4ERR_INVAL;
+		/*
+		 * RFC 8881 s18.4.3: with FSCHARSET_CAP4_ALLOWS_ONLY_UTF8,
+		 * which vfs.nfsv4.utf8only has fs_charset_cap say (s14.4),
+		 * the content MUST be UTF-8; s14.5 makes it NFS4ERR_INVAL.
+		 */
+		if (c->c_minor != 0 && nfsv4_utf8_only &&
+		    !nfsv4_utf8_valid((const uint8_t *)ca->link.ln_str,
+		    ca->link.ln_len))
+			return NFS4ERR_INVAL;
 	}
 	st = dir_check(cf);
 	if (st != NFS4_OK)

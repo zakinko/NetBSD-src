@@ -312,6 +312,7 @@ uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 	    const struct nfsv4_name *);
 extern int nfsv4_utf8_only;
+bool	nfsv4_utf8_valid(const uint8_t *, size_t);
 extern int nfsv4_fault_getattr;
 extern int nfsv4_fault_renew;
 bool	nfsv4_fault(volatile int *);

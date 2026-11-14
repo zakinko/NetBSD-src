@@ -549,3 +549,252 @@ sc("vfs.nfsv4.arrived=")
 res = s.compound([op.putfh(dirfh), op.lookup(stamp + b"arr"), op.getfh()])
 t("s4.2.2 forgotten, handles are this server's again",
   res.resarray[-1].object if res.status == NFS4_OK else res.status, fh)
+
+# s2.9.1: UDP by itself MUST NOT be a transport of 4.1, and s15.1.3.2 has
+# a listener without the minor version say NFS4ERR_MINOR_VERS_MISMATCH,
+# with no results.  4.0 is still served there.  In the VM, as the tunnel
+# carries TCP only (udp41.c).
+p = subprocess.run(["ssh", "netbsd", "/var/tmp/nfsv4/udp41"],
+                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+out = p.stdout.decode()
+print("  udp41:", out.strip().replace("\n", "; "))
+alive()
+def udp(m):
+    r = re.search(r"minor %d: (.*)" % m, out)
+    return r.group(1) if r else out.strip()
+t("s2.9.1 4.0 over UDP", udp(0), "status 0, results 0")
+t("s2.9.1 4.1 over UDP, s15.1.3.2", udp(1), "status %d, results 0" % NFS4ERR_MINOR_VERS_MISMATCH)
+
+# s5.8.2.5 change_policy MUST change with fs_locations, which a referral
+# added changes, and when the file system goes read-only or back.  The
+# latter on a mount of its own, exported for this and taken away after.
+cpol = lambda ops: s.compound(ops + [op.getattr(nfs4lib.list2bitmap([FATTR4_CHANGE_POLICY]))])
+def chp(ops):
+    res = cpol(ops)
+    if res.status != NFS4_OK:
+        return res.status
+    v = res.resarray[-1].obj_attributes[FATTR4_CHANGE_POLICY]
+    return (v.cp_major, v.cp_minor)
+before = chp(nofh(dirfh))
+vmcall("sh -c 'mkdir -p /%s/%s && sysctl -w \"vfs.nfsv4.referral=/%s/%s srvcp:/cp\"'" % (
+    b"/".join(export).decode(), (stamp + b"cpref").decode(),
+    b"/".join(export).decode(), (stamp + b"cpref").decode()))
+after = chp(nofh(dirfh))
+print("  change_policy", before, after)
+t("s5.8.2.5 a referral added changes it", isinstance(after, tuple) and after != before, True)
+vmcall("sh -c 'mkdir -p /export/cpol && mount_tmpfs -s 1m tmpfs /export/cpol && "
+       "echo \"/export/cpol -maproot=root -noresvport\" >>/etc/exports && "
+       "kill -HUP $(cat /var/run/mountd.pid); sleep 2'")
+cp = [b"export", b"cpol"]
+rw = chp(use_obj(cp))
+vmcall("sh -c 'mount -u -r /export/cpol; mount | grep cpol'")
+ro = chp(use_obj(cp))
+vmcall("sh -c 'mount -u -w /export/cpol; mount | grep cpol'")
+rw2 = chp(use_obj(cp))
+print("  change_policy rw, ro, rw", rw, ro, rw2)
+t("s5.8.2.5 the mount made read-only changes it", isinstance(ro, tuple) and ro != rw, True)
+t("s5.8.2.5 and writable again", isinstance(rw2, tuple) and rw2 != ro, True)
+vmcall("sh -c 'sed -i.bak /cpol/d /etc/exports && kill -HUP $(cat /var/run/mountd.pid); "
+       "sleep 2; umount /export/cpol'")
+
+# s18.4.3: with FSCHARSET_CAP4_ALLOWS_ONLY_UTF8 the content of a symbolic
+# link MUST be UTF-8; s14.5 makes what is not NFS4ERR_INVAL.
+lnk = lambda n, data: s.compound(nofh(dirfh, op.create(createtype4(NF4LNK, linkdata=data),
+                                                       stamp + n, {}))).status
+t("s18.4.3 a link to bytes that are not UTF-8", lnk(b"sl8bad", b"\xff\xfe" + stamp), NFS4ERR_INVAL)
+t("s18.4.3 an overlong form", lnk(b"sl8ovl", b"a\xc0\xafb"), NFS4ERR_INVAL)
+t("s18.4.3 a link to UTF-8", lnk(b"sl8ok", "あ/い".encode()), NFS4_OK)
+
+# s18.23.3: a cookie SHOULD NOT change when the directory is modified.
+# Named attributes, on the export that has them (FFS with 2ea), set in
+# the VM; the cookie of "c" before and after "a" goes, and READDIR from
+# the cookie of "b" after that.
+aexp = [b"export", b"acl"]
+xf = "/export/acl/%s" % (stamp + b"xa").decode()
+vmcall("sh -c 'touch %s && for n in a b c; do setextattr user $n v %s; done; lsextattr user %s'" %
+       (xf, xf, xf))
+res = s.compound(use_obj(aexp + [stamp + b"xa"]) + [op.openattr(False), op.getfh()])
+t("s18.23.3 OPENATTR", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    adir = res.resarray[-1].object
+    def ck(cookie=0):
+        res = s.compound([op.putfh(adir), op.readdir(cookie, b"\0" * 8, 4096, 8192, 0)])
+        if res.status != NFS4_OK:
+            return res.status
+        return dict((e.name, e.cookie) for e in res.resarray[-1].reply.entries)
+    c1 = ck()
+    vmcall("rmextattr user a %s" % xf)
+    c2 = ck()
+    print("  cookies", c1, c2)
+    t("s18.23.3 the cookie of c stays", isinstance(c1, dict) and isinstance(c2, dict) and
+      c1.get(b"c") is not None and c1.get(b"c") == c2.get(b"c"), True)
+    t("s18.23.3 none of 0, 1, 2", isinstance(c2, dict) and all(v > 2 for v in c2.values()), True)
+    t("s18.23.3 on from the cookie of b", sorted(ck(c1[b"b"]).keys()) if isinstance(c1, dict) and b"b" in c1 else c1,
+      [sorted(k for k in c2 if c2[k] > c1[b"b"])] if isinstance(c1, dict) and b"b" in c1 and isinstance(c2, dict) else [None])
+res = s.compound([op.putrootfh(), op.readdir(0, b"\0" * 8, 4096, 8192, 0)])
+t("s18.23.3 the pseudo root still lists export",
+  res.status == NFS4_OK and b"export" in [e.name for e in res.resarray[-1].reply.entries], True)
+
+# s5.8.1.1 supported_attrs, with the set-only time_access_set (48) and
+# time_modify_set (54), which SETATTR takes.
+res = s.compound(nofh(dirfh, op.getattr(nfs4lib.list2bitmap([FATTR4_SUPPORTED_ATTRS]))))
+sup = res.resarray[-1].obj_attributes[FATTR4_SUPPORTED_ATTRS] if res.status == NFS4_OK else res.status
+t("s5.8.1.1 supported_attrs has 48 and 54",
+  [bool(sup >> FATTR4_TIME_ACCESS_SET & 1), bool(sup >> FATTR4_TIME_MODIFY_SET & 1)]
+  if isinstance(sup, int) else sup, [[True, True]])
+
+# s6.2.1.3.1, s6.2.1.3.2, s6.4.3: what an ACL lets AUTH_SYS uid 1111 gid
+# 37 do, who owns none of the objects.  On the export with ACLs.
+from rpc.security import AuthSys
+au = AuthSys().init_cred(uid=1111, gid=37, name=b"t41b")
+anon = stateid4(0, b"\0" * 12)
+A_, D_ = ACE4_ACCESS_ALLOWED_ACE_TYPE, ACE4_ACCESS_DENIED_ACE_TYPE
+RA = ACE4_READ_ATTRIBUTES | ACE4_READ_ACL | ACE4_SYNCHRONIZE
+own = nfsace4(A_, 0, 0x1f01ff, b"OWNER@")
+ev = lambda t_, m: nfsace4(t_, 0, m, b"EVERYONE@")
+res = s.compound(use_obj(aexp) + [op.create(createtype4(NF4DIR), stamp + b"acl",
+                 {FATTR4_MODE: 0o777}), op.getfh()])
+check(res)
+atop = res.resarray[-1].object
+def amk(parent, n, acl, dir=False, data=b""):
+    if dir:
+        res = s.compound([op.putfh(parent), op.create(createtype4(NF4DIR), n,
+                          {FATTR4_MODE: 0o755}), op.getfh()])
+        check(res)
+        fh = res.resarray[-1].object
+    else:
+        res = s.compound([op.putfh(parent), op.open(0, OPEN4_SHARE_ACCESS_WRITE |
+            OPEN4_SHARE_ACCESS_WANT_NO_DELEG, OPEN4_SHARE_DENY_NONE,
+            open_owner4(0, stamp + n), openflag4(OPEN4_CREATE, createhow4(GUARDED4,
+            {FATTR4_MODE: 0o600})), open_claim4(CLAIM_NULL, n)), op.getfh()])
+        check(res)
+        fh, osid = res.resarray[-1].object, res.resarray[-2].stateid
+        if data:
+            check(s.compound([op.putfh(fh), op.write(osid, 0, FILE_SYNC4, data)]))
+        s.compound([op.putfh(fh), op.close(0, osid)])
+    if acl is not None:
+        check(s.compound([op.putfh(fh), op.setattr(anon, {FATTR4_ACL: acl})]))
+    return fh
+# s6.2.1.3.1 ACE4_READ_DATA / ACE4_EXECUTE: READ with EXECUTE alone
+fx = amk(atop, b"xonly", [own, ev(A_, ACE4_EXECUTE | RA)], data=b"hello")
+res = s.compound([op.putfh(fx), op.read(anon, 0, 5)], credinfo=au)
+t("s6.2.1.3.1 READ with only ACE4_EXECUTE allowed", res.status, NFS4_OK)
+res = s.compound([op.putfh(fx), op.access(ACCESS4_READ | ACCESS4_EXECUTE)], credinfo=au)
+t("s6.2.1.3.1 ACCESS tells EXECUTE from READ",
+  (res.resarray[-1].supported, res.resarray[-1].access) if res.status == NFS4_OK else res.status,
+  [(ACCESS4_READ | ACCESS4_EXECUTE, ACCESS4_EXECUTE)])
+res = s.compound([op.putfh(fx), op.getattr(nfs4lib.list2bitmap([FATTR4_ACL]))])
+evm = [a.access_mask for a in res.resarray[-1].obj_attributes[FATTR4_ACL]
+       if a.who == b"EVERYONE@" and a.type == A_] if res.status == NFS4_OK else res.status
+print("  EVERYONE@ allows", evm)
+t("s6.2.1.3.1 EXECUTE set alone stays alone, no READ_DATA",
+  isinstance(evm, list) and len(evm) > 0 and all(m & ACE4_EXECUTE and not m & ACE4_READ_DATA for m in evm), True)
+# s6.2.1.3.1 ACE4_APPEND_DATA without ACE4_WRITE_DATA
+fa = amk(atop, b"append", [own, ev(D_, ACE4_WRITE_DATA), ev(A_, ACE4_APPEND_DATA | ACE4_READ_DATA | RA)],
+         data=b"hello")
+res = s.compound([op.putfh(fa), op.write(anon, 0, FILE_SYNC4, b"X")], credinfo=au)
+t("s6.2.1.3.1 WRITE not at EOF with APPEND_DATA only", res.status, NFS4ERR_ACCESS)
+res = s.compound([op.putfh(fa), op.write(anon, 5, FILE_SYNC4, b"X")], credinfo=au)
+print("  WRITE at EOF with APPEND_DATA only:", res.status)
+# s6.2.1.3.2: neither DELETE nor DELETE_CHILD said, no MODE4_SVTX: allowed
+# if and only if ACE4_ADD_FILE is.
+for case, dacl, want in (("ADD_FILE", [own, ev(A_, ACE4_ADD_FILE | ACE4_EXECUTE | ACE4_READ_DATA | RA)], NFS4_OK),
+                         ("no ADD_FILE", [own, ev(A_, ACE4_EXECUTE | ACE4_READ_DATA | RA)], NFS4ERR_ACCESS)):
+    d = amk(atop, b"rm " + case.encode(), dacl, dir=True)
+    amk(d, b"f", [own, ev(A_, ACE4_READ_DATA | RA)])
+    res = s.compound([op.putfh(d), op.remove(b"f")], credinfo=au)
+    t("s6.2.1.3.2 REMOVE, silent ACLs, " + case, res.status,
+      want if want == NFS4_OK else [NFS4ERR_ACCESS, NFS4ERR_PERM])
+# s6.4.3: after an EXCLUSIVE4 create, the owner's SETATTR SHOULD succeed
+# whatever the object was made with.
+d = amk(atop, b"excl", [own, ev(A_, ACE4_ADD_FILE | ACE4_EXECUTE | ACE4_READ_DATA | RA)], dir=True)
+res = s.compound([op.putfh(d), op.open(0, OPEN4_SHARE_ACCESS_WRITE | OPEN4_SHARE_ACCESS_WANT_NO_DELEG,
+    OPEN4_SHARE_DENY_NONE, open_owner4(0, stamp + b"ex"),
+    openflag4(OPEN4_CREATE, createhow4(EXCLUSIVE4, createverf=b"t41bexcl")),
+    open_claim4(CLAIM_NULL, b"e")), op.getfh()], credinfo=au)
+t("s6.4.3 OPEN EXCLUSIVE4 by uid 1111", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    efh, esid = res.resarray[-1].object, res.resarray[-2].stateid
+    res = s.compound([op.putfh(efh), op.setattr(esid, {FATTR4_MODE: 0o640})], credinfo=au)
+    t("s6.4.3 the owner's SETATTR of mode after it", res.status, NFS4_OK)
+    res = s.compound([op.putfh(efh), op.setattr(esid, {FATTR4_ACL: [own, ev(A_, ACE4_READ_DATA | RA)]})],
+                     credinfo=au)
+    t("s6.4.3 the owner's SETATTR of acl after it", res.status, NFS4_OK)
+    s.compound([op.putfh(efh), op.close(0, esid)], credinfo=au)
+
+# s2.10.13.2.4, s2.10.6.2, s18.46.3: a callback left without a reply MUST
+# be sent again, with its session, slot and sequence ID.  The first recall
+# is held past the server's 5 s; the recall of another delegation that
+# comes next must not go at that sequence ID, which the client would take
+# for the retry and answer from its reply cache.
+# pynfs's handle_1 answers a retry from its reply cache with env unset
+# (UnboundLocalError, so no reply at all); this is that with env set.
+import inspect, textwrap
+h1 = nfs4client.NFS4Client.handle_1
+src = textwrap.dedent(inspect.getsource(h1)).replace(
+    "    try:\n        # SEQUENCE", "    env = None\n    try:\n        # SEQUENCE", 1).replace(
+    "    unpacker.done()\n", "    unpacker.done()\n    _t41b_seen(args)\n", 1)
+seen = []	# (seqid, the stateid's other of a CB_RECALL), each call as it came
+def _t41b_seen(args):
+    q = o = None
+    for a in args.argarray:
+        if a.argop == OP_CB_SEQUENCE:
+            q = a.switch.csa_sequenceid
+        elif a.argop == OP_CB_RECALL:
+            o = a.switch.stateid.other
+    seen.append((q, o))
+nfs4client._t41b_seen = _t41b_seen
+ns = {}
+exec(src, nfs4client.__dict__, ns)
+nfs4client.NFS4Client.handle_1 = ns["handle_1"]
+seqs = []
+orig2 = nfs4client.NFS4Client.op_cb_sequence
+def spy2(self, arg, env):
+    seqs.append(arg.csa_sequenceid)
+    return orig2(self, arg, env)
+nfs4client.NFS4Client.op_cb_sequence = spy2
+got = []
+def rhook(arg, env):
+    got.append((seqs[-1] if seqs else None, arg.stateid.other))
+    if len(got) == 1:
+        time.sleep(7)
+s.client.cb_pre_hook(OP_CB_RECALL, rhook)
+dl = []
+for n in (b"rtA", b"rtB"):
+    f, sd = mk(n)
+    close_file(s, f, sd)
+    res = wd(f, OPEN4_SHARE_ACCESS_WANT_READ_DELEG)
+    dd = res.resarray[-1].wdr_resok4 if res.status == 0 else None
+    dl.append((f, dd.read.stateid if dd is not None and dd.delegation_type == OPEN_DELEGATE_READ else None))
+t("s2.10.13.2.4 two read delegations", [x[1] is not None for x in dl], [[True, True]])
+if dl[0][1] is not None and dl[1][1] is not None:
+    wo = lambda n: op.open(0, OPEN4_SHARE_ACCESS_WRITE, 0, open_owner4(0, n),
+                           openflag4(OPEN4_NOCREATE), open_claim4(CLAIM_FH))
+    s2.compound(nofh(dl[0][0], wo(b"rtwa")))
+    for i in range(20):
+        if got:
+            break
+        time.sleep(0.5)
+    time.sleep(8)
+    s2.compound(nofh(dl[1][0], wo(b"rtwb")))
+    for i in range(60):
+        if any(o == dl[1][1].other for q, o in got):
+            break
+        time.sleep(0.5)
+    print("  recalls (seqid, which)", [(q, "A" if o == dl[0][1].other else "B") for q, o in got])
+    print("  CB_SEQUENCE seqids", seqs)
+    qa = got[0][0] if got else None
+    qb = [q for q, o in got if o == dl[1][1].other]
+    t("s2.10.6.2 the next recall is not at the unanswered one's sequence ID",
+      qa is not None and len(qb) > 0 and qb[0] > qa, True)
+    print("  calls (seqid, which)", [(q, "A" if o == dl[0][1].other else "B" if o == dl[1][1].other else o)
+                                     for q, o in seen])
+    t("s2.10.13.2.4 the unanswered one went again at its sequence ID",
+      qa is not None and seen.count((qa, dl[0][1].other)) >= 2, True)
+    t("s2.10.6.2 nothing else went at that sequence ID",
+      [o for q, o in seen if q == qa and o != dl[0][1].other], [[]])
+    for f, d_ in dl:
+        s.compound(nofh(f, op.delegreturn(d_)))
+nfs4client.NFS4Client.op_cb_sequence = orig2
+nfs4client.NFS4Client.handle_1 = h1
+s.client.cb_pre_hook(OP_CB_RECALL, hook)

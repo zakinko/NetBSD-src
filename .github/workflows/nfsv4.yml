@@ -143,7 +143,7 @@ jobs:
         run: ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-test.txt
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/nfs3tcp.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/nfs3tcp.c ci/nfsv4/udp41.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
       - name: Tunnel to the server
         run: |

@@ -86,6 +86,7 @@ cd "$D"
 cc -g -Wall -o nfsv4d nfsv4d.c
 cc -g -Wall -o lockhold lockhold.c
 cc -g -Wall -o nfs3tcp nfs3tcp.c
+cc -g -Wall -o udp41 udp41.c
 ./nfsv4d "$D/stable" </dev/null >nfsv4d.log 2>&1 &
 echo $! >nfsv4d.pid
 sleep 1

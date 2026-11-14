@@ -5,7 +5,7 @@ name: openssl-asm
 # and compares them.  Runs only on this test branch.
 on:
   push:
-    branches: [openssl-asm-leaks-ci-2]
+    branches: [openssl-asm-leaks-ci-3]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +13,7 @@ concurrency:
 
 env:
   BASE: fac75683d7a
+  FIX: ce3f38987ad
   P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
 
 jobs:
@@ -20,22 +21,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [riscv64, sparc64]
+        arch: [aarch64, riscv64, sparc64]
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 8
+          fetch-depth: 30
           filter: blob:none
           sparse-checkout: |
             ci-openssl
           sparse-checkout-cone-mode: false
       - name: trees
         run: |
-          git log --oneline $BASE~1..HEAD
-          git diff --stat $BASE HEAD~1
-          for t in base:$BASE new:HEAD~1; do
+          git log --oneline $BASE..HEAD
+          git diff --stat $BASE $FIX
+          for t in base:$BASE new:$FIX; do
             n=${t%%:*} r=${t#*:}
             # a sparse checkout fetches the missing blobs in one batch
             git worktree add -q --no-checkout tree-$n $r

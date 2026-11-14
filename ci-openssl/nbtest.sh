@@ -56,7 +56,9 @@ reached() { # lib sym alg
 	env LD_LIBRARY_PATH="$1" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} gdb -nx -batch \
 	    -ex "handle SIGILL nostop noprint pass" \
 	    -ex "break main" -ex run -ex "break $2" -ex continue -ex "info symbol \$pc" \
-	    --args "$w/evpcheck" one "$3" < /dev/null 2>&1 | grep -q "^$2 in section"
+	    --args "$w/evpcheck" one "$3" < /dev/null > "$w/gdb.out" 2>&1
+	# gdb may stop a few instructions in: "sym + 8 in section .text"
+	grep -q -E "^$2( \+ [0-9]+)? in section" "$w/gdb.out"
 }
 for spec in "$@"; do
 	sym=${spec%%:*} alg=${spec#*:}
@@ -66,17 +68,18 @@ for spec in "$@"; do
 		echo "ok   $sym ($alg): $(basename "$A") $a, $(basename "$B") $b"
 	else
 		echo "FAIL $sym ($alg): $(basename "$A") $a, $(basename "$B") $b"; fail=1
+		tail -4 "$w/gdb.out" | sed 's/^/     gdb: /'
 	fi
 done
 
 # PROBE="var ..." prints OpenSSL's own idea of the CPU, after it has run.
 if [ -n "${PROBE:-}" ]; then
 	set --
-	for v in $PROBE; do set -- "$@" -ex "print/x $v"; done
+	for v in $PROBE; do set -- "$@" -ex "print/x (unsigned int)$v"; done
 	env LD_LIBRARY_PATH="$A" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} gdb -nx -batch \
 	    -ex "handle SIGILL nostop noprint pass" -ex "break main" -ex run \
 	    -ex "break exit" -ex continue "$@" \
-	    --args "$w/evpcheck" one SM4-CBC < /dev/null 2>&1 | grep '^\$'
+	    --args "$w/evpcheck" one SM4-CBC < /dev/null 2>&1 | grep -E '^\$|rror|No symbol' | sed "s/^/probe ($PROBE): /"
 fi
 
 # Three alternating rounds, so a busy host shows up as scatter rather than

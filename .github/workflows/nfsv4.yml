@@ -167,6 +167,11 @@ jobs:
           cp ci/nfsv4/t41b.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 400 python3 ./t41b.py /export/pynfs /export/sec 2>&1 | tee "$OLDPWD/out/t41b.txt" || true
+      - name: READ_PLUS of stored zeros, and its option
+        run: |
+          cp ci/nfsv4/rp42.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 120 python3 ./rp42.py /export/pynfs 2>&1 | tee "$OLDPWD/out/rp42.txt" || true
       - if: inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -247,6 +252,7 @@ jobs:
             out/linux-client-*.txt
             out/t41.txt
             out/t41b.txt
+            out/rp42.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

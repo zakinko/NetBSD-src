@@ -17,24 +17,6 @@ sudo python3 "$H/rpcb-nat.py" 111 10111 192.168.122.10 192.168.122.2 \
 NAT=$!
 sleep 1
 kill -0 $NAT 2>/dev/null || { cat "$OUT/nfsacl-rpcb-nat.txt"; exit 1; }
-# And what the runner's port 111 leads to.
-ss -lntup | grep -E ':(111|2049|4002) ' || :
-rpcinfo -p 127.0.0.1 2>&1 | head -30 || :
-for p in 111 2049 4002; do
-	if timeout 5 bash -c "echo >/dev/tcp/127.0.0.1/$p" 2>/dev/null; then
-		echo "runner to 127.0.0.1:$p: open"; else echo "runner to 127.0.0.1:$p: no"; fi
-done
-# Where a call to port 111 through the forward goes: captured in the
-# VM and on the runner.
-ssh -o LogLevel=ERROR netbsd 'i=$(ifconfig -l | tr " " "\n" | grep -v "^lo" | head -1); tcpdump -n -i $i -c 40 -w /var/tmp/p111.pcap port 111 >/dev/null 2>&1 & echo $! >/var/tmp/p111.pid' || :
-sudo timeout 30 tcpdump -n -i lo -c 40 port 111 >"$OUT/nfsacl-p111-runner.txt" 2>&1 &
-sleep 2
-timeout 20 rpcinfo -T tcp 127.0.0.1 100000 4 2>&1 || :
-timeout 20 rpcinfo -T udp 127.0.0.1 100000 4 2>&1 || :
-sleep 2
-ssh -o LogLevel=ERROR netbsd 'kill $(cat /var/tmp/p111.pid) 2>/dev/null; sleep 1; tcpdump -n -r /var/tmp/p111.pcap 2>&1 | head -40' || :
-sleep 1; cat "$OUT/nfsacl-p111-runner.txt" | head -40
-ssh -o LogLevel=ERROR netbsd "netstat -an | grep -E '[.](111|2049|4002) '; ps -axo pid,args | grep '[r]pcbind'; cat /etc/hosts.allow /etc/hosts.deny 2>/dev/null; npfctl show 2>/dev/null | head -5; ifconfig -a | grep inet" || :
 # The calls of the illumos client, to see what runat and ls -l ask.
 sudo tcpdump -i any -s 0 -w "$OUT/nfsacl-omnios.pcap" 'tcp port 2049' >/dev/null 2>&1 &
 sleep 2

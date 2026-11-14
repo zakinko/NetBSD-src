@@ -308,7 +308,7 @@ jobs:
           cat out/rpcb-nat.log
           # The server's side of it: mount_nfs got EACCES from nmount under
           # all three flavors in run 43307252804, with UDP itself working.
-          ssh netbsd 'tail -15 /var/tmp/nfsv4/gssd.log; grep -E "mountd|nfs" /var/log/messages | tail -15; dmesg | tail -10; dmesg | grep -c GSSDBG; dmesg | grep GSSDBG | head -40' || :
+          ssh netbsd 'tail -15 /var/tmp/nfsv4/gssd.log; grep -E "mountd|nfs" /var/log/messages | tail -15; dmesg | tail -10; dmesg | grep -c GSSDBG; dmesg | grep GSSDBG | grep -v unwrap_priv | head -150' || :
           ssh freebsd 'dmesg | tail -15; grep -i gssd /var/log/messages | tail -10' || :
           scp 'freebsd:/var/tmp/w-*.pcap' out/ || :
           ssh netbsd 'kill $(cat /var/tmp/srv.pid)'; sleep 1; scp netbsd:/var/tmp/srv.pcap out/srv.pcap || :

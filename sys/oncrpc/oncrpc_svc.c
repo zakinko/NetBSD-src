@@ -664,9 +664,16 @@ svc_gss_raw(struct oncrpc_ireq *ir, struct mbuf **rawp)
 	}
 	m_copydata(res, 0, sizeof(w), w);
 	stat = ntohl(w[5]);
+	if (stat != ONCRPC_SUCCESS)
+	printf("GSSDBG raw: xid %x len %d w %x %x %x %x %x %x first m_len %d ext %d\n",
+	    ir->ir_call.c_xid, res->m_pkthdr.len, ntohl(w[0]), ntohl(w[1]),
+	    ntohl(w[2]), ntohl(w[3]), ntohl(w[4]), stat, res->m_len,
+	    (res->m_flags & M_EXT) != 0);
 	m_adj(res, sizeof(w));
-	if (stat == ONCRPC_SUCCESS && !oncrpc_gss_wrap_results(gg, &res))
+	if (stat == ONCRPC_SUCCESS && !oncrpc_gss_wrap_results(gg, &res)) {
+		printf("GSSDBG raw: xid %x wrap failed\n", ir->ir_call.c_xid);
 		return false;
+	}
 	oncrpc_xdrmbuf_create(&hdr, NULL, UINT_MAX, XDR_ENCODE);
 	if (!oncrpc_gss_verifier(gg) ||
 	    !oncrpc_msg_encode_accepted_verf(&hdr.xm_xdr, ir->ir_call.c_xid,

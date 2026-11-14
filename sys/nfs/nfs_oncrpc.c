@@ -389,6 +389,8 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 			    ONCRPC_ERR_SYSTEM;
 		}
 		if (error != 0) {
+			printf("GSSDBG nfs: proc %d error %d xid %x, no reply\n",
+			    nd->nd_procnum, error, rq->rq_xid);
 			nfsstats.srv_errs++;
 			nfsrv_updatecache(nd, false, mreq);
 			m_freem(mreq);
@@ -400,11 +402,14 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 		nd->nd_mrep = NULL;
 		/* FALLTHROUGH */
 	case RC_REPLY:
+		if (cacherep == RC_REPLY)
+			printf("GSSDBG nfs: xid %x from the cache\n", rq->rq_xid);
 		m_freem(nd->nd_mrep);
 		nfsdreq_free(nd);
 		rq->rq_raw = mreq;
 		return ONCRPC_RAWREPLY;
 	default:	/* RC_DROPIT */
+		printf("GSSDBG nfs: xid %x dropped by the cache\n", rq->rq_xid);
 		m_freem(nd->nd_mrep);
 		nfsdreq_free(nd);
 		return ONCRPC_NOREPLY;

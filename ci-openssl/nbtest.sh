@@ -50,8 +50,11 @@ done; done
 # The assembler is linked into both libraries; only the fixed one calls it.
 # gdb here does not resolve pending breakpoints when a library loads, so
 # stop at main first and set the breakpoint once libcrypto is mapped.
+# Without getauxval() OpenSSL probes the CPU by catching SIGILL (armcap.c),
+# which gdb would stop at; pass it through.
 reached() { # lib sym alg
 	env LD_LIBRARY_PATH="$1" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} gdb -nx -batch \
+	    -ex "handle SIGILL nostop noprint pass" \
 	    -ex "break main" -ex run -ex "break $2" -ex continue -ex "info symbol \$pc" \
 	    --args "$w/evpcheck" one "$3" < /dev/null 2>&1 | grep -q "^$2 in section"
 }
@@ -65,6 +68,16 @@ for spec in "$@"; do
 		echo "FAIL $sym ($alg): $(basename "$A") $a, $(basename "$B") $b"; fail=1
 	fi
 done
+
+# PROBE="var ..." prints OpenSSL's own idea of the CPU, after it has run.
+if [ -n "${PROBE:-}" ]; then
+	set --
+	for v in $PROBE; do set -- "$@" -ex "print/x $v"; done
+	env LD_LIBRARY_PATH="$A" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} gdb -nx -batch \
+	    -ex "handle SIGILL nostop noprint pass" -ex "break main" -ex run \
+	    -ex "break exit" -ex continue "$@" \
+	    --args "$w/evpcheck" one SM4-CBC < /dev/null 2>&1 | grep '^\$'
+fi
 
 # Three alternating rounds, so a busy host shows up as scatter rather than
 # as a difference between the libraries.

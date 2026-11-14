@@ -38,7 +38,7 @@ grep -q "^new rc 0" "build-$arch.log" && grep -q "^base rc 0" "build-$arch.log" 
 S="SPEED='ChaCha20-Poly1305 POLY1305 SHA512 MD5 SM3 AES-128-CBC'"
 case $arch in
 aarch64)
-	t max-default "$S" poly1305_init:POLY1305 poly1305_init:ChaCha20-Poly1305 \
+	t max-default "PROBE='OPENSSL_arm_midr OPENSSL_armcap_P' $S" poly1305_init:POLY1305 poly1305_init:ChaCha20-Poly1305 \
 	    sha512_block_data_order:SHA512 ossl_md5_block_asm_data_order:MD5 \
 	    ossl_hwsm3_block_data_order:SM3 ecp_sm2p256_mul:SM2
 	# Hide the crypto extensions (NEON only): AES then takes the
@@ -48,7 +48,7 @@ aarch64)
 	vm stop $arch
 	# VPSM4 is picked by MIDR, for Neoverse N1 and V1 without SM4.
 	vm start $arch neoverse-n1 || exit 1
-	t n1 "SPEED='SM4-CBC SM4-CTR'" vpsm4_cbc_encrypt:SM4-CBC
+	t n1 "PROBE='OPENSSL_arm_midr OPENSSL_armcap_P'" vpsm4_cbc_encrypt:SM4-CBC
 	;;
 riscv64)
 	t default "$S" ossl_hwsm3_block_data_order:SM3

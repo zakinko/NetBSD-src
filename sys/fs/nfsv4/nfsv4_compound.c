@@ -580,7 +580,7 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	uint32_t maxop;
 	u_int tagpos, numpos, statpos;
 	enum oncrpc_dispatch disp;
-	bool ok;
+	bool ok, nominor;
 
 	if (!xdr_u_int32_t(ax, &taglen))
 		return ONCRPC_ERR_ARGS;
@@ -598,8 +598,16 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	c.c_numops = numops;
 	a = kmem_alloc(sizeof(*a), KM_SLEEP);
 
-	if (minor >= 1 && minor <= NFSV4_MINORMAX &&
-	    compound_sequence(&c, a, &ok)) {
+	/*
+	 * RFC 8881 s2.9.1: UDP by itself MUST NOT be used as an NFSv4.1
+	 * transport.  Version 4.0 is still taken there.  A datagram
+	 * socket is then a listener without the minor version, and
+	 * s15.1.3.2 has that NFS4ERR_MINOR_VERS_MISMATCH with no results.
+	 */
+	nominor = minor > NFSV4_MINORMAX || (minor >= 1 &&
+	    rq->rq_so != NULL && rq->rq_so->so_type == SOCK_DGRAM);
+
+	if (minor >= 1 && !nominor && compound_sequence(&c, a, &ok)) {
 		kmem_free(a, sizeof(*a));
 		return ok ? ONCRPC_DONE : ONCRPC_ERR_SYSTEM;
 	}
@@ -615,7 +623,7 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 	}
 
 	/* RFC 7530 s15.2.4: no results at all for a minor version. */
-	if (minor > NFSV4_MINORMAX) {
+	if (nominor) {
 		kmem_free(a, sizeof(*a));
 		return nfsv4_patch32(rx, 0, NFS4ERR_MINOR_VERS_MISMATCH) ?
 		    ONCRPC_DONE : ONCRPC_ERR_SYSTEM;

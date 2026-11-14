@@ -188,7 +188,8 @@ res = wd(res.resarray[-1].object, OPEN4_SHARE_ACCESS_WANT_WRITE_DELEG)
 t("s18.49.3 a link", res.resarray[-1].wdr_resok4.od_whynone.ond_why if res.status == 0 else res.status,
   WND4_WRITE_DELEG_NOT_SUPP_FTYPE)
 
-# s8.2.2 the seqid of a recall, s2.10.6.3 what it refers to, with s18.49.4
+# s20.2.3 the seqid of a recall, that of the delegation as given (s8.2.2's
+# 0 is for what a client sends), s2.10.6.3 what it refers to, s18.49.4
 recalled = []
 def hook(arg, env):
     recalled.append(arg.stateid.seqid)
@@ -202,7 +203,8 @@ if d is not None and d.delegation_type == OPEN_DELEGATE_READ:
         if recalled:
             break
         time.sleep(0.5)
-    t("s8.2.2 CB_RECALL seqid", recalled, [[0]])
+    t("s20.2.3 CB_RECALL seqid, the delegation's", recalled,
+      [[d.read.stateid.seqid]])
     # s went on using its slot after WANT_DELEGATION, so the reply is
     # retired and there is nothing to refer to.
     print("  referring lists", refs)

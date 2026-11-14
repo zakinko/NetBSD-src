@@ -614,10 +614,14 @@ cb_do_recall(struct nfsv4_state *st)
 	}
 	ra.ra_ct = &ct;
 	ra.ra_ident = ct.ct_ident;
+	/*
+	 * The stateid the delegation was given with, seqid and all, as in
+	 * 4.0 (RFC 7530 s18.2.4): the client answers one that is not its
+	 * delegation's with NFS4ERR_BAD_STATEID (RFC 8881 s20.2.3).  The
+	 * seqid 0 of s8.2.2 (rfc8881.txt 7764-7768) is for what a client
+	 * sends to the server; sent here it named no stateid the client had.
+	 */
 	nfsv4_stateid_out(st, &ra.ra_stateid);
-	/* RFC 8881 s8.2.2: what a callback carries has seqid 0. */
-	if (st->st_owner->sw_client->cl_minor != 0)
-		ra.ra_stateid.si_seqid = 0;
 	/*
 	 * s2.10.6.3: while the slot has seen no later request the client
 	 * may not have the reply that gave it this.  Calls come by way of

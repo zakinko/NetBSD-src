@@ -30,10 +30,6 @@ show() {	# label server-path [-d] client-path
 	if [ "$s_d" = -d ]; then getfacl -d "$s_cp"; else getfacl -a "$s_cp"; fi | norm
 }
 uname -a
-# What the client sees of the server's rpcbind, before any mount.
-rpcinfo -p $S 2>&1 | head -30
-rpcinfo -T tcp $S 100003 3 2>&1
-rpcinfo -T tcp $S 100005 3 2>&1
 for v in 3 2; do
 	m=/mnt/p$v
 	mkdir -p $m

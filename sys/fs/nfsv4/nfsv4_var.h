@@ -272,6 +272,7 @@ uint32_t nfsv4_attr_strid(bool, const char *, u_int, uint32_t *);
 uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 	    const struct nfsv4_name *);
 extern int nfsv4_utf8_only;
+extern int nfsv4_read_plus_zero_data;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
 uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);

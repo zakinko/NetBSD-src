@@ -306,10 +306,36 @@ file_has_locks(struct vnode *vp)
 }
 
 /*
+ * RFC 7862 s15.10.3: data that is all zeros SHOULD be returned as a hole,
+ * and so it is.  vfs.nfsv4.read_plus_zero_data, from the option
+ * NFSV4_READ_PLUS_ZERO_DATA (see the module's Makefile), departs from
+ * that on purpose: zeros that are stored go as data, as they are, and
+ * only what the file system says is a hole goes as one.  What that saves
+ * is looking at every byte of every read; the client gets the same bytes
+ * either way.  To go back to the RFC, leave the option out or set the
+ * sysctl to 0.
+ */
+#ifdef NFSV4_READ_PLUS_ZERO_DATA
+int nfsv4_read_plus_zero_data = 1;
+#else
+int nfsv4_read_plus_zero_data = 0;
+#endif
+
+static bool
+all_zero(const char *p, size_t n)
+{
+
+	while (n > 0 && *p == 0) {
+		p++;
+		n--;
+	}
+	return n == 0;
+}
+
+/*
  * s15.10.  At most one piece of data and the hole after it, or a hole
- * alone, s15.10.3 leaving the client to ask again.  Zeros that really
- * are stored go as data: the SHOULD to make a hole of them would have
- * this look at every byte of every read.
+ * alone, s15.10.3 leaving the client to ask again.  Data of zeros alone
+ * goes as a hole, with the hole after it if there is one (above).
  */
 uint32_t
 nfsv4_op_read_plus(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -374,6 +400,13 @@ nfsv4_op_read_plus(struct nfsv4_compound *c, union nfsv4_args *a)
 			end = off + count;
 		if (end > reach)
 			holelen = end - reach;
+	}
+
+	/* s15.10.3: of zeros only, the data is the start of the hole. */
+	if (got != 0 && !nfsv4_read_plus_zero_data && all_zero(buf, got)) {
+		holelen += got;
+		reach = off;
+		got = 0;
 	}
 
 	nseg = (got != 0 ? 1 : 0) + (holelen != 0 ? 1 : 0);

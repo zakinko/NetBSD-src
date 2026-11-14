@@ -909,6 +909,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_utf8_only, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "read_plus_zero_data", SYSCTL_DESCR("READ_PLUS sends stored zeros as data"),
+	    NULL, 0, &nfsv4_read_plus_zero_data, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_STRING, "stable", SYSCTL_DESCR("File of clients that can reclaim"),
 	    nfsv4_sysctl_stable, 0, NULL, MAXPATHLEN,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

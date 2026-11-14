@@ -366,6 +366,21 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 			return nfs_oncrpc_gather(nx, nd, rq);
 		}
 		mreq = NULL;
+		{
+		struct mbuf *dm; int dn = 0, dl = 0, de = 0;
+		uint32_t dw[8];
+		for (dm = nd->nd_md; dm != NULL; dm = dm->m_next) {
+			dn++; dl += dm->m_len; de += (dm->m_flags & M_EXT) != 0;
+		}
+		memset(dw, 0, sizeof(dw));
+		memcpy(dw, nd->nd_dpos, MIN(sizeof(dw),
+		    (size_t)(mtod(nd->nd_md, char *) + nd->nd_md->m_len -
+		    (char *)nd->nd_dpos)));
+		nd->nd_dbg[0] = dn; nd->nd_dbg[1] = dl; nd->nd_dbg[2] = de;
+		nd->nd_dbg[3] = mtod(nd->nd_md, char *) + nd->nd_md->m_len -
+		    (char *)nd->nd_dpos;
+		memcpy(&nd->nd_dbg[4], dw, sizeof(dw));
+		}
 		netexport_rdlock();
 		error = (*nfsrv3_procs[nd->nd_procnum])(nd, &nx->nx_slp,
 		    curlwp, &mreq);
@@ -396,6 +411,19 @@ nfs_oncrpc_dispatch(struct oncrpc_req *rq)
 			m_freem(mreq);
 			nfsdreq_free(nd);
 			return ONCRPC_NOREPLY;
+		}
+		{
+		uint32_t hw[6];
+		if (mreq != NULL && m_length(mreq) >= 24) {
+			m_copydata(mreq, 0, 24, hw);
+			if (ntohl(hw[5]) != 0)
+				printf("GSSDBG nfs: xid %x proc %d stat %u md: n %d len %d ext %d left %d w %x %x %x %x %x %x %x %x\n",
+				    rq->rq_xid, nd->nd_procnum, ntohl(hw[5]),
+				    nd->nd_dbg[0], nd->nd_dbg[1], nd->nd_dbg[2],
+				    nd->nd_dbg[3], ntohl(nd->nd_dbg[4]), ntohl(nd->nd_dbg[5]),
+				    ntohl(nd->nd_dbg[6]), ntohl(nd->nd_dbg[7]), ntohl(nd->nd_dbg[8]),
+				    ntohl(nd->nd_dbg[9]), ntohl(nd->nd_dbg[10]), ntohl(nd->nd_dbg[11]));
+		}
 		}
 		nfsstats.srvrpccnt[nd->nd_procnum]++;
 		nfsrv_updatecache(nd, true, mreq);

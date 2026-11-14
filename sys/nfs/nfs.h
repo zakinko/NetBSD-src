@@ -543,6 +543,7 @@ struct nfsrv_descript {
 	struct timeval		nd_starttime;	/* Time RPC initiated */
 	nfsrvfh_t		nd_fh;		/* File handle */
 	kauth_cred_t	 	nd_cr;		/* Credentials */
+	uint32_t		nd_dbg[12];	/* DEBUG */
 };
 
 /* Bits for "nd_flag" */

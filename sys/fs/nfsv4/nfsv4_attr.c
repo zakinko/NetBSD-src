@@ -888,9 +888,21 @@ nfsv4_attr_fill(struct nfsv4_compound *c, const struct nfsv4_cfh *cf,
 				c->c_probed = true;	/* s9.14.3 */
 			break;
 		case FATTR4_CHANGE_POLICY:
-			/* s5.8.2.5: fs_locations moves with the generation. */
-			ok = attr_u64(&x, nfsv4_moved_gen()) &&
-			    attr_u64(&x, (cf->cf_exflags & MNT_EXRDONLY) != 0);
+			/*
+			 * s5.8.2.5.  chp_major follows fs_locations and
+			 * fs_locations_info, which a referral added changes
+			 * as well as a migration; moved_gen alone missed
+			 * the former.  chp_minor is whether the file system
+			 * is read-only, by the export or by the mount, as
+			 * FSLI4GF_WRITABLE says; the export alone missed a
+			 * mount -u.  The security flavors are the same
+			 * everywhere (nfsv4_op_secinfo()), so they have no
+			 * part.
+			 */
+			ok = attr_u64(&x, nfsv4_policy_gen()) &&
+			    attr_u64(&x, (cf->cf_exflags & MNT_EXRDONLY) != 0 ||
+			    (cf->cf_vp != NULL &&
+			    (cf->cf_vp->v_mount->mnt_flag & MNT_RDONLY) != 0));
 			break;
 		case FATTR4_FS_STATUS:
 			/* s11.18: no image history to tell, so no strings. */

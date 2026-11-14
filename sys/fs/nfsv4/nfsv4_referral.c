@@ -82,6 +82,15 @@ static SLIST_HEAD(, nfsv4_referral) referrals;
 static u_int referral_n;
 static uint32_t moved_gen;
 static time_t moved_end;
+/*
+ * Of change_policy, RFC 8881 s5.8.2.5: it MUST change with what
+ * fs_locations or fs_locations_info says, and both are made of the
+ * referral and moved tables, which change only by a line added here.
+ * The tables start empty with each load of the module and may be given
+ * other lines then, so the time of the load goes with the count.
+ */
+static uint32_t policy_gen;
+static uint32_t policy_epoch;
 
 struct nfsv4_arrival {
 	SLIST_ENTRY(nfsv4_arrival) ar_list;
@@ -99,6 +108,8 @@ nfsv4_referral_init(void)
 	SLIST_INIT(&arrivals);
 	referral_n = 0;
 	moved_gen = 0;
+	policy_gen = 0;
+	policy_epoch = (uint32_t)time_second;
 }
 
 void
@@ -155,6 +166,7 @@ nfsv4_referral_line(const char *s)
 	mutex_enter(&referral_lock);
 	rf->rf_index = ++referral_n;
 	SLIST_INSERT_HEAD(&referrals, rf, rf_list);
+	atomic_inc_32(&policy_gen);
 	mutex_exit(&referral_lock);
 	return 0;
 }
@@ -291,6 +303,13 @@ nfsv4_arrived_out(const struct mount *mp, fsid_t *fsid)
 		}
 	}
 	mutex_exit(&referral_lock);
+}
+
+uint64_t
+nfsv4_policy_gen(void)
+{
+
+	return (uint64_t)policy_epoch << 32 | atomic_load_relaxed(&policy_gen);
 }
 
 uint32_t

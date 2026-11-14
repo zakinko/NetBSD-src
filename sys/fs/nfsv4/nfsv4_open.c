@@ -1259,7 +1259,14 @@ nfsv4_op_read(struct nfsv4_compound *c, union nfsv4_args *a)
 	st = nfsv4_io_check(c, &ra->stateid, false);
 	if (st != NFS4_OK)
 		return st;
+	/*
+	 * RFC 8881 s6.2.1.3.1, ACE4_READ_DATA and ACE4_EXECUTE: READ SHOULD
+	 * be allowed when only ACE4_EXECUTE is, as a file cannot be run
+	 * without reading it.  ACCESS still tells the two apart.
+	 */
 	error = nfsv4_access_vp(cf, VREAD);
+	if (error == EACCES && nfsv4_access_vp(cf, VEXEC) == 0)
+		error = 0;
 	if (error != 0)
 		return nfsv4_errno(error);
 

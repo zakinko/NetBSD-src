@@ -290,6 +290,11 @@ jobs:
           cp ci/nfsv4/dacl.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./dacl.py /export/acl 2>&1 | tee "$OLDPWD/out/dacl.txt" || true
+      - name: READ_PLUS of stored zeros, and its option
+        run: |
+          cp ci/nfsv4/rp42.py "$HOME/pynfs/nfs4.1/"
+          cd "$HOME/pynfs/nfs4.1"
+          timeout 120 python3 ./rp42.py /export/pynfs 2>&1 | tee "$OLDPWD/out/rp42.txt" || true
       - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') && inputs.quick != 'true'
         run: sh ci/nfsv4/pynfs.sh "$PWD/out"
       - name: What the run of all would have cleaned up
@@ -412,6 +417,7 @@ jobs:
             out/expire41.txt
             out/errata41.txt
             out/lease-expire.pcap
+            out/rp42.txt
             out/named-attr.txt
             out/edge.txt
             out/owner.txt

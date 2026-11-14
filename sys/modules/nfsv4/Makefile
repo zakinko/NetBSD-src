@@ -86,6 +86,12 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not
 # set: nothing is known to need it.  See nfsv4_acl.c.
 #CPPFLAGS+=	-DNFSV4_CREATE_MODE_MASK
+#
+# NFSV4_READ_PLUS_ZERO_DATA: READ_PLUS sends zeros that are stored as
+# data, against RFC 7862 s15.10.3's SHOULD to send them as a hole, to
+# save looking at every byte read.  Not set: vfs.nfsv4.read_plus_zero_data
+# turns it on.  See nfsv4_v42.c.
+#CPPFLAGS+=	-DNFSV4_READ_PLUS_ZERO_DATA
 
 WARNS=	3
 

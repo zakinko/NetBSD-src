@@ -347,6 +347,7 @@ extern int nfsv4_layout_max;
 uint32_t nfsv4_layout_types(struct vnode *);
 uint32_t nfsv4_layout_blksize(struct vnode *);
 extern int nfsv4_numeric_owner_sys;
+extern int nfsv4_read_plus_zero_data;
 
 void	nfsv4_cfh_clear(struct nfsv4_cfh *);
 uint32_t nfsv4_cfh_put(struct nfsv4_compound *, const struct nfsv4_fh *);

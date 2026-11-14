@@ -1,0 +1,44 @@
+name: openssl-asm-mips
+
+# evbmips-mipsn64el: cross-build libcrypto from BASE and FIX, boot NetBSD
+# under qemu's malta with a MALTA64 kernel that has piixide, and compare.
+on:
+  push:
+    branches: [openssl-asm-leaks-ci-mips]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASE: fac75683d7a
+  P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
+
+jobs:
+  mips:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: base tree
+        run: |
+          git fetch -q --depth=1 --filter=blob:none origin $BASE
+          git worktree add -q --no-checkout tree-base FETCH_HEAD
+          git -C tree-base sparse-checkout set --no-cone $P
+          git -C tree-base checkout -q
+          git diff --stat FETCH_HEAD HEAD -- crypto/external/apache2/openssl/lib
+      - name: packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy qemu-system-mips zstd
+      - name: run
+        run: sh ci-openssl/mips.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-mips
+          path: |
+            *.log
+            mips.console

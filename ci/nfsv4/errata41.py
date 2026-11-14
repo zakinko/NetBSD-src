@@ -185,6 +185,45 @@ try:
            [NFS4ERR_PERM, NFS4ERR_ACCESS])
     rename("dir grants DELETE_CHILD", "full", "plain", None, NFS4_OK)
     remove("dir grants DELETE_CHILD", "full", "plain", NFS4_OK)
+
+    # RFC 8881 s20.2.3: CB_RECALL carries the stateid of the delegation
+    # as it was given; s8.2.2's seqid 0 is for what a client sends.
+    recalled = []
+    def op_cb_recall(self, arg, env):
+        recalled.append(arg)
+        return nfs4client.encode_status(NFS4_OK)
+    nfs4client.NFS4Client.op_cb_recall = op_cb_recall
+    c.homedir = pexp
+    sa = c.new_client_session(stamp + b"rca")
+    time.sleep(2)		# the probe of the backchannel
+    res = create_file(sa, stamp + b"rc", path=pexp + [stamp + b"rc"])
+    check(res)
+    rfh, rsid = res.resarray[-1].object, res.resarray[-2].stateid
+    sa.compound([op.putfh(rfh), op.close(0, rsid)])
+    res = sa.compound([op.putfh(rfh), op.want_delegation(
+        OPEN4_SHARE_ACCESS_WANT_READ_DELEG, deleg_claim4(CLAIM_FH))])
+    dsid = None
+    if res.status == NFS4_OK and \
+       res.resarray[-1].wdr_resok4.delegation_type == OPEN_DELEGATE_READ:
+        dsid = res.resarray[-1].wdr_resok4.read.stateid
+    t("a read delegation", dsid is not None, True)
+    if dsid is not None:
+        sb = c.new_client_session(stamp + b"rcb")
+        sb.compound(use_obj(pexp) + [op.open(0, OPEN4_SHARE_ACCESS_WRITE,
+            OPEN4_SHARE_DENY_NONE, open_owner4(0, b"rcb"),
+            openflag4(OPEN4_NOCREATE), open_claim4(CLAIM_NULL,
+            stamp + b"rc"))], handle_state_errors=False)
+        for i in range(10):
+            if recalled:
+                break
+            time.sleep(1)
+        got = recalled[0].stateid if recalled else None
+        print("delegation stateid seqid %d, CB_RECALL's %s" % (dsid.seqid,
+              got.seqid if got is not None else None))
+        t("s20.2.3 CB_RECALL's stateid is the delegation's",
+          (got.seqid, got.other) if got is not None else None,
+          [(dsid.seqid, dsid.other)])
+        sa.compound([op.putfh(rfh), op.delegreturn(dsid)])
 except Exception:
     traceback.print_exc()
     t("exception", "exception", "none")

@@ -26,7 +26,7 @@ for f in $(git diff --name-only "$base" "$head"); do
 					add pnfs pnfsff pnfsblk t41b leaseexp expire41 errata41;;
 	sys/fs/nfsv4/nfsv4_xattr.c)	add named retention errata41;;
 	sys/fs/nfsv4/nfsv4_cb.c|sys/fs/nfsv4/nfsv4_deleg.c)
-					add cbgetattr pnfs pnfsff t41b t40rm;;
+					add cbgetattr pnfs pnfsff t41b t40rm errata41;;
 	sys/fs/nfsv4/nfsv4_ops.c)	add edge t41b;;
 	sys/fs/nfsv4/nfsv4_referral.c)	add fsloc t41b;;
 	sys/fs/nfsv4/*|sys/modules/nfsv4/*|sys/oncrpc/*)

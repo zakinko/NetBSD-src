@@ -1178,8 +1178,7 @@ dtls_hs_input(struct oncrpc_dtlspeer *p, const uint8_t *q, size_t len,
 			 * cid_immediate(0): the first is used from now on;
 			 * cid_spare(1) ones are discarded, as s9 allows.
 			 */
-			if (body[blen - 1] == 0 && n > 0 && body[2] != 0 &&
-			    body[2] <= DTLS13_MAXCID) {
+			if (body[blen - 1] == 0 && n > 0 && body[2] != 0) {
 				c->c_newcid = true;
 				c->c_cidlen = body[2];
 				memcpy(c->c_cid, body + 3, body[2]);

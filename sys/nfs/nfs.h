@@ -220,7 +220,7 @@ struct nfsd_args {
  */
 #define	NFSD_TLS_SECRETMAX	48	/* SHA-384, RFC 8446 s7.1 */
 #define	NFSD_TLS_EXPORTERLEN	32	/* "tls-exporter", RFC 9266 s2 */
-#define	NFSD_TLS_MAXCID		20	/* DTLS connection ID, ours */
+#define	NFSD_TLS_MAXCID		255	/* DTLS connection ID, RFC 9146 s3 */
 #define	NFSD_TLS_PEERLEN	128	/* sizeof(struct sockaddr_storage) */
 
 struct nfsd_tlsarg {

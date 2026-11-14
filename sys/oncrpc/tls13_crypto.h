@@ -88,7 +88,12 @@ int	tls13_open(struct tls13_dir *, uint8_t *, size_t, uint8_t *, size_t *);
 int	tls13_selftest(void);
 
 /* DTLS 1.3, RFC 9147 */
-#define	DTLS13_MAXCID	20	/* ours; RFC 9146 s3 allows cid<0..2^8-1> */
+/*
+ * RFC 9146 s3, "opaque cid<0..2^8-1>", and RFC 9147 s9, "opaque
+ * ConnectionId<0..2^8-1>": the longest a peer may ask for, whether in
+ * the handshake or by NewConnectionId.
+ */
+#define	DTLS13_MAXCID	255
 #define	DTLS13_WINDOW	64	/* RFC 9147 s4.5.1 leaves it local; ours */
 
 struct dtls13_dir {

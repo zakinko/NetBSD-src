@@ -35,7 +35,7 @@
 
 #define	ONCRPC_TLS_SECRETMAX	48	/* SHA-384, RFC 8446 s7.1 */
 #define	ONCRPC_TLS_EXPORTERLEN	32	/* "tls-exporter", RFC 9266 s2 */
-#define	ONCRPC_TLS_MAXCID	20	/* DTLS, ours; see DTLS13_MAXCID */
+#define	ONCRPC_TLS_MAXCID	255	/* DTLS, RFC 9146 s3; DTLS13_MAXCID */
 
 /* RFC 8446 s6, AlertLevel and AlertDescription; those used here */
 #define	ONCRPC_TLS_WARNING		1

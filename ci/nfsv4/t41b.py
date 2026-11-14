@@ -275,7 +275,8 @@ if res.status == NFS4_OK:
         if recalled:
             break
         time.sleep(0.5)
-    t("s10.9 recall", recalled, [[0]])
+    t("s10.9 recall, the delegation's seqid (s20.2.3)", recalled,
+      [[dsid.seqid]])
     t("s18.6 returned", s.compound(nofh(ddfh, op.delegreturn(dsid))).status, NFS4_OK)
     t("s10.9 then it goes", s2.compound(nofh(ddfh, n)).status, NFS4_OK)
 sc = lambda v: subprocess.call(["ssh", "netbsd", "sudo sysctl -w %s || sysctl -w %s" % (v, v)])
@@ -372,7 +373,8 @@ if v3 == 0:
             if recalled:
                 break
             time.sleep(0.5)
-        t("s10.2 recall by NFSv3 " + cmd, recalled, [[0]])
+        t("s10.2 recall by NFSv3 " + cmd, recalled,
+          [[dv.read.stateid.seqid]])
         s.compound(nofh(fv, op.delegreturn(dv.read.stateid)))
         try:
             t("s10.2 the NFSv3 " + cmd + " then goes", p.wait(timeout=60), 0)

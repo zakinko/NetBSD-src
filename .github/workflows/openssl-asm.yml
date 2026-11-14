@@ -5,7 +5,7 @@ name: openssl-asm
 # and compares them.  Runs only on this test branch.
 on:
   push:
-    branches: [openssl-asm-leaks-ci-aarch64]
+    branches: [openssl-asm-leaks-ci-2]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,9 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64]
+        arch: [riscv64, sparc64]
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
         with:

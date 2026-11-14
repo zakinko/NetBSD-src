@@ -4,6 +4,8 @@
 # Expects nbsrc-base.tgz and nbsrc-new.tgz in the current directory.
 set -u
 arch=$1
+# one CPU under TCG takes ~4.5 h per build, so build only the fix
+[ $arch = sparc64 ] && BUILDS=new
 ci=$(cd "$(dirname "$0")" && pwd)
 vm() { sh "$ci/vm.sh" "$@"; }
 fail=0
@@ -28,10 +30,13 @@ t() { # label, env settings, nbtest args...
 boot ""
 echo "::group::build"
 start=$(date +%s)
-vm ssh $arch sh /root/nb/invm.sh build 2>&1 | tee "build-$arch.log"
+printf 'BUILDS="%s" sh /root/nb/invm.sh build\n' "${BUILDS:-base new}" > cmd-build.sh
+vm put $arch cmd-build.sh
+vm ssh $arch sh /root/nb/cmd-build.sh 2>&1 | tee "build-$arch.log"
 echo "build took $(( $(date +%s) - start )) s"
 echo "::endgroup::"
-grep -q "^new rc 0" "build-$arch.log" && grep -q "^base rc 0" "build-$arch.log" || {
+for b in ${BUILDS:-base new}; do grep -q "^$b rc 0" "build-$arch.log" || bad=1; done
+[ -z "${bad:-}" ] || {
 	printf 'grep -m5 -B5 -E "error:|Error code" /root/nb/build-*.log\n' > cmd-err.sh
 	vm put $arch cmd-err.sh; vm ssh $arch sh /root/nb/cmd-err.sh; exit 1; }
 
@@ -54,7 +59,8 @@ riscv64)
 	t default "$S" ossl_hwsm3_block_data_order:SM3
 	;;
 sparc64)
-	t default "$S" poly1305_init:POLY1305 poly1305_init:ChaCha20-Poly1305
+	# BUILDS=new: compared with the release's /usr/lib/libcrypto (3.5.7)
+	t default "BASELIB=/usr/lib $S" poly1305_init:POLY1305 poly1305_init:ChaCha20-Poly1305
 	;;
 esac
 vm stop $arch

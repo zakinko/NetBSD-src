@@ -293,17 +293,39 @@ pseudo_names_fn(struct mount *mp, const char *rest, size_t len, void *arg)
 }
 
 /*
- * A pseudo directory.  Its cookies are positions in the list of names,
- * in the order of the mount list.
+ * RFC 8881 s18.23.3: a cookie SHOULD NOT change when the directory is
+ * modified.  Where the names are a list made for READDIR, of the pseudo
+ * file system or of named attributes, a name's position in it moved with
+ * every name added or taken away before it; a hash of the name does not.
+ * FNV-1a of 64 bits (a choice, not from the RFC), its top 62, above the
+ * reserved 0 to 2 of s18.23.3 and below what nfsv4_op_readdir() refuses.
+ * The entries go in the order of their cookies, and READDIR goes on with
+ * those above the cookie given.  Names of one cookie go together; a
+ * READDIR that stops between two would lose the second, which with 62
+ * bits is left to chance.
  */
+static uint64_t
+readdir_namecookie(const char *name, size_t len)
+{
+	uint64_t h = 0xcbf29ce484222325ULL;
+
+	while (len-- > 0) {
+		h ^= (uint8_t)*name++;
+		h *= 0x100000001b3ULL;
+	}
+	return NFSV4_COOKIE_BASE + (h >> 2);
+}
+
+/* A pseudo directory: its names in the mount list, by cookie. */
 static uint32_t
 readdir_pseudo(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 {
 	struct pseudo_names pn;
 	const char *path;
 	size_t len;
-	uint64_t i;
+	uint64_t k, next;
 	uint32_t st;
+	u_int i;
 
 	path = nfsv4_cfh_path(rd->rd_dir, &len);
 	pn.pn_n = 0;
@@ -312,10 +334,25 @@ readdir_pseudo(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	(void)nfsv4_pseudo_walk(rd->rd_c, path, len, pseudo_names_fn, &pn);
 
 	st = NFS4_OK;
-	i = cookie == 0 ? 0 : cookie - NFSV4_COOKIE_BASE + 1;
-	for (; i < pn.pn_n && st == NFS4_OK && !rd->rd_full; i++)
-		st = readdir_entry(rd, pn.pn_names[i], strlen(pn.pn_names[i]),
-		    i + NFSV4_COOKIE_BASE);
+	while (st == NFS4_OK && !rd->rd_full) {
+		next = UINT64_MAX;
+		for (i = 0; i < pn.pn_n; i++) {
+			k = readdir_namecookie(pn.pn_names[i],
+			    strlen(pn.pn_names[i]));
+			if (k > cookie && k < next)
+				next = k;
+		}
+		if (next == UINT64_MAX)
+			break;
+		for (i = 0; i < pn.pn_n && st == NFS4_OK && !rd->rd_full;
+		    i++) {
+			len = strlen(pn.pn_names[i]);
+			if (readdir_namecookie(pn.pn_names[i], len) == next)
+				st = readdir_entry(rd, pn.pn_names[i], len,
+				    next);
+		}
+		cookie = next;
+	}
 	*eofp = !rd->rd_full;
 	kmem_free(pn.pn_names, NFSV4_PSEUDO_MAXNAMES * sizeof(*pn.pn_names));
 	return st;
@@ -406,13 +443,13 @@ readdir_real(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	return st;
 }
 
-/* Named attributes.  Cookies are positions in the file system's list. */
+/* Named attributes: the file system's list of them, by cookie. */
 static uint32_t
 readdir_xattr(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 {
 	char *buf = NULL;
 	size_t len, alen, off;
-	uint64_t i, first;
+	uint64_t k, next;
 	uint32_t st = NFS4_OK;
 	u_int n;
 	int error;
@@ -420,15 +457,29 @@ readdir_xattr(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	error = nfsv4_xattr_list(rd->rd_dir, &buf, &len, &alen);
 	if (error != 0)
 		return nfsv4_errno(error);
-	first = cookie == 0 ? 0 : cookie - NFSV4_COOKIE_BASE + 1;
-	for (i = 0, off = 0; off < len && st == NFS4_OK && !rd->rd_full; i++) {
-		n = (uint8_t)buf[off++];
-		if (n > len - off)
+	while (st == NFS4_OK && !rd->rd_full) {
+		next = UINT64_MAX;
+		for (off = 0; off < len; off += n) {
+			n = (uint8_t)buf[off++];
+			if (n > len - off)
+				break;
+			k = readdir_namecookie(buf + off, n);
+			if (n <= NFSV4_ANAME_MAX && n != 0 && k > cookie &&
+			    k < next)
+				next = k;
+		}
+		if (next == UINT64_MAX)
 			break;
-		if (i >= first && n <= NFSV4_ANAME_MAX && n != 0)
-			st = readdir_entry(rd, buf + off, n,
-			    i + NFSV4_COOKIE_BASE);
-		off += n;
+		for (off = 0; off < len && st == NFS4_OK && !rd->rd_full;
+		    off += n) {
+			n = (uint8_t)buf[off++];
+			if (n > len - off)
+				break;
+			if (n <= NFSV4_ANAME_MAX && n != 0 &&
+			    readdir_namecookie(buf + off, n) == next)
+				st = readdir_entry(rd, buf + off, n, next);
+		}
+		cookie = next;
 	}
 	*eofp = !rd->rd_full;
 	if (alen != 0)

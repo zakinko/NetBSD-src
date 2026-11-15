@@ -1851,6 +1851,7 @@ oncrpc_dtls_take(uint64_t *cookiep, int *fdp, struct oncrpc_tls_dgram *td)
 	struct socket *dso, *kso;
 	struct dtls_reap *dr;
 	file_t *fp;
+	uint32_t mtu;
 	bool more;
 	int error, fd;
 
@@ -1875,8 +1876,22 @@ oncrpc_dtls_take(uint64_t *cookiep, int *fdp, struct oncrpc_tls_dgram *td)
 		fd_abort(curproc, fp, fd);
 		goto fail;
 	}
+	/*
+	 * The daemon sends datagrams up to the path MTU it is told, RFC
+	 * 9147 s4.4, and AF_LOCAL refuses one larger than the send space,
+	 * net.local.dgram.sendspace, 2KB by default: a server flight that
+	 * size was refused with EMSGSIZE and the handshake stalled.  The
+	 * kernel's end takes it whole too.
+	 */
+	mtu = dtls_pmtu((const struct sockaddr *)&p->dp_addr);
 	solock(dso);
-	error = soconnect2(dso, kso);
+	error = soreserve(dso, MAX(mtu, dso->so_snd.sb_hiwat),
+	    dso->so_rcv.sb_hiwat);
+	if (error == 0)
+		error = soreserve(kso, kso->so_snd.sb_hiwat,
+		    MAX(mtu, kso->so_rcv.sb_hiwat));
+	if (error == 0)
+		error = soconnect2(dso, kso);
 	if (error == 0)
 		error = soconnect2(kso, dso);	/* asymmetric, as socketpair */
 	if (error == 0) {
@@ -1909,7 +1924,7 @@ oncrpc_dtls_take(uint64_t *cookiep, int *fdp, struct oncrpc_tls_dgram *td)
 	mutex_exit(&d->d_lock);
 
 	td->td_is = true;
-	td->td_pmtu = dtls_pmtu((const struct sockaddr *)&p->dp_addr);
+	td->td_pmtu = mtu;
 	memcpy(&td->td_peer, &p->dp_addr, sizeof(td->td_peer));
 	*cookiep = p->dp_id;
 	mutex_enter(&dtls_glock);

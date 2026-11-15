@@ -1070,6 +1070,10 @@ nfsv4_sysctl_init(void)
 	    NULL, 0, &nfsv4_fault_getattr, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_cookie_bits", SYSCTL_DESCR("Bits of the name hash in READDIR cookies, for tests; 0 all"),
+	    NULL, 0, &nfsv4_fault_cookie_bits, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "fault_renew", SYSCTL_DESCR("Fail the nth RENEW as if the lease could not be renewed"),
 	    NULL, 0, &nfsv4_fault_renew, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);

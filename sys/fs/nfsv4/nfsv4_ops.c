@@ -304,16 +304,23 @@ pseudo_names_fn(struct mount *mp, const char *rest, size_t len, void *arg)
  * READDIR that stops between two would lose the second, which with 62
  * bits is left to chance.
  */
+int nfsv4_fault_cookie_bits = 0;
+
 static uint64_t
 readdir_namecookie(const char *name, size_t len)
 {
 	uint64_t h = 0xcbf29ce484222325ULL;
+	int bits;
 
 	while (len-- > 0) {
 		h ^= (uint8_t)*name++;
 		h *= 0x100000001b3ULL;
 	}
-	return NFSV4_COOKIE_BASE + (h >> 2);
+	/* vfs.nfsv4.fault_cookie_bits: fewer, for tests to have collisions */
+	bits = nfsv4_fault_cookie_bits;
+	if (bits <= 0 || bits > 62)
+		bits = 62;
+	return NFSV4_COOKIE_BASE + (h >> (64 - bits));
 }
 
 /* A pseudo directory: its names in the mount list, by cookie. */

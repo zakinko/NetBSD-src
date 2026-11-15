@@ -635,6 +635,33 @@ res = s.compound([op.putrootfh(), op.readdir(0, b"\0" * 8, 4096, 8192, 0)])
 t("s18.23.3 the pseudo root still lists export",
   res.status == NFS4_OK and b"export" in [e.name for e in res.resarray[-1].reply.entries], True)
 
+# s18.23.3 cookies of names whose hashes collide: vfs.nfsv4.fault_cookie_bits
+# keeps 2 bits of the hash, so ten names share four.  READDIR is read one
+# entry a reply; a READDIR that stopped between two names of one cookie
+# lost the second.  All ten must come, each once.
+xg = "/export/acl/%s" % (stamp + b"xg").decode()
+vmcall("sh -c 'touch %s && for n in 0 1 2 3 4 5 6 7 8 9; do setextattr user x$n v %s; done'" % (xg, xg))
+res = s.compound(use_obj(aexp + [stamp + b"xg"]) + [op.openattr(False), op.getfh()])
+t("s18.23.3 OPENATTR, colliding names", res.status, NFS4_OK)
+if res.status == NFS4_OK:
+    gdir = res.resarray[-1].object
+    sc("vfs.nfsv4.fault_cookie_bits=2")
+    got, cookie = [], 0
+    for i in range(40):
+        res = s.compound([op.putfh(gdir), op.readdir(cookie, b"\0" * 8, 64, 64, 0)])
+        if res.status != NFS4_OK:
+            got.append(res.status)
+            break
+        r = res.resarray[-1].reply
+        got.extend(e.name for e in r.entries)
+        if r.eof or not r.entries:
+            break
+        cookie = r.entries[-1].cookie
+    sc("vfs.nfsv4.fault_cookie_bits=0")
+    print("  one entry a reply:", got)
+    t("s18.23.3 every name of colliding hashes, once",
+      sorted(got), [sorted(b"x%d" % n for n in range(10))])
+
 # s5.8.1.1 supported_attrs, with the set-only time_access_set (48) and
 # time_modify_set (54), which SETATTR takes.
 res = s.compound(nofh(dirfh, op.getattr(nfs4lib.list2bitmap([FATTR4_SUPPORTED_ATTRS]))))

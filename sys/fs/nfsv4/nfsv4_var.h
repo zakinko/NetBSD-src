@@ -314,6 +314,7 @@ uint32_t nfsv4_name_check(const struct nfsv4_compound *,
 extern int nfsv4_utf8_only;
 bool	nfsv4_utf8_valid(const uint8_t *, size_t);
 extern int nfsv4_fault_getattr;
+extern int nfsv4_fault_cookie_bits;
 extern int nfsv4_fault_renew;
 bool	nfsv4_fault(volatile int *);
 bool	nfsv4_pnfs_on(void);

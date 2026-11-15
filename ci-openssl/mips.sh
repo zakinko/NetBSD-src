@@ -46,7 +46,7 @@ for t in base:$top/tree-base new:$top; do
 	(cd $src/crypto/external/apache2/openssl/lib/libcrypto &&
 	 $nbmake -j4 NETBSDSRCDIR=$src MAKEOBJDIR=$top/obj-$n DESTDIR=$top/destdir \
 	    MKDOC=no MKMAN=no MKPROFILE=no MKSTATICLIB=no MKLINT=no \
-	    MKDEBUGLIB=no MKDEBUG=no MKCTF=no dependall) > $top/build-$n.log 2>&1 ||
+	    MKDEBUGLIB=no MKDEBUG=no MKCTF=no LIBDO.crypt=_external dependall) > $top/build-$n.log 2>&1 ||
 		{ tail -40 $top/build-$n.log; exit 1; }
 	ls -l $top/obj-$n/libcrypto.so.16.0
 	c=$(grep -c -- '-DPOLY1305_ASM' $top/build-$n.log || true)

@@ -28,6 +28,8 @@ for f in $(git diff --name-only "$base" "$head"); do
 	sys/fs/nfsv4/nfsv4_cb.c|sys/fs/nfsv4/nfsv4_deleg.c)
 					add cbgetattr pnfs pnfsff t41b t40rm errata41;;
 	sys/fs/nfsv4/nfsv4_ops.c)	add edge t41b;;
+	sys/fs/nfsv4/nfsv4_v42.c|sys/fs/nfsv4/nfsv4_copy.c|sys/fs/nfsv4/nfsv4_xattrop.c|sys/fs/nfsv4/nfsv4_label.c)
+					add v42 rp42 linux42;;
 	sys/fs/nfsv4/nfsv4_referral.c)	add fsloc t41b;;
 	sys/fs/nfsv4/*|sys/modules/nfsv4/*|sys/oncrpc/*)
 					add t41b;;
@@ -54,6 +56,9 @@ for f in $(git diff --name-only "$base" "$head"); do
 	ci/nfsv4/iscsi-probe.sh)	add iscsi;;
 	ci/nfsv4/t41b.py)		add t41b;;
 	ci/nfsv4/t40rm.py)		add t40rm;;
+	ci/nfsv4/pynfs42/*)		add v42;;
+	ci/nfsv4/rp42.py)		add rp42;;
+	ci/nfsv4/linux-42.sh)		add linux42;;
 	ci/nfsv4/each-commit.sh)	add each;;
 	ci/nfsv4/in-vm.sh|ci/nfsv4/nfsv4d.c|ci/nfsv4/pynfs.sh|ci/nfsv4/udp41.c)
 					add t41b pnfs pnfsff pnfsblk;;

@@ -180,14 +180,20 @@ jobs:
         if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: VERS=4.1 sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: The Linux client, version 4.2
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' linux42 '))
         run: VERS=4.2 sh ci/nfsv4/linux-client.sh "$PWD/out"
       - name: What version 4.2 adds, from the Linux client
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' linux42 '))
         run: sh ci/nfsv4/linux-42.sh "$PWD/out"
-      - run: SUITE=nfs4.1 V42FS=ffs PYNFS_ARGS='--minorversion 2 all v42' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs42
-      - run: SUITE=nfs4.1 V42FS=acl PYNFS_ARGS='--minorversion 2 v42 v42x xattr sparse' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
+      - if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
+        run: SUITE=nfs4.1 V42FS=ffs PYNFS_ARGS='--minorversion 2 all v42' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs42
+      - if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' v42 '))
+        run: SUITE=nfs4.1 V42FS=acl PYNFS_ARGS='--minorversion 2 v42 v42x xattr sparse' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/acl pynfs42-xattr
       - continue-on-error: true
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
         run: SUITE=nfs4.1 V42FS=zfs PYNFS_ARGS='--minorversion 2 v42 v42x sparse xattr' sh ci/nfsv4/pynfs.sh "$PWD/out" /tank/x pynfs42-zfs
-      - run: SUITE=nfs4.1 V42FS=tmpfs PYNFS_ARGS='--minorversion 2 v42' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs42-tmpfs
+      - if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' v42 '))
+        run: SUITE=nfs4.1 V42FS=tmpfs PYNFS_ARGS='--minorversion 2 v42' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/tmpfs pynfs42-tmpfs
       - name: What failed at 4.2, in the log in case the job does not end
         run: |
           grep -hE ': FAILURE' -A2 out/pynfs42*.log || true
@@ -291,6 +297,7 @@ jobs:
           cd "$HOME/pynfs/nfs4.1"
           timeout 300 python3 ./dacl.py /export/acl 2>&1 | tee "$OLDPWD/out/dacl.txt" || true
       - name: READ_PLUS of stored zeros, and its option
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' rp42 '))
         run: |
           cp ci/nfsv4/rp42.py "$HOME/pynfs/nfs4.1/"
           cd "$HOME/pynfs/nfs4.1"

@@ -1554,6 +1554,20 @@ nfsv4_op_getdeviceinfo(struct nfsv4_compound *c, union nfsv4_args *a)
 	return NFS4_OK;
 }
 
+/*
+ * vfs.nfsv4.getdevicelist_42, from the option NFSV4_GETDEVICELIST_42 (see
+ * the module's Makefile).  RFC 7862 s14.2.4 has GETDEVICELIST MUST NOT be
+ * implemented in version 4.2, and s11.2 gives NFS4ERR_NOTSUPP as its only
+ * error.  The errata 9244 of RFC 7862 (Reported) takes the prohibition
+ * out and makes it OPTIONAL again, as in version 4.1.  By default the
+ * text of RFC 7862 is followed; on, version 4.2 is answered as 4.1 is.
+ */
+#ifdef NFSV4_GETDEVICELIST_42
+int nfsv4_getdevicelist_42 = 1;
+#else
+int nfsv4_getdevicelist_42 = 0;
+#endif
+
 /* s18.41, GETDEVICELIST: the one device, whatever the file system. */
 uint32_t
 nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
@@ -1564,6 +1578,8 @@ nfsv4_op_getdevicelist(struct nfsv4_compound *c, union nfsv4_args *a)
 	uint32_t status, n;
 	bool on;
 
+	if (c->c_minor >= 2 && !nfsv4_getdevicelist_42)
+		return NFS4ERR_NOTSUPP;
 	if ((status = layout_client(c)) != NFS4_OK)
 		return status;
 	if (!layout_known(ga->type))

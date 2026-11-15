@@ -167,6 +167,16 @@ try:
         t("s18.41 the one device", res.resarray[-1].gdlr_deviceid_list,
           [[devid]])
         t("s18.41 eof", res.resarray[-1].gdlr_eof, True)
+    # RFC 7862 s14.2.4, and its errata 9244 under vfs.nfsv4.getdevicelist_42
+    c42 = nfs4client.NFS4Client(b'127.0.0.1', 2049, 2)
+    c42.homedir = export
+    s42 = c42.new_pnfs_client_session(stamp + b"v42")
+    gdl42 = lambda: s42.compound([op.putfh(fh), op.getdevicelist(
+        LAYOUT4_NFSV4_1_FILES, 16, 0, b"\0" * 8)]).status
+    t("7862 s14.2.4 GETDEVICELIST in 4.2", gdl42(), NFS4ERR_NOTSUPP)
+    vm("sysctl -w vfs.nfsv4.getdevicelist_42=1")
+    t("getdevicelist_42: GETDEVICELIST in 4.2", gdl42(), NFS4_OK)
+    vm("sysctl -w vfs.nfsv4.getdevicelist_42=0")
     res = s.compound([op.getdeviceinfo(devid, LAYOUT4_NFSV4_1_FILES,
         4096, 0)])
     t("s18.40 GETDEVICEINFO", res.status, NFS4_OK)

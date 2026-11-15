@@ -81,6 +81,12 @@ CPPFLAGS+=	-DNFSV4_CB_VERS1
 # vfs.nfsv4.layoutcommit_range turns it on.  See nfsv4_layout.c.
 #CPPFLAGS+=	-DNFSV4_LAYOUTCOMMIT_RANGE
 #
+# GETDEVICELIST is NFS4ERR_NOTSUPP in version 4.2, as RFC 7862 s14.2.4
+# has it.  The errata 9244 of RFC 7862 makes it OPTIONAL again.
+# NFSV4_GETDEVICELIST_42: answer it in 4.2 as in 4.1, the errata's way.
+# Not set: vfs.nfsv4.getdevicelist_42 turns it on.  See nfsv4_layout.c.
+#CPPFLAGS+=	-DNFSV4_GETDEVICELIST_42
+#
 # NFSV4_CREATE_MODE_MASK: for a create with neither mode nor ACL, let the
 # file system mask the inherited ACEs by the server's default mode,
 # against RFC 8881 s6.4.3's SHOULD that they be inherited unchanged.  Not

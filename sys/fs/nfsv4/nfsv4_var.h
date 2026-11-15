@@ -333,6 +333,7 @@ bool	nfsv4_layout_ds_conn(struct socket *);
 extern int nfsv4_ds_owner;
 extern int nfsv4_no_reclaim_complete_ok;
 extern int nfsv4_layoutcommit_range;
+extern int nfsv4_getdevicelist_42;
 int	nfsv4_layout_setds(const char *);
 int	nfsv4_layout_setff(const char *);
 int	nfsv4_layout_setblk(const char *);

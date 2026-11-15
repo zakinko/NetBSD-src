@@ -191,8 +191,9 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 				    NFSV4_OPF_NOSEQ | NFSV4_OPF_DS },
 	[NFSV4_OP_RECLAIM_COMPLETE] = { nfsv4_op_reclaim_complete, 0 },
 	/*
-	 * LAYOUTERROR and LAYOUTSTATS are pNFS, which is not here: RFC 7862
-	 * s13 has them NFS4ERR_NOTSUPP, as is GETDEVICELIST, s14.2.4.
+	 * LAYOUTERROR and LAYOUTSTATS are OPTIONAL with pNFS in RFC 7862
+	 * s13 and are not here, so NFS4ERR_NOTSUPP.  GETDEVICELIST of
+	 * version 4.2 is refused in nfsv4_op_getdevicelist(), s14.2.4.
 	 */
 	[NFSV4_OP_ALLOCATE]	= { nfsv4_op_allocate,	NFSV4_OPF_FH },
 	[NFSV4_OP_COPY]		= { nfsv4_op_copy,	NFSV4_OPF_FH },
@@ -1050,6 +1051,10 @@ nfsv4_sysctl_init(void)
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "layoutcommit_range", SYSCTL_DESCR("Check LAYOUTCOMMIT's offset and length, which errata 3065-3068 ignore"),
 	    NULL, 0, &nfsv4_layoutcommit_range, 0,
+	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
+	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
+	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "getdevicelist_42", SYSCTL_DESCR("Answer GETDEVICELIST in version 4.2, as errata 9244 has it"),
+	    NULL, 0, &nfsv4_getdevicelist_42, 0,
 	    CTL_VFS, node->sysctl_num, CTL_CREATE, CTL_EOL);
 	sysctl_createv(&nfsv4_sysctllog, 0, NULL, NULL,
 	    CTLFLAG_PERMANENT | CTLFLAG_READWRITE, CTLTYPE_INT, "no_reclaim_complete_ok", SYSCTL_DESCR("Let a client that sent no RECLAIM_COMPLETE take locks after the grace period"),

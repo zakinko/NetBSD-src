@@ -297,17 +297,31 @@ pseudo_names_fn(struct mount *mp, const char *rest, size_t len, void *arg)
  * modified.  Where the names are a list made for READDIR, of the pseudo
  * file system or of named attributes, a name's position in it moved with
  * every name added or taken away before it; a hash of the name does not.
- * FNV-1a of 64 bits (a choice, not from the RFC), its top 62, above the
- * reserved 0 to 2 of s18.23.3 and below what nfsv4_op_readdir() refuses.
- * The entries go in the order of their cookies, and READDIR goes on with
- * those above the cookie given.  Names of one cookie go together; a
- * READDIR that stops between two would lose the second, which with 62
- * bits is left to chance.
+ *
+ * The cookie is NFSV4_COOKIE_BASE, then the top 54 bits of the name's
+ * FNV-1a of 64 bits (a choice, not from the RFC) above 8 bits that set
+ * apart the names of one hash: their rank among those names in the
+ * order of their bytes.  So no two names of a directory have one cookie,
+ * and a READDIR that stops between two names of one hash does not lose
+ * the second, as it did when the hash alone was the cookie.  The rank,
+ * and so the cookie, of such a name moves only when another of its hash
+ * comes or goes.  Above the reserved 0 to 2 of s18.23.3, and below what
+ * nfsv4_op_readdir() refuses.  vfs.nfsv4.fault_cookie_bits, when not 0,
+ * keeps fewer bits of the hash, so that tests can have names collide.
  */
+#define	NFSV4_COOKIE_HASHBITS	54
+#define	NFSV4_COOKIE_RANKS	256	/* of one hash, 8 bits */
+
 int nfsv4_fault_cookie_bits = 0;
 
+struct readdir_name {
+	const char	*rn_name;
+	size_t		rn_len;
+	uint64_t	rn_cookie;
+};
+
 static uint64_t
-readdir_namecookie(const char *name, size_t len)
+readdir_namehash(const char *name, size_t len)
 {
 	uint64_t h = 0xcbf29ce484222325ULL;
 	int bits;
@@ -316,11 +330,70 @@ readdir_namecookie(const char *name, size_t len)
 		h ^= (uint8_t)*name++;
 		h *= 0x100000001b3ULL;
 	}
-	/* vfs.nfsv4.fault_cookie_bits: fewer, for tests to have collisions */
 	bits = nfsv4_fault_cookie_bits;
-	if (bits <= 0 || bits > 62)
-		bits = 62;
-	return NFSV4_COOKIE_BASE + (h >> (64 - bits));
+	if (bits <= 0 || bits > NFSV4_COOKIE_HASHBITS)
+		bits = NFSV4_COOKIE_HASHBITS;
+	return (h >> (64 - bits)) * NFSV4_COOKIE_RANKS;
+}
+
+static int
+readdir_namecmp(const struct readdir_name *a, const struct readdir_name *b)
+{
+	int d;
+
+	d = memcmp(a->rn_name, b->rn_name, MIN(a->rn_len, b->rn_len));
+	if (d != 0)
+		return d;
+	return a->rn_len < b->rn_len ? -1 : a->rn_len > b->rn_len;
+}
+
+/*
+ * The cookies of n names, as above, and the entries above cookie in
+ * their order.  A name past NFSV4_COOKIE_RANKS of one hash, which takes
+ * 256 names of one 54-bit hash, is left out rather than given a cookie
+ * of another hash's.
+ */
+static uint32_t
+readdir_list(struct readdir_state *rd, struct readdir_name *rn, u_int n,
+    uint64_t cookie, bool *eofp)
+{
+	uint64_t next;
+	uint32_t st;
+	u_int i, j, rank;
+
+	for (i = 0; i < n; i++)
+		rn[i].rn_cookie = readdir_namehash(rn[i].rn_name,
+		    rn[i].rn_len);
+	for (i = 0; i < n; i++) {
+		rank = 0;
+		for (j = 0; j < n; j++) {
+			if (j != i &&
+			    (rn[j].rn_cookie & ~(uint64_t)(NFSV4_COOKIE_RANKS - 1)) ==
+			    (rn[i].rn_cookie & ~(uint64_t)(NFSV4_COOKIE_RANKS - 1)) &&
+			    readdir_namecmp(&rn[j], &rn[i]) < 0)
+				rank++;
+		}
+		rn[i].rn_cookie = rank < NFSV4_COOKIE_RANKS ?
+		    NFSV4_COOKIE_BASE + rn[i].rn_cookie + rank : 0;
+	}
+
+	st = NFS4_OK;
+	while (st == NFS4_OK && !rd->rd_full) {
+		next = UINT64_MAX;
+		j = 0;
+		for (i = 0; i < n; i++) {
+			if (rn[i].rn_cookie > cookie && rn[i].rn_cookie < next) {
+				next = rn[i].rn_cookie;
+				j = i;
+			}
+		}
+		if (next == UINT64_MAX)
+			break;
+		st = readdir_entry(rd, rn[j].rn_name, rn[j].rn_len, next);
+		cookie = next;
+	}
+	*eofp = !rd->rd_full;
+	return st;
 }
 
 /* A pseudo directory: its names in the mount list, by cookie. */
@@ -328,9 +401,9 @@ static uint32_t
 readdir_pseudo(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 {
 	struct pseudo_names pn;
+	struct readdir_name *rn;
 	const char *path;
 	size_t len;
-	uint64_t k, next;
 	uint32_t st;
 	u_int i;
 
@@ -340,27 +413,13 @@ readdir_pseudo(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 	    KM_SLEEP);
 	(void)nfsv4_pseudo_walk(rd->rd_c, path, len, pseudo_names_fn, &pn);
 
-	st = NFS4_OK;
-	while (st == NFS4_OK && !rd->rd_full) {
-		next = UINT64_MAX;
-		for (i = 0; i < pn.pn_n; i++) {
-			k = readdir_namecookie(pn.pn_names[i],
-			    strlen(pn.pn_names[i]));
-			if (k > cookie && k < next)
-				next = k;
-		}
-		if (next == UINT64_MAX)
-			break;
-		for (i = 0; i < pn.pn_n && st == NFS4_OK && !rd->rd_full;
-		    i++) {
-			len = strlen(pn.pn_names[i]);
-			if (readdir_namecookie(pn.pn_names[i], len) == next)
-				st = readdir_entry(rd, pn.pn_names[i], len,
-				    next);
-		}
-		cookie = next;
+	rn = kmem_alloc(NFSV4_PSEUDO_MAXNAMES * sizeof(*rn), KM_SLEEP);
+	for (i = 0; i < pn.pn_n; i++) {
+		rn[i].rn_name = pn.pn_names[i];
+		rn[i].rn_len = strlen(pn.pn_names[i]);
 	}
-	*eofp = !rd->rd_full;
+	st = readdir_list(rd, rn, pn.pn_n, cookie, eofp);
+	kmem_free(rn, NFSV4_PSEUDO_MAXNAMES * sizeof(*rn));
 	kmem_free(pn.pn_names, NFSV4_PSEUDO_MAXNAMES * sizeof(*pn.pn_names));
 	return st;
 }
@@ -454,41 +513,31 @@ readdir_real(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 static uint32_t
 readdir_xattr(struct readdir_state *rd, uint64_t cookie, bool *eofp)
 {
+	struct readdir_name *rn;
 	char *buf = NULL;
 	size_t len, alen, off;
-	uint64_t k, next;
-	uint32_t st = NFS4_OK;
-	u_int n;
+	uint32_t st;
+	u_int n, k, m;
 	int error;
 
 	error = nfsv4_xattr_list(rd->rd_dir, &buf, &len, &alen);
 	if (error != 0)
 		return nfsv4_errno(error);
-	while (st == NFS4_OK && !rd->rd_full) {
-		next = UINT64_MAX;
-		for (off = 0; off < len; off += n) {
-			n = (uint8_t)buf[off++];
-			if (n > len - off)
-				break;
-			k = readdir_namecookie(buf + off, n);
-			if (n <= NFSV4_ANAME_MAX && n != 0 && k > cookie &&
-			    k < next)
-				next = k;
-		}
-		if (next == UINT64_MAX)
+	/* Each name is a byte of length and the bytes, so at most len/2. */
+	m = len / 2 + 1;
+	rn = kmem_alloc(m * sizeof(*rn), KM_SLEEP);
+	for (off = 0, k = 0; off < len && k < m; off += n) {
+		n = (uint8_t)buf[off++];
+		if (n > len - off)
 			break;
-		for (off = 0; off < len && st == NFS4_OK && !rd->rd_full;
-		    off += n) {
-			n = (uint8_t)buf[off++];
-			if (n > len - off)
-				break;
-			if (n <= NFSV4_ANAME_MAX && n != 0 &&
-			    readdir_namecookie(buf + off, n) == next)
-				st = readdir_entry(rd, buf + off, n, next);
+		if (n <= NFSV4_ANAME_MAX && n != 0) {
+			rn[k].rn_name = buf + off;
+			rn[k].rn_len = n;
+			k++;
 		}
-		cookie = next;
 	}
-	*eofp = !rd->rd_full;
+	st = readdir_list(rd, rn, k, cookie, eofp);
+	kmem_free(rn, m * sizeof(*rn));
 	if (alen != 0)
 		kmem_free(buf, alen);
 	return st;

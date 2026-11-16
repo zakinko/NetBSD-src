@@ -733,8 +733,13 @@ nfsv4_compound(struct oncrpc_req *rq, bool *drc)
 				status = NFS4ERR_NOFILEHANDLE;
 			if (minor != 0 && status == NFS4ERR_RESOURCE)
 				status = NFS4ERR_REP_TOO_BIG;
-			/* s15.1.16.3: not applicable; the I/O error it is. */
-			if (minor != 0 && status == NFS4ERR_NXIO)
+			/*
+			 * s15.1.16.3: not applicable; the I/O error it is.
+			 * RFC 7862 s15.11.3 has SEEK past the end MUST
+			 * return it, though.
+			 */
+			if (minor != 0 && status == NFS4ERR_NXIO &&
+			    op != NFSV4_OP_SEEK)
 				status = NFS4ERR_IO;
 			if (status != NFS4_OK &&
 			    !nfsv4_patch32(rx, statpos, status))

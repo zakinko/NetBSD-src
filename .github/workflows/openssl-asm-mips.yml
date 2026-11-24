@@ -1,7 +1,7 @@
 name: openssl-asm-mips
 
-# evbmips-mipsn64el: cross-build libcrypto from BASE and FIX, boot NetBSD
-# under qemu's malta with a MALTA64 kernel that has piixide, and compare.
+# evbmips-mipsn64el: cross-build libcrypto from BASE and from this branch,
+# boot NetBSD under qemu's malta and compare the two there.
 on:
   push:
     branches: [openssl-asm-leaks-ci-mips]
@@ -15,9 +15,9 @@ env:
   P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
 
 jobs:
-  mips:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 300
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,17 +28,45 @@ jobs:
           git worktree add -q --no-checkout tree-base FETCH_HEAD
           git -C tree-base sparse-checkout set --no-cone $P
           git -C tree-base checkout -q
-          git diff --stat FETCH_HEAD HEAD -- crypto/external/apache2/openssl/lib
-      - name: packages
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -qy qemu-system-mips zstd
-      - name: run
-        run: sh ci-openssl/mips.sh
+      - run: sh ci-openssl/mips-build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mips-out
+          path: out
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: logs-mips
+          name: mips-build-logs
+          path: build-*.log
+
+  boot:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: ci-openssl
+      - name: qemu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy build-essential ninja-build python3-venv pkg-config libglib2.0-dev libpixman-1-dev libslirp-dev flex bison
+          curl -fsSL https://download.qemu.org/qemu-11.1.1.tar.xz | tar -xJ
+          mkdir qemu-build && cd qemu-build
+          ../qemu-11.1.1/configure --target-list=mips64el-softmmu --enable-slirp --disable-docs --disable-werror > configure.log 2>&1 || { tail -30 configure.log; exit 1; }
+          ninja qemu-system-mips64el > ninja.log 2>&1 || { tail -30 ninja.log; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: mips-out
+          path: out
+      - run: QEMU=$PWD/qemu-build/qemu-system-mips64el sh ci-openssl/mips-boot.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mips-boot-logs
           path: |
-            *.log
+            test-mips.log
             mips.console
+            http.log

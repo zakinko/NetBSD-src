@@ -11,6 +11,7 @@
  *   evpcheck one <alg>      run one operation, for a debugger breakpoint
  */
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -157,10 +158,10 @@ kat(void)
 
 /* Deterministic bytes, so two runs need not share a file. */
 static void
-fill(unsigned char *p, size_t n, unsigned long s)
+fill(unsigned char *p, size_t n, uint64_t s)
 {
 	while (n--) {
-		s = s * 6364136223846793005UL + 1442695040888963407UL;
+		s = s * 6364136223846793005ULL + 1442695040888963407ULL;
 		*p++ = (unsigned char)(s >> 56);
 	}
 }

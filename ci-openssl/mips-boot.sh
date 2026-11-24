@@ -22,13 +22,13 @@ SSH="ssh -q -i id -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/de
 i=0
 until $SSH true 2>/dev/null; do
 	i=$((i+1))
-	if [ $i -gt 120 ] || ! kill -0 $q 2>/dev/null || grep -q -e 'panic:' -e 'root device:' -e 'unable to assign' mips.console; then
+	if [ $i -gt 120 ] || ! kill -0 $q 2>/dev/null || grep -q -e '^\[[ 0-9.]*\] panic:' -e 'root device:' -e 'unable to assign' mips.console; then
 		echo "did not come up"; grep -v 'reset failed' mips.console | tail -60; exit 1
 	fi
 	sleep 15
 done
 grep -E 'piixide|wd0|pcn0|root on' mips.console
-$SSH "uname -a; sysctl hw.machine_arch; mkdir -p /root/nb/obj-base /root/nb/obj-new"
+$SSH "uname -a; uname -p; mkdir -p /root/nb/obj-base /root/nb/obj-new"
 put() { $SSH "cat > $2" < "$1" || exit 1; }
 for n in base new; do
 	put out/obj-$n/libcrypto.so.16.0 /root/nb/obj-$n/libcrypto.so.16.0

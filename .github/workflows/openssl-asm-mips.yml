@@ -1,7 +1,6 @@
 name: openssl-asm-mips
 
-# evbmips-mipsn64el: cross-build libcrypto from BASE and from this branch,
-# boot NetBSD under qemu's malta and compare the two there.
+# evbmips-mipsn64el: boot NetBSD under qemu's malta and compare the two there.
 on:
   push:
     branches: [openssl-asm-leaks-ci-mips]
@@ -14,35 +13,15 @@ env:
   BASE: fac75683d7ac71c2e04323f85b9f8266350503c4
   P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
 
-jobs:
-  build:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: base tree
-        run: |
-          git fetch -q --depth=1 --filter=blob:none origin $BASE
-          git worktree add -q --no-checkout tree-base FETCH_HEAD
-          git -C tree-base sparse-checkout set --no-cone $P
-          git -C tree-base checkout -q
-      - run: sh ci-openssl/mips-build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mips-out
-          path: out
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mips-build-logs
-          path: build-*.log
+permissions:
+  contents: read
+  actions: read
 
+jobs:
+  # the kernel and libraries come from the build job of that run
   boot:
-    needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,6 +40,8 @@ jobs:
         with:
           name: mips-out
           path: out
+          run-id: 45338110667
+          github-token: ${{ github.token }}
       - run: QEMU=$PWD/qemu-build/qemu-system-mips64el sh ci-openssl/mips-boot.sh
       - uses: actions/upload-artifact@v4
         if: always()

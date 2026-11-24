@@ -199,12 +199,23 @@ static const struct nfsv4_opdesc nfsv4_ops[NFSV4_OP_REMOVEXATTR + 1] = {
 	[NFSV4_OP_COPY]		= { nfsv4_op_copy,	NFSV4_OPF_FH },
 	[NFSV4_OP_COPY_NOTIFY]	= { nfsv4_op_copy_notify, NFSV4_OPF_FH },
 	[NFSV4_OP_DEALLOCATE]	= { nfsv4_op_deallocate, NFSV4_OPF_FH },
-	[NFSV4_OP_IO_ADVISE]	= { nfsv4_op_io_advise,	NFSV4_OPF_FH },
+	/*
+	 * RFC 7862 s3.3.1: a data server of version 4.2 MAY take IO_ADVISE,
+	 * READ_PLUS, SEEK and WRITE_SAME as it takes the I/O of RFC 8881
+	 * s13.6; nfsv4_io_check() holds them to its layouts and stateids.
+	 * The layout is of one stripe (nfsv4_layout.c), so s15.10.4.1's
+	 * range of another data server does not arise, and it leaves
+	 * NFL42_UFLG_IO_ADVISE_THRU_MDS off, as s15.5.6 allows.
+	 */
+	[NFSV4_OP_IO_ADVISE]	= { nfsv4_op_io_advise,
+				    NFSV4_OPF_FH | NFSV4_OPF_DS },
 	[NFSV4_OP_OFFLOAD_CANCEL] = { nfsv4_op_offload_cancel, NFSV4_OPF_FH },
 	[NFSV4_OP_OFFLOAD_STATUS] = { nfsv4_op_offload_status, NFSV4_OPF_FH },
-	[NFSV4_OP_READ_PLUS]	= { nfsv4_op_read_plus,	NFSV4_OPF_FH },
-	[NFSV4_OP_SEEK]		= { nfsv4_op_seek,	NFSV4_OPF_FH },
-	[NFSV4_OP_WRITE_SAME]	= { nfsv4_op_write_same, NFSV4_OPF_FH },
+	[NFSV4_OP_READ_PLUS]	= { nfsv4_op_read_plus,
+				    NFSV4_OPF_FH | NFSV4_OPF_DS },
+	[NFSV4_OP_SEEK]		= { nfsv4_op_seek,	NFSV4_OPF_FH | NFSV4_OPF_DS },
+	[NFSV4_OP_WRITE_SAME]	= { nfsv4_op_write_same,
+				    NFSV4_OPF_FH | NFSV4_OPF_DS },
 	[NFSV4_OP_CLONE]	= { nfsv4_op_clone,	NFSV4_OPF_FH },
 	[NFSV4_OP_GETXATTR]	= { nfsv4_op_getxattr,	NFSV4_OPF_FH },
 	[NFSV4_OP_SETXATTR]	= { nfsv4_op_setxattr,	NFSV4_OPF_FH },

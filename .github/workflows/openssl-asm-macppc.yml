@@ -1,8 +1,9 @@
 name: openssl-asm-macppc
 
-# NetBSD/macppc 9.4 (zakinko/netbsd-ci-images): build libcrypto from the
+# NetBSD/macppc 9.4 (zakinko/netbsd-ci-images): libcrypto built from the
 # tree before the fix (BASE), with it (FIX) and with its first version (OLD,
-# no poly1305_ppc.c) in VMs side by side, then compare them in another.
+# no poly1305_ppc.c) in VMs side by side, taken from run
+# 45408799432, compared here.
 on:
   push:
     branches: [openssl-asm-leaks-ci-macppc]
@@ -18,43 +19,12 @@ env:
   P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
   GH_TOKEN: ${{ github.token }}
 
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        tree: [base, new, old]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 355
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 30
-          filter: blob:none
-          sparse-checkout: ci-openssl
-          sparse-checkout-cone-mode: false
-      - name: tree
-        run: |
-          case ${{ matrix.tree }} in base) r=$BASE ;; new) r=$FIX ;; old) r=$OLD ;; esac
-          git worktree add -q --no-checkout tree $r
-          git -C tree sparse-checkout set --no-cone $P
-          git -C tree checkout -q
-          tar -C tree --transform 's,^,src/,' -czf nbsrc-${{ matrix.tree }}.tgz $P
-      - run: sudo apt-get update -q && sudo apt-get install -qy qemu-system-ppc
-      - run: sh ci-openssl/macppc.sh fetch
-      - run: sh ci-openssl/macppc.sh build ${{ matrix.tree }}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-${{ matrix.tree }}
-          path: |
-            lib-*.tar
-            build-macppc-*.log
-            vm/*.log
+permissions:
+  actions: read
+  contents: read
 
+jobs:
   test:
-    needs: build
-    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -74,6 +44,8 @@ jobs:
         with:
           pattern: build-*
           merge-multiple: true
+          run-id: 45408799432
+          github-token: ${{ github.token }}
       - run: sudo apt-get update -q && sudo apt-get install -qy qemu-system-ppc
       - run: sh ci-openssl/macppc.sh fetch
       - run: sh ci-openssl/macppc.sh test

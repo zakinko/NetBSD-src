@@ -3,7 +3,8 @@
 # the first version of the fix (obj-old) loads at all, then the comparison.
 w=/root/nb
 O=$w/new/src/crypto/external/apache2/openssl
-I="-I$O/include -I$O/dist/include"
+# 9.4's libc has no pthread_create; libcrypto is linked without libpthread
+I="-I$O/include -I$O/dist/include -lpthread"
 cd $w
 sh genhdr.sh $w/new/src || exit 1
 cc -O2 $I -o evp evpcheck.c -L$w/obj-new -lcrypto || exit 1

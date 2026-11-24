@@ -54,6 +54,7 @@ jobs:
 
   test:
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

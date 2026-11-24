@@ -12,7 +12,8 @@ w=$(mktemp -d "$HOME/nbtest.XXXXXX") || exit 1
 trap 'rm -rf "$w"' EXIT
 fail=0
 
-cc -O2 -o "$w/evpcheck" "$here/evpcheck.c" -L"$A" -lcrypto || exit 1
+# NBCFLAGS points at the tree's headers where the system ones are older
+cc -O2 ${NBCFLAGS:-} -o "$w/evpcheck" "$here/evpcheck.c" -L"$A" -lcrypto || exit 1
 run() { l=$1; shift; env LD_LIBRARY_PATH="$l" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} "$w/evpcheck" "$@"; }
 
 echo "machine: $(uname -m) $(sysctl -n machdep.cpu_brand 2>/dev/null)${ARMCAP:+ OPENSSL_armcap=$ARMCAP}"
@@ -37,8 +38,9 @@ else
 	echo "FAIL results differ:"; diff "$w/$(basename "$B").out" "$w/$(basename "$A").out" | head; fail=1
 fi
 
-/usr/bin/openssl genpkey -algorithm SM2 -out "$w/sm2.key" 2>/dev/null
-/usr/bin/openssl pkey -in "$w/sm2.key" -pubout -out "$w/sm2.pub"
+# the key comes from the library under test: the base system's openssl
+# may be older than SM2 in genpkey (1.1.1 on NetBSD 9)
+run "$A" sm2gen "$w/sm2.key" "$w/sm2.pub" || fail=1
 for s in "$B" "$A"; do for v in "$B" "$A"; do
 	if run "$s" sm2sign "$w/sm2.key" "$w/sig" && run "$v" sm2verify "$w/sm2.pub" "$w/sig"; then
 		echo "ok   sm2 sign $(basename "$s") verify $(basename "$v")"

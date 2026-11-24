@@ -7,9 +7,11 @@
  *   evpcheck out <seed>     hex of every result for a fixed pseudo-random
  *                           input; diff the output of two libraries
  *   evpcheck speed <alg>    MB/s over 16 KiB buffers for ~2 s
+ *   evpcheck sm2gen <keyfile> <pubfile>
  *   evpcheck sm2sign <keyfile> <sigfile> / sm2verify <pubfile> <sigfile>
  *   evpcheck one <alg>      run one operation, for a debugger breakpoint
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,10 +159,10 @@ kat(void)
 
 /* Deterministic bytes, so two runs need not share a file. */
 static void
-fill(unsigned char *p, size_t n, unsigned long s)
+fill(unsigned char *p, size_t n, uint64_t s)
 {
 	while (n--) {
-		s = s * 6364136223846793005UL + 1442695040888963407UL;
+		s = s * 6364136223846793005ULL + 1442695040888963407ULL;
 		*p++ = (unsigned char)(s >> 56);
 	}
 }
@@ -278,6 +280,21 @@ main(int argc, char **argv)
 	}
 	if (argc == 3 && strcmp(argv[1], "speed") == 0) {
 		speed(argv[2]);
+		return 0;
+	}
+	if (argc == 4 && strcmp(argv[1], "sm2gen") == 0) {
+		EVP_PKEY *k = EVP_PKEY_Q_keygen(NULL, NULL, "SM2");
+		FILE *f;
+
+		if (k == NULL)
+			die("sm2 keygen");
+		if ((f = fopen(argv[2], "w")) == NULL ||
+		    !PEM_write_PrivateKey(f, k, NULL, NULL, 0, NULL, NULL))
+			die(argv[2]);
+		fclose(f);
+		if ((f = fopen(argv[3], "w")) == NULL || !PEM_write_PUBKEY(f, k))
+			die(argv[3]);
+		fclose(f);
 		return 0;
 	}
 	if (argc == 4 && strcmp(argv[1], "sm2sign") == 0)

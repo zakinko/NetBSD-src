@@ -1,0 +1,85 @@
+name: openssl-asm-macppc
+
+# NetBSD/macppc 9.4 (zakinko/netbsd-ci-images): build libcrypto from the
+# tree before the fix (BASE), with it (FIX) and with its first version (OLD,
+# no poly1305_ppc.c) in VMs side by side, then compare them in another.
+on:
+  push:
+    branches: [openssl-asm-leaks-ci-macppc]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BASE: fac75683d7a
+  FIX: 1db871bb65d
+  OLD: a2ee15deecf
+  P: crypto/Makefile.openssl crypto/external/apache2/openssl lib/libc/Makefile.inc share/mk sys/conf/osrelease.sh sys/sys/param.h
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        tree: [base, new, old]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
+          filter: blob:none
+          sparse-checkout: ci-openssl
+          sparse-checkout-cone-mode: false
+      - name: tree
+        run: |
+          case ${{ matrix.tree }} in base) r=$BASE ;; new) r=$FIX ;; old) r=$OLD ;; esac
+          git worktree add -q --no-checkout tree $r
+          git -C tree sparse-checkout set --no-cone $P
+          git -C tree checkout -q
+          tar -C tree --transform 's,^,src/,' -czf nbsrc-${{ matrix.tree }}.tgz $P
+      - run: sudo apt-get update -q && sudo apt-get install -qy qemu-system-ppc
+      - run: sh ci-openssl/macppc.sh fetch
+      - run: sh ci-openssl/macppc.sh build ${{ matrix.tree }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ matrix.tree }}
+          path: |
+            lib-*.tar
+            build-macppc-*.log
+            vm/*.log
+
+  test:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30
+          filter: blob:none
+          sparse-checkout: ci-openssl
+          sparse-checkout-cone-mode: false
+      - name: tree
+        run: |
+          git worktree add -q --no-checkout tree $FIX
+          git -C tree sparse-checkout set --no-cone $P
+          git -C tree checkout -q
+          tar -C tree --transform 's,^,src/,' -czf nbsrc-new.tgz $P
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          merge-multiple: true
+      - run: sudo apt-get update -q && sudo apt-get install -qy qemu-system-ppc
+      - run: sh ci-openssl/macppc.sh fetch
+      - run: sh ci-openssl/macppc.sh test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test
+          path: |
+            test-macppc.log
+            vm/*.log

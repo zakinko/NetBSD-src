@@ -5,6 +5,7 @@ w=/root/nb
 O=$w/new/src/crypto/external/apache2/openssl
 I="-I$O/include -I$O/dist/include"
 cd $w
+sh genhdr.sh $w/new/src || exit 1
 cc -O2 $I -o evp evpcheck.c -L$w/obj-new -lcrypto || exit 1
 for s in poly1305_init_int poly1305_init_fpu poly1305_blocks poly1305_blocks_fpu poly1305_blocks_vsx; do
 	LD_LIBRARY_PATH=$w/obj-new gdb -nx -batch -ex "handle SIGILL nostop noprint pass" \

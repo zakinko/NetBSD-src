@@ -21,7 +21,7 @@ start() {
 	(cd "$VMDIR" && DIR=$VMDIR BASE=$NCI MEM=1536 sh "$NCI/runvm.sh" $NAME 2222) || {
 		tail -60 "$VMDIR/$NAME.console.log"; exit 1; }
 	ssh_ "uname -a; cc --version | head -1; mkdir -p /root/nb" < /dev/null
-	put "$ci/nbbuild.sh" "$ci/nbtest.sh" "$ci/evpcheck.c" "$ci/invm.sh"
+	put "$ci/nbbuild.sh" "$ci/genhdr.sh" "$ci/nbtest.sh" "$ci/evpcheck.c" "$ci/invm.sh"
 }
 stop() { (cd "$VMDIR" && DIR=$VMDIR BASE=$NCI sh "$NCI/stopvm.sh" $NAME) || true; }
 
@@ -37,7 +37,7 @@ build)
 	t=$1
 	start
 	put nbsrc-$t.tgz
-	printf 'BUILDS=%s sh /root/nb/invm.sh build\n' "$t" > cmd-build.sh
+	printf 'TREEMK=1 BUILDS=%s sh /root/nb/invm.sh build\n' "$t" > cmd-build.sh
 	put cmd-build.sh
 	s=$(date +%s)
 	ssh_ sh /root/nb/cmd-build.sh < /dev/null 2>&1 | tee build-macppc-$t.log

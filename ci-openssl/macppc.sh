@@ -18,12 +18,12 @@ O=/root/nb/new/src/crypto/external/apache2/openssl
 ssh_() { $(cat "$VMDIR/$NAME.ssh") "$@"; }
 put() { for f; do ssh_ "cat > /root/nb/$(basename "$f")" < "$f" || exit 1; done; }
 start() {
-	(cd "$VMDIR" && DIR=$VMDIR MEM=1536 sh "$NCI/runvm.sh" $NAME 2222) || {
+	(cd "$VMDIR" && DIR=$VMDIR BASE=$NCI MEM=1536 sh "$NCI/runvm.sh" $NAME 2222) || {
 		tail -60 "$VMDIR/$NAME.console.log"; exit 1; }
 	ssh_ "uname -a; cc --version | head -1; mkdir -p /root/nb" < /dev/null
 	put "$ci/nbbuild.sh" "$ci/nbtest.sh" "$ci/evpcheck.c" "$ci/invm.sh"
 }
-stop() { (cd "$VMDIR" && DIR=$VMDIR sh "$NCI/stopvm.sh" $NAME) || true; }
+stop() { (cd "$VMDIR" && DIR=$VMDIR BASE=$NCI sh "$NCI/stopvm.sh" $NAME) || true; }
 
 case $op in
 fetch)

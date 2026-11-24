@@ -5,7 +5,7 @@ name: openssl-asm
 # and compares them.  Runs only on this test branch.
 on:
   push:
-    branches: [openssl-asm-leaks-ci-4]
+    branches: [openssl-asm-leaks-ci-32]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64]
+        arch: [i386, sparc32]
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     steps:
@@ -48,7 +48,9 @@ jobs:
       - name: packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -qy qemu-system-arm qemu-system-misc qemu-efi-aarch64 u-boot-qemu zstd
+          sudo apt-get install -qy qemu-system-x86 qemu-utils netcat-openbsd qemu-system-arm qemu-system-misc qemu-efi-aarch64 u-boot-qemu zstd
+      - name: kvm
+        run: sudo chmod 666 /dev/kvm || true
       - name: image
         run: sh ci-openssl/fetch.sh ${{ matrix.arch }}
       - name: run

@@ -9,6 +9,22 @@ VMDIR=${VMDIR:-$PWD/vm}
 op=$1 arch=$2; shift 2
 port=2222
 img=$VMDIR/netbsd-11.1-$arch.qcow2
+if [ $arch = i386 ]; then
+	# zakinko/netbsd-ci-images, under KVM; runvm.sh writes the ssh command
+	I=i386-11.0
+	case $op in
+	start) (cd $VMDIR && DIR=. sh runvm.sh $I $port) || exit 1 ;;
+	esac
+	SSH="$(cat $VMDIR/$I.ssh 2>/dev/null)"
+	SSH="$(echo "$SSH" | sed "s, -i \./, -i $VMDIR/,")"
+	case $op in
+	start) $SSH "uname -a; sysctl -n hw.ncpu; mkdir -p /root/nb" ;;
+	ssh) exec $SSH "$@" ;;
+	put) for f; do $SSH "cat > /root/nb/$(basename "$f")" < "$f" || exit 1; done ;;
+	stop) (cd $VMDIR && DIR=. sh stopvm.sh $I) ;;
+	esac
+	exit
+fi
 key=$VMDIR/netbsd-11.1-$arch.host.id_rsa
 SSH="ssh -q -i $key -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30 root@127.0.0.1"
 

@@ -2,6 +2,17 @@
 # Fetch the vmactions NetBSD 11.1 image for <arch> into ./vm:  fetch.sh <arch>
 set -e
 arch=$1
+if [ $arch = i386 ]; then
+	mkdir -p vm; cd vm
+	for f in i386-11.0.qcow2 i386-11.0.qemu; do
+		curl -fsSLO https://github.com/zakinko/netbsd-ci-images/releases/download/images/$f
+	done
+	for f in runvm.sh stopvm.sh; do
+		curl -fsSLO https://raw.githubusercontent.com/zakinko/netbsd-ci-images/main/$f
+	done
+	exit
+fi
+[ $arch = sparc32 ] && arch=sparc64
 u=https://github.com/anyvm-org/netbsd-builder/releases/download/v2.2.9
 mkdir -p vm
 curl -fsSL -o vm/netbsd-11.1-$arch.host.id_rsa $u/netbsd-11.1-$arch-host.id_rsa

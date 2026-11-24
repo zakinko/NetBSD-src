@@ -7,12 +7,13 @@
 # passes when the breakpoint on sym is hit.
 # Environment: SPEED="alg ..."; ARMCAP=<value> sets OPENSSL_armcap.
 B=$1 A=$2; shift 2
+M32=${M32:-}
 here=$(cd "$(dirname "$0")" && pwd)
 w=$(mktemp -d "$HOME/nbtest.XXXXXX") || exit 1
 trap 'rm -rf "$w"' EXIT
 fail=0
 
-cc -O2 -o "$w/evpcheck" "$here/evpcheck.c" -L"$A" -lcrypto || exit 1
+cc $M32 -O2 -o "$w/evpcheck" "$here/evpcheck.c" -L"$A" -lcrypto || exit 1
 run() { l=$1; shift; env LD_LIBRARY_PATH="$l" ${ARMCAP:+OPENSSL_armcap=$ARMCAP} "$w/evpcheck" "$@"; }
 
 echo "machine: $(uname -m) $(sysctl -n machdep.cpu_brand 2>/dev/null)${ARMCAP:+ OPENSSL_armcap=$ARMCAP}"

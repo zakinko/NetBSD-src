@@ -81,7 +81,7 @@ jobs:
       - run: sh ci/nfsv4/build.sh modules "$PWD/nb" "$PWD/out"
       # ZFS failing must not keep FFS and tmpfs from being measured.
       - continue-on-error: true
-        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(steps.select.outputs.tests, ' ownerrights ')
         run: sh ci/nfsv4/zfs-module.sh "$(cat ci/nfsv4/zfs-sha)" "$PWD/nb" "$PWD/out"
       # The heavy stage, and a push that changes the script itself.
       - if: (github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(steps.select.outputs.tests, ' each ')
@@ -132,9 +132,10 @@ jobs:
           scp ci/nfsv4/ctime.c ci/nfsv4/ctime.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/ctime.sh' | tee out/ctime-stock.txt
       - name: The ZFS userland, on the stock kernel
-        if: (github.event_name == 'workflow_dispatch' && inputs.only == '')
+        if: (github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' ownerrights ')
         continue-on-error: true
         run: |
+          ssh netbsd 'mkdir -p /var/tmp/nfsv4'
           scp ci/nfsv4/zfs-user.sh netbsd:/var/tmp/nfsv4/
           ssh -o ServerAliveInterval=30 netbsd "sh /var/tmp/nfsv4/zfs-user.sh $(cat ci/nfsv4/zfs-sha)"
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
@@ -290,6 +291,29 @@ jobs:
       - name: Referrals
         if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' fsloc '))
         run: PYNFS_ARGS='--usespecial=/export/ref/there fslocations' sh ci/nfsv4/pynfs.sh "$PWD/out" /export/pynfs pynfs-fsloc
+      - name: OWNER_RIGHTS@ in a group area on ZFS, from the Linux client
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' ownerrights '))
+        run: sh ci/nfsv4/ownerrights-linux.sh "$PWD/out" || true
+      - name: A FreeBSD VM, as the second client
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' ownerrights '))
+        continue-on-error: true
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '15.0'
+          copyback: false
+          sync: no
+          run: uname -a
+      - name: OWNER_RIGHTS@ from the FreeBSD client
+        if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' ownerrights '))
+        continue-on-error: true
+        run: |
+          ssh -f -N -o ExitOnForwardFailure=yes -R 2049:127.0.0.1:2049 freebsd
+          sleep 2
+          scp ci/nfsv4/ownerrights-freebsd.sh freebsd:/tmp/
+          ssh freebsd 'sh /tmp/ownerrights-freebsd.sh' 2>&1 | tee out/ownerrights-freebsd.txt
+          echo '--- the same files, from the Linux client afterwards'
+          sudo mount -t nfs -o vers=4.1,proto=tcp,port=2049,addr=127.0.0.1,clientaddr=127.0.0.1,sec=sys 127.0.0.1:/tank/x /mnt/or &&
+          { for f in /mnt/or/or/f /mnt/or/or/g; do echo "$f"; nfs4_getfacl $f; done; sudo umount /mnt/or; } 2>&1 | tee -a out/ownerrights-freebsd.txt
       - name: Owners
         if: ((github.event_name == 'workflow_dispatch' && inputs.only == '') || contains(needs.build.outputs.tests, ' owner '))
         run: |
@@ -377,6 +401,7 @@ jobs:
             out/summary.txt
             out/ctime-*.txt
             out/linux-client-*.txt
+            out/ownerrights-*.txt
             out/t41.txt
             out/t41b.txt
             out/retention.txt

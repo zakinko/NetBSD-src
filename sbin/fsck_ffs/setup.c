@@ -59,6 +59,7 @@ __RCSID("$NetBSD: setup.c,v 1.112 2025/12/18 08:21:44 nia Exp $");
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "fsck.h"
 #include "extern.h"
@@ -280,6 +281,18 @@ setup(const char *dev, const char *origdev)
 			sblock->fs_flags &= FS_KNOWN_FLAGS;
 			sbdirty();
 		}
+	}
+	if ((sblock->fs_flags & FS_SUJ) && fswritefd != -1 &&
+	    (is_ufs2 || (sblock->fs_old_flags & FS_FLAGS_UPDATED))) {
+		/*
+		 * FreeBSD's fsck trusts the journal while fs_mtime has not
+		 * changed.  It must not once we have repaired something.
+		 */
+		time_t now = time(NULL);
+
+		sblock->fs_mtime = sblock->fs_mtime == now ? now + 1 : now;
+		sbdirty();
+		flush(fswritefd, &sblk);
 	}
 	if (sblock->fs_optim != FS_OPTTIME && sblock->fs_optim != FS_OPTSPACE) {
 		pfatal("UNDEFINED OPTIMIZATION IN SUPERBLOCK");
@@ -1037,6 +1050,8 @@ cmpsblks44(const struct fs *sb, struct fs *asb)
 	asb->fs_avgfilesize = sb->fs_avgfilesize;
 	asb->fs_avgfpdir = sb->fs_avgfpdir;
 	asb->fs_save_cgsize = sb->fs_save_cgsize;
+	asb->fs_mtime = sb->fs_mtime;
+	asb->fs_sujfree = sb->fs_sujfree;
 	memmove(asb->fs_sparecon32,
 		sb->fs_sparecon32, sizeof sb->fs_sparecon32);
 	asb->fs_flags = sb->fs_flags;

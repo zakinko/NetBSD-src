@@ -124,7 +124,10 @@ struct ufs2_dinode {
 	int64_t		di_db[UFS_NDADDR]; /* 112: Direct disk blocks. */
 	int64_t		di_ib[UFS_NIADDR]; /* 208: Indirect disk blocks. */
 	uint64_t	di_modrev;	/* 232: i_modrev for NFSv4 */
-	int64_t		di_spare[2];	/* 240: Reserved; currently unused */
+	uint32_t	di_dirdepth;	/* 240: FBSD: directory depth, or */
+					/*      SUJ: next unlinked inode */
+	uint32_t	di_spare32;	/* 244: Reserved; currently unused */
+	int64_t		di_spare;	/* 248: Reserved; currently unused */
 };
 
 /*

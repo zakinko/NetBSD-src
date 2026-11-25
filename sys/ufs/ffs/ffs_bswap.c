@@ -97,7 +97,9 @@ ffs_sb_swap(const struct fs *o, struct fs *n)
 		n->fs_snapinum[i] = bswap32(o->fs_snapinum[i]);
 	n->fs_avgfilesize = bswap32(o->fs_avgfilesize);
 	n->fs_avgfpdir = bswap32(o->fs_avgfpdir);
-	/* fs_sparecon[28] - ignore for now */
+	n->fs_mtime = bswap64(o->fs_mtime);
+	n->fs_sujfree = bswap32(o->fs_sujfree);
+	/* fs_sparecon32 - ignore for now */
 	n->fs_flags = bswap32(o->fs_flags);
 	n->fs_contigsumsize = bswap32(o->fs_contigsumsize);
 	n->fs_maxsymlinklen = bswap32(o->fs_maxsymlinklen);
@@ -160,6 +162,7 @@ ffs_dinode2_swap(struct ufs2_dinode *o, struct ufs2_dinode *n)
 	n->di_kernflags = bswap32(o->di_kernflags);
 	n->di_flags = bswap32(o->di_flags);
 	n->di_extsize = bswap32(o->di_extsize);
+	n->di_dirdepth = bswap32(o->di_dirdepth);
 	memcpy(n->di_extb, o->di_extb, sizeof(n->di_extb));
 	memcpy(n->di_db, o->di_db, sizeof(n->di_db));
 	memcpy(n->di_ib, o->di_ib, sizeof(n->di_ib));

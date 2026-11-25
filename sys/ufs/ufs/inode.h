@@ -202,6 +202,7 @@ struct inode {
 #define	i_ffs2_blksize		i_din.ffs2_din->di_blksize
 #define	i_ffs2_ctime		i_din.ffs2_din->di_ctime
 #define	i_ffs2_ctimensec	i_din.ffs2_din->di_ctimensec
+#define	i_ffs2_dirdepth		i_din.ffs2_din->di_dirdepth
 #define	i_ffs2_db		i_din.ffs2_din->di_db
 #define	i_ffs2_flags		i_din.ffs2_din->di_flags
 #define	i_ffs2_gen		i_din.ffs2_din->di_gen

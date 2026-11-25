@@ -117,6 +117,7 @@ MODULE(MODULE_CLASS_VFS, ffs, "ufs");
 static int ffs_vfs_fsync(vnode_t *, int);
 static int ffs_superblock_validate(struct fs *);
 static int ffs_is_appleufs(struct vnode *, struct fs *);
+static int ffs_suj_check(struct mount *, struct fs *, int);
 
 static int ffs_init_vnode(struct ufsmount *, struct vnode *, ino_t);
 static void ffs_deinit_vnode(struct ufsmount *, struct vnode *);
@@ -663,7 +664,8 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 
 			if (ffs_cgupdate(ump, MNT_WAIT) == 0 &&
 			    fs->fs_clean & FS_WASCLEAN) {
-				if (mp->mnt_flag & MNT_SOFTDEP)
+				if ((mp->mnt_flag & MNT_SOFTDEP) &&
+				    (fs->fs_flags & FS_SUJ) == 0)
 					fs->fs_flags &= ~FS_DOSOFTDEP;
 				fs->fs_clean = FS_ISCLEAN;
 				(void) ffs_sbupdate(ump, MNT_WAIT);
@@ -705,6 +707,11 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 			/*
 			 * Changing from read-only to read/write
 			 */
+			error = ffs_suj_check(mp, fs, 0);
+			if (error) {
+				DPRINTF("ffs_suj_check returned %d", error);
+				return error;
+			}
 #ifndef QUOTA2
 			if (fs->fs_flags & FS_DOQUOTA2) {
 				ump->um_flags |= UFS_QUOTA2;
@@ -776,7 +783,9 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 	(void)strncpy(fs->fs_fsmnt, mp->mnt_stat.f_mntonname,
 	    sizeof(fs->fs_fsmnt));
 
-	fs->fs_flags &= ~FS_DOSOFTDEP;
+	/* ffs_sbupdate() takes care of it with FS_SUJ. */
+	if ((fs->fs_flags & FS_SUJ) == 0)
+		fs->fs_flags &= ~FS_DOSOFTDEP;
 
 	if ((fs->fs_ronly && (fs->fs_clean & FS_ISCLEAN) == 0) ||
 	    (!fs->fs_ronly && (fs->fs_clean & FS_WASCLEAN) == 0)) {
@@ -811,6 +820,46 @@ ffs_mount(struct mount *mp, const char *path, void *data, size_t *data_len)
 fail:
 	vrele(devvp);
 	return (error);
+}
+
+/*
+ * Check a filesystem which FreeBSD uses with journaled soft updates, and
+ * make its journal invalid if we are going to write.
+ */
+static int
+ffs_suj_check(struct mount *mp, struct fs *fs, int ronly)
+{
+
+	if ((fs->fs_flags & FS_SUJ) == 0)
+		return 0;
+
+	/* There is no fs_mtime in the old superblock layout. */
+	if (fs->fs_magic == FS_UFS1_MAGIC &&
+	    (fs->fs_old_flags & FS_FLAGS_UPDATED) == 0 &&
+	    (mp->mnt_flag & MNT_FORCE) == 0) {
+		uprintf("%s: journaled soft updates in an old superblock, "
+		    "not mounting\n", mp->mnt_stat.f_mntonname);
+		return EINVAL;
+	}
+	if (ronly)
+		return 0;
+
+	/* Only FreeBSD can tell what its journal has to say. */
+	if ((fs->fs_clean & FS_ISCLEAN) == 0 &&
+	    (mp->mnt_flag & MNT_FORCE) == 0) {
+		uprintf("%s: journaled soft updates and not clean, "
+		    "mount it read-only or run fsck\n",
+		    mp->mnt_stat.f_mntonname);
+		return EPERM;
+	}
+	if (fs->fs_magic == FS_UFS1_MAGIC &&
+	    (fs->fs_old_flags & FS_FLAGS_UPDATED) == 0)
+		return 0;
+	if (fs->fs_mtime == time_second)
+		fs->fs_mtime++;
+	else
+		fs->fs_mtime = time_second;
+	return 0;
 }
 
 /*
@@ -1399,6 +1448,12 @@ ffs_mountfs(struct vnode *devvp, struct mount *mp, struct lwp *l)
 			DPRINTF("no force %d", error);
 			goto out;
 		}
+	}
+
+	error = ffs_suj_check(mp, fs, ronly);
+	if (error) {
+		DPRINTF("ffs_suj_check returned %d", error);
+		goto out;
 	}
 
 	fs->fs_fmod = 0;
@@ -2319,6 +2374,15 @@ ffs_newvnode(struct mount *mp, struct vnode *dvp, struct vnode *vp,
 	DIP_ASSIGN(ip, flags, 0);
 	ip->i_mode = mode;
 	DIP_ASSIGN(ip, mode, mode);
+	/*
+	 * FreeBSD may have left the depth of a removed directory, or the
+	 * link of a list of unlinked inodes.  0 is an unknown depth, which
+	 * its fsck fills in.
+	 */
+	if (fs->fs_magic == FS_UFS2_MAGIC)
+		ip->i_ffs2_dirdepth = 0;
+	else if (fs->fs_old_inodefmt >= FS_44INODEFMT)
+		ip->i_ffs1_ouid = ip->i_ffs1_ogid = 0;
 	if (vap->va_rdev != VNOVAL) {
 		/*
 		 * Want to be able to use this to make badblock
@@ -2457,6 +2521,15 @@ ffs_sbupdate(struct ufsmount *mp, int waitfor)
 	bfs = (struct fs *)bp->b_data;
 
 	bfs->fs_flags &= ~FS_INTERNAL;
+	/*
+	 * FreeBSD takes any fs_clean but 0 as clean when it mounts, and
+	 * FS_DOSOFTDEP as a sign that what a crash left can be checked in
+	 * the background.  Neither holds while we are writing.
+	 */
+	if ((bfs->fs_flags & FS_SUJ) && (bfs->fs_clean & FS_ISCLEAN) == 0) {
+		bfs->fs_clean = 0;
+		bfs->fs_flags &= ~FS_DOSOFTDEP;
+	}
 	ffs_oldfscompat_write((struct fs *)bp->b_data, mp);
 	if (mp->um_flags & UFS_EA) {
 		KASSERT(bfs->fs_magic == FS_UFS2_MAGIC);

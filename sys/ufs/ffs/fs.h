@@ -354,7 +354,9 @@ struct fs {
 	u_int32_t fs_avgfilesize;	/* expected average file size */
 	u_int32_t fs_avgfpdir;		/* expected # of files per directory */
 	int32_t	 fs_save_cgsize;	/* save real cg size to use fs_bsize */
-	int32_t	 fs_sparecon32[26];	/* reserved for future constants */
+	int64_t	 fs_mtime;		/* last mount or fsck time (FBSD) */
+	int32_t	 fs_sujfree;		/* SUJ free list (FBSD, unused) */
+	int32_t	 fs_sparecon32[23];	/* reserved for future constants */
 	uint32_t fs_flags;		/* see FS_ flags below */
 /* back to stuff that has been around a while (again) */
 	int32_t	 fs_contigsumsize;	/* size of cluster summary array */
@@ -443,8 +445,14 @@ struct fs {
 #define	FS_TRIM		0x400	/* discard deleted blocks in storage layer */
 #define	FS_NFS4ACLS	0x800	/* file system has NFSv4 ACLs enabled */
 
+/*
+ * FS_SUJ is kept, but the journal is neither used nor written.  FreeBSD's
+ * fsck trusts the journal while the di_modrev of its inode is the fs_mtime
+ * of the superblock, so fs_mtime has to change before anything is written.
+ */
+
 /* File system flags that are ok for NetBSD if set in fs_flags */
-#define	FS_KNOWN_FLAGS	(FS_DOSOFTDEP | FS_DOWAPBL | FS_DOQUOTA2 | \
+#define	FS_KNOWN_FLAGS	(FS_DOSOFTDEP | FS_SUJ | FS_DOWAPBL | FS_DOQUOTA2 | \
 	FS_POSIX1EACLS | FS_NFS4ACLS)
 
 /*

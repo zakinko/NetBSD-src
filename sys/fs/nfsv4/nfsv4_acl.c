@@ -81,6 +81,15 @@ static const struct {
 	{ ACE4_FAILED_ACCESS_ACE_FLAG,	ACL_ENTRY_FAILED_ACCESS },
 };
 
+/*
+ * OWNER_RIGHTS@, draft-ietf-nfsv4-acls-update-06 8.4.3: the tag the OpenZFS
+ * port gives it.  <sys/acl.h> does not have it yet, and a file system that
+ * does not know it refuses the ACL in acl_nfs4_check().
+ */
+#ifndef ACL_OWNER_RIGHTS
+#define	ACL_OWNER_RIGHTS	0x00000080
+#endif
+
 static const struct {
 	const char	*as_who;
 	acl_tag_t	as_tag;
@@ -88,6 +97,7 @@ static const struct {
 	{ "OWNER@",	ACL_USER_OBJ },
 	{ "GROUP@",	ACL_GROUP_OBJ },
 	{ "EVERYONE@",	ACL_EVERYONE },
+	{ "OWNER_RIGHTS@", ACL_OWNER_RIGHTS },
 };
 
 /*

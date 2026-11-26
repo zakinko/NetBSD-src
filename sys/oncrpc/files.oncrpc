@@ -4,6 +4,12 @@ define	xdr
 
 defflag				ONCRPC: xdr, aes, des
 defflag	opt_oncrpc.h		ONCRPC_GSS_HEIMDAL_DES3
+# Out of RFC 5403 on purpose: take SHA-1 for the hash of RPCSEC_GSS
+# channel bindings.  Without it only SHA-256 is.
+defflag	opt_oncrpc.h		ONCRPC_GSS_CB_SHA1
+# Out of RFC 5403 s9 on purpose: bind contexts whose MIC is narrower
+# than the widest Kerberos checksum.
+defflag	opt_oncrpc.h		ONCRPC_GSS_CB_ANYMIC
 # Out of RFC 9289 s5.1.2 on purpose: establish DTLS associations that
 # carry no connection ID, where the RFC says each handshake MUST
 # negotiate a nonzero one.  OpenSSL 4.1 does not implement connection

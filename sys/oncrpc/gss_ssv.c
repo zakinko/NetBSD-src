@@ -711,6 +711,14 @@ ssv_destroy(void *c)
 	gss_ssv_rele(c);
 }
 
+/* s2.10.9: smt_hmac is the whole HMAC. */
+static size_t
+ssv_maclen(const void *c)
+{
+
+	return gss_ssv_len(c);
+}
+
 const struct oncrpc_gss_mech oncrpc_gss_ssv_mech = {
 	.gm_get_mic = ssv_get_mic,
 	.gm_verify_mic = ssv_verify_mic,
@@ -718,4 +726,5 @@ const struct oncrpc_gss_mech oncrpc_gss_ssv_mech = {
 	.gm_wrap = ssv_wrap,
 	.gm_unwrap = ssv_unwrap,
 	.gm_destroy = ssv_destroy,
+	.gm_maclen = ssv_maclen,
 };

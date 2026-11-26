@@ -46,6 +46,8 @@ struct oncrpc_gss_mech {
 	uint32_t	(*gm_unwrap)(void *, void *, size_t, void *, void **,
 			    size_t *, bool *);
 	void		(*gm_destroy)(void *);
+	/* The width of the checksum in a MIC, for RFC 5403 s9. */
+	size_t		(*gm_maclen)(const void *);
 };
 
 /* A context of one mechanism. */
@@ -93,6 +95,13 @@ oncrpc_gssk_unwrap(const struct oncrpc_gss_key *k, void *t, size_t tl,
 {
 
 	return (*k->k_mech->gm_unwrap)(k->k_ctx, t, tl, out, mp, mlp, confp);
+}
+
+static __inline size_t
+oncrpc_gssk_maclen(const struct oncrpc_gss_key *k)
+{
+
+	return (*k->k_mech->gm_maclen)(k->k_ctx);
 }
 
 static __inline void

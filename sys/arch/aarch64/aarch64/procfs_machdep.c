@@ -77,9 +77,15 @@ procfs_cpuinfo_features(struct cpu_info *ci, char *buf, int buflen)
 	 */
 	OUTPUT_BUF("Features\t:");
 #define SO_EQ(reg, mask, val)	(__SHIFTOUT((reg), (mask)) == (val))
-	if (SO_EQ(pfr0, ID_AA64PFR0_EL1_FP, ID_AA64PFR0_EL1_FP_IMPL))
+	/*
+	 * FP and AdvSIMD are 1, not 0, when half-precision arithmetic
+	 * is implemented as well (Arm ARM DDI 0487H.a, D13.2.67); fp
+	 * and asimd are there in both cases, and fphp and asimdhp
+	 * below only in the second.
+	 */
+	if (!SO_EQ(pfr0, ID_AA64PFR0_EL1_FP, ID_AA64PFR0_EL1_FP_NONE))
 		OUTPUT_BUF(" fp");
-	if (SO_EQ(pfr0, ID_AA64PFR0_EL1_ADVSIMD, ID_AA64PFR0_EL1_ADV_SIMD_IMPL))
+	if (!SO_EQ(pfr0, ID_AA64PFR0_EL1_ADVSIMD, ID_AA64PFR0_EL1_ADV_SIMD_NONE))
 		OUTPUT_BUF(" asimd");
 	/* notyet: " evtstrm" */
 	if (SO_EQ(isar0, ID_AA64ISAR0_EL1_AES, ID_AA64ISAR0_EL1_AES_AES))

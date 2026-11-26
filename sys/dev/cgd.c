@@ -487,6 +487,23 @@ cgd_lock(bool intr)
 	return error;
 }
 
+/*
+ * cgd_trylock()
+ *
+ *	Like cgd_lock, but fail rather than wait if it is held.
+ */
+static bool
+cgd_trylock(void)
+{
+	bool locked;
+
+	mutex_enter(&cgd_spawning_mtx);
+	locked = !cgd_spawning;
+	cgd_spawning = true;
+	mutex_exit(&cgd_spawning_mtx);
+	return locked;
+}
+
 static void
 cgd_unlock(void)
 {
@@ -529,10 +546,26 @@ static int
 cgd_detach(device_t self, int flags)
 {
 	int ret;
+	bool busy;
 	struct cgd_softc *sc = device_private(self);
 	struct dk_softc *dksc = &sc->sc_dksc;
 
-	if (DK_BUSY(dksc, 0)) {
+	/*
+	 * From cgdclose (DETACH_FORCE), the caller holds cgd_lock.
+	 * Otherwise (drvctl), take it to see the openmask settled:
+	 * cgdopen holds cgd_lock from the lookup until dk_open has
+	 * recorded the open.  Don't wait for it -- a cgdopen holding it
+	 * may be waiting in device_lookup_acquire for this detach to
+	 * finish.  Once we have checked, no new cgdopen can get a
+	 * reference until the detach is over, so the answer holds
+	 * after we drop the lock.
+	 */
+	if ((flags & DETACH_FORCE) == 0 && !cgd_trylock())
+		return EBUSY;
+	busy = DK_BUSY(dksc, 0);
+	if ((flags & DETACH_FORCE) == 0)
+		cgd_unlock();
+	if (busy) {
 		KASSERTMSG((flags & DETACH_FORCE) == 0, "%s",
 		    device_xname(self));
 		return EBUSY;

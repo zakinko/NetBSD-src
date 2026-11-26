@@ -22,6 +22,7 @@ file	oncrpc/oncrpc_rdma_nfs.c	oncrpc
 file	oncrpc/oncrpc_rdma_svc.c	oncrpc
 file	oncrpc/oncrpc_rm.c		oncrpc
 file	oncrpc/oncrpc_svc.c		oncrpc
+file	oncrpc/tls13_crypto.c		oncrpc
 file	oncrpc/xdr_mbuf.c		xdr
 file	oncrpc/xdr_module.c		xdr
 

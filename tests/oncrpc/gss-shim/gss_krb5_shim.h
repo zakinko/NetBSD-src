@@ -37,6 +37,7 @@
 #define	OPENSSL_SUPPRESS_DEPRECATED
 
 #include <sys/types.h>
+#include <sys/param.h>		/* MIN */
 
 #include <assert.h>
 #include <errno.h>
@@ -53,8 +54,13 @@
 #include <openssl/sha.h>
 
 #define	KASSERT(x)	assert(x)
+/* <sys/cdefs.h> has these on NetBSD; glibc does not. */
+#ifndef __UNCONST
 #define	__UNCONST(p)	((void *)(uintptr_t)(const void *)(p))
+#endif
+#ifndef __unused
 #define	__unused	__attribute__((__unused__))
+#endif
 
 #define	KM_SLEEP	0
 static inline void *
@@ -288,6 +294,8 @@ atomic_dec_uint_nv(volatile unsigned *p)
 #ifndef roundup
 #define	roundup(x, y)	((((x) + ((y) - 1)) / (y)) * (y))
 #endif
+/* <sys/endian.h> has these on NetBSD, where dtlsclient.c is built. */
+#ifndef __NetBSD__
 static inline void
 be32enc(void *p, uint32_t v)
 {
@@ -303,6 +311,7 @@ be32dec(const void *p)
 	return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 |
 	    (uint32_t)b[2] << 8 | b[3];
 }
+#endif
 #define	SHA224_DIGEST_LENGTH	28
 #define	SHA224_CTX	SHA256_CTX
 #define	AES_128_NROUNDS	10

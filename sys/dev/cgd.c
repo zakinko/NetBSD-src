@@ -752,7 +752,7 @@ cgdclose(dev_t dev, int flags, int fmt, struct lwp *l)
 	if ((error =  dk_close(dksc, dev, flags, fmt, l)) != 0)
 		goto done;
 
-	if (!DK_ATTACHED(dksc)) {
+	if (!DK_ATTACHED(dksc) && dksc->sc_dkdev.dk_openmask == 0) {
 		if ((error = cgd_destroy(sc->sc_dksc.sc_dev)) != 0) {
 			device_printf(dksc->sc_dev,
 			    "unable to detach instance\n");

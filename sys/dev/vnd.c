@@ -291,6 +291,25 @@ vnd_detach(device_t self, int flags)
 		/* From vndclose: last close of an unconfigured unit.  */
 		KASSERT((sc->sc_flags & VNF_INITED) == 0);
 		KASSERT(sc->sc_dkdev.dk_openmask == 0);
+	} else {
+		bool busy;
+
+		/*
+		 * Not from vndclose (drvctl, shutdown).  Take vnd_lock to
+		 * see the openmask settled: vndopen holds it from the
+		 * lookup until the open is recorded.  Don't wait for it
+		 * -- a vndopen holding it may be waiting in
+		 * device_lookup_acquire for this detach to finish.  Once
+		 * we have checked, no new vndopen can get a reference
+		 * until the detach is over, so the answer holds after we
+		 * drop the lock.
+		 */
+		if (!mutex_tryenter(&vnd_lock))
+			return EBUSY;
+		busy = sc->sc_dkdev.dk_openmask != 0;
+		mutex_exit(&vnd_lock);
+		if (busy)
+			return EBUSY;
 	}
 
 	if (sc->sc_flags & VNF_INITED) {
@@ -465,6 +484,8 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l)
 	 * vnd_detach, revokes vnodes still being opened, and the close
 	 * that comes of it runs in the detaching thread, where
 	 * device_lookup_acquire would wait for that detach forever.
+	 * Under vnd_lock the unit cannot go away anyway: it is detached
+	 * only here or after vnd_detach has seen it is not open.
 	 */
 	mutex_enter(&vnd_lock);
 	sc = device_lookup_private(&vnd_cd, unit);

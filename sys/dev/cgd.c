@@ -1723,7 +1723,14 @@ cgd_selftest(void)
 	aprint_debug("cgd: self-tests passed\n");
 }
 
-MODULE(MODULE_CLASS_DRIVER, cgd, "blowfish,des,dk_subr,bufq_fcfs");
+/*
+ * cgd attaches no hardware, so it does not need to be initialized
+ * before configure like MODULE_CLASS_DRIVER.  It must not be: built
+ * in, its prerequisites would be initialized then too, and adiantum
+ * requires aes and chacha, whose implementations are chosen only
+ * after cpu_attach.  specfs autoloads it as any class.
+ */
+MODULE(MODULE_CLASS_MISC, cgd, "blowfish,des,dk_subr,bufq_fcfs,adiantum");
 
 #ifdef _MODULE
 CFDRIVER_DECL(cgd, DV_DISK, NULL);

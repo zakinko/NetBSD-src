@@ -714,13 +714,18 @@ cpu_setup_aes(device_t dv, struct cpu_info *ci)
 		break;
 	}
 
-	/* Failing that, check for SIMD support.  */
+	/*
+	 * Failing that, check for SIMD support.  AdvSIMD is 0 when it
+	 * is implemented, 1 when it is implemented with half-precision
+	 * arithmetic (FEAT_FP16), and 0xf when it is not implemented
+	 * (Arm ARM DDI 0487H.a, D13.2.67).
+	 */
 	switch (__SHIFTOUT(id->ac_aa64pfr0, ID_AA64PFR0_EL1_ADVSIMD)) {
-	case ID_AA64PFR0_EL1_ADV_SIMD_IMPL:
+	case ID_AA64PFR0_EL1_ADV_SIMD_NONE:
+		break;
+	default:
 		aes_md_init(&aes_neon_impl);
 		return;
-	default:
-		break;
 	}
 }
 
@@ -732,13 +737,13 @@ cpu_setup_chacha(device_t dv, struct cpu_info *ci)
 {
 	struct aarch64_sysctl_cpu_id *id = &ci->ci_id;
 
-	/* Check for SIMD support.  */
+	/* Check for SIMD support, as in cpu_setup_aes.  */
 	switch (__SHIFTOUT(id->ac_aa64pfr0, ID_AA64PFR0_EL1_ADVSIMD)) {
-	case ID_AA64PFR0_EL1_ADV_SIMD_IMPL:
+	case ID_AA64PFR0_EL1_ADV_SIMD_NONE:
+		break;
+	default:
 		chacha_md_init(&chacha_neon_impl);
 		return;
-	default:
-		break;
 	}
 }
 

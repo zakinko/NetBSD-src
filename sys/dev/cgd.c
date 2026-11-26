@@ -389,12 +389,12 @@ const struct selftest_params selftests[] = {
 static int cgd_match(device_t, cfdata_t, void *);
 static void cgd_attach(device_t, device_t, void *);
 static int cgd_detach(device_t, int);
-static struct cgd_softc	*cgd_spawn(int);
+static device_t	cgd_spawn(int);
 static struct cgd_worker *cgd_create_one_worker(void);
 static void cgd_destroy_one_worker(struct cgd_worker *);
 static struct cgd_worker *cgd_create_worker(void);
 static void cgd_destroy_worker(struct cgd_worker *);
-static int cgd_destroy(device_t);
+static void cgd_destroy(device_t);
 
 /* Internal Functions */
 
@@ -532,8 +532,11 @@ cgd_detach(device_t self, int flags)
 	struct cgd_softc *sc = device_private(self);
 	struct dk_softc *dksc = &sc->sc_dksc;
 
-	if (DK_BUSY(dksc, 0))
+	if (DK_BUSY(dksc, 0)) {
+		KASSERTMSG((flags & DETACH_FORCE) == 0, "%s",
+		    device_xname(self));
 		return EBUSY;
+	}
 
 	if (DK_ATTACHED(dksc) &&
 	    (ret = cgd_ioctl_clr(sc, curlwp)) != 0)
@@ -564,18 +567,18 @@ cgdattach(int num)
 	cgd_selftest();
 }
 
-static struct cgd_softc *
+static device_t
 cgd_spawn(int unit)
 {
 	cfdata_t cf;
 	struct cgd_worker *cw;
-	struct cgd_softc *sc;
+	device_t dv;
 
 	cf = kmem_alloc(sizeof(*cf), KM_SLEEP);
 	cf->cf_name = cgd_cd.cd_name;
 	cf->cf_atname = cgd_cd.cd_name;
 	cf->cf_unit = unit;
-	cf->cf_fstate = FSTATE_STAR;
+	cf->cf_fstate = FSTATE_NOTFOUND;
 
 	cw = cgd_create_one_worker();
 	if (cw == NULL) {
@@ -583,18 +586,27 @@ cgd_spawn(int unit)
 		return NULL;
 	}
 
-	sc = device_private(config_attach_pseudo(cf));
-	if (sc == NULL) {
+	dv = config_attach_pseudo_acquire(cf, NULL);
+	if (dv == NULL) {
 		cgd_destroy_one_worker(cw);
+		kmem_free(cf, sizeof(*cf));
 		return NULL;
 	}
+	KASSERT(device_unit(dv) == unit);
 
-	sc->sc_worker = cw;
+	((struct cgd_softc *)device_private(dv))->sc_worker = cw;
 
-	return sc;
+	return dv;
 }
 
-static int
+/*
+ * cgd_destroy(dev)
+ *
+ *	Detach dev on last close of an unconfigured unit, releasing the
+ *	caller's reference.  Caller must hold cgd_lock, which keeps any
+ *	concurrent cgdopen out, so the detach cannot fail.
+ */
+static void
 cgd_destroy(device_t dev)
 {
 	struct cgd_softc *sc = device_private(dev);
@@ -603,14 +615,12 @@ cgd_destroy(device_t dev)
 	int error;
 
 	cf = device_cfdata(dev);
-	error = config_detach(dev, DETACH_QUIET);
-	if (error)
-		return error;
+	error = config_detach_release(dev, DETACH_QUIET|DETACH_FORCE);
+	KASSERTMSG(error == 0, "error=%d", error);
 
 	cgd_destroy_one_worker(cw);
 
 	kmem_free(cf, sizeof(*cf));
-	return 0;
 }
 
 static void
@@ -713,6 +723,7 @@ static int
 cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
 {
 	struct	cgd_softc *sc;
+	device_t dv;
 	int error;
 
 	DPRINTF_FOLLOW(("cgdopen(0x%"PRIx64", %d)\n", dev, flags));
@@ -720,14 +731,18 @@ cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
 	error = cgd_lock(true);
 	if (error)
 		return error;
-	sc = getcgd_softc(dev);
-	if (sc == NULL)
-		sc = cgd_spawn(CGDUNIT(dev));
-	if (sc == NULL)
+	dv = device_lookup_acquire(&cgd_cd, CGDUNIT(dev));
+	if (dv == NULL)
+		dv = cgd_spawn(CGDUNIT(dev));
+	if (dv == NULL) {
 		error = ENXIO;
-	else
+	} else {
+		sc = device_private(dv);
 		error = dk_open(&sc->sc_dksc, dev, flags, fmt, l);
+	}
 	cgd_unlock();
+	if (dv != NULL)
+		device_release(dv);
 
 	return error;
 }
@@ -737,6 +752,7 @@ cgdclose(dev_t dev, int flags, int fmt, struct lwp *l)
 {
 	struct	cgd_softc *sc;
 	struct	dk_softc *dksc;
+	device_t dv;
 	int error;
 
 	DPRINTF_FOLLOW(("cgdclose(0x%"PRIx64", %d)\n", dev, flags));
@@ -744,26 +760,26 @@ cgdclose(dev_t dev, int flags, int fmt, struct lwp *l)
 	error = cgd_lock(false);
 	if (error)
 		return error;
-	sc = getcgd_softc(dev);
-	if (sc == NULL) {
+	dv = device_lookup_acquire(&cgd_cd, CGDUNIT(dev));
+	if (dv == NULL) {
 		error = ENXIO;
 		goto done;
 	}
+	sc = device_private(dv);
 
 	dksc = &sc->sc_dksc;
 	if ((error =  dk_close(dksc, dev, flags, fmt, l)) != 0)
 		goto done;
 
 	if (!DK_ATTACHED(dksc) && dksc->sc_dkdev.dk_openmask == 0) {
-		if ((error = cgd_destroy(sc->sc_dksc.sc_dev)) != 0) {
-			device_printf(dksc->sc_dev,
-			    "unable to detach instance\n");
-			goto done;
-		}
+		cgd_destroy(dv);
+		dv = NULL;
 	}
 
 done:
 	cgd_unlock();
+	if (dv != NULL)
+		device_release(dv);
 
 	return error;
 }

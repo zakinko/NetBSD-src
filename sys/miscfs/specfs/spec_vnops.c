@@ -891,8 +891,16 @@ spec_open(void *v)
 			if ((name = cdevsw_getname(major(dev))) == NULL)
 				break;
 
-			/* Try to autoload device module */
-			(void)module_autoload(name, MODULE_CLASS_DRIVER);
+			/*
+			 * Try to autoload device module.  Any class:
+			 * a driver that only provides a devsw and
+			 * needs autoconf to have run first (nvmm,
+			 * cgd) is MODULE_CLASS_MISC so that, built
+			 * in, it is initialized after configure.
+			 * The name comes from devsw_conv, so it is
+			 * a device driver's name either way.
+			 */
+			(void)module_autoload(name, MODULE_CLASS_ANY);
 		} while (gen != module_gen);
 		break;
 
@@ -916,8 +924,8 @@ spec_open(void *v)
 			if ((name = bdevsw_getname(major(dev))) == NULL)
 				break;
 
-			/* Try to autoload device module */
-			(void)module_autoload(name, MODULE_CLASS_DRIVER);
+			/* Try to autoload device module, as above */
+			(void)module_autoload(name, MODULE_CLASS_ANY);
 		} while (gen != module_gen);
 		break;
 

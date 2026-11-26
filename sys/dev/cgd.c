@@ -1723,7 +1723,7 @@ cgd_selftest(void)
 	aprint_debug("cgd: self-tests passed\n");
 }
 
-MODULE(MODULE_CLASS_DRIVER, cgd, "blowfish,des,dk_subr,bufq_fcfs");
+MODULE(MODULE_CLASS_DRIVER, cgd, "blowfish,des,dk_subr,bufq_fcfs,adiantum");
 
 #ifdef _MODULE
 CFDRIVER_DECL(cgd, DV_DISK, NULL);

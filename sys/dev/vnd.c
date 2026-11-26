@@ -461,7 +461,8 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l)
 
 	vndunlock(sc);
 
-	if ((sc->sc_flags & VNF_INITED) == 0) {
+	if ((sc->sc_flags & VNF_INITED) == 0 &&
+	    sc->sc_dkdev.dk_openmask == 0) {
 		if ((error = vnd_destroy(sc->sc_dev)) != 0) {
 			aprint_error_dev(sc->sc_dev,
 			    "unable to detach instance\n");

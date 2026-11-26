@@ -135,6 +135,17 @@ struct oncrpc_program;
  * as oncrpc_svc_call() makes them: may one of len bytes go now.  0 has
  * counted it, and the call then reaches xo_send with no ctx; EAGAIN is
  * not yet; anything else is never.  NULL is no such direction at all.
+ *
+ * The last three are RPC-with-TLS, RFC 9289, on a transport that has
+ * it.  xo_starttls answers an AUTH_TLS probe (s4.1) with the auth_stat
+ * of the reply, and sets *offer for the STARTTLS verifier; it may set
+ * the call's ctx, which xo_send then sees.  xo_tls says whether a call,
+ * by its ctx, came within TLS, and gives the "tls-exporter" binding of
+ * RFC 9266 s2 when asked.  xo_flush is called by a sender before it
+ * stops, with svc_lock and XP_SENDING held; it may drop and retake the
+ * lock, and true takes the xprt away.  NULL for all three is a
+ * transport without TLS, whose probes are answered as by a server
+ * without it.
  */
 struct oncrpc_xprt_ops {
 	int	(*xo_recv)(struct oncrpc_xprt *, struct mbuf **, struct mbuf **,
@@ -147,6 +158,10 @@ struct oncrpc_xprt_ops {
 	void	(*xo_ddp_result)(void *, u_int, u_int);
 	void	(*xo_ddp_fix)(void *, u_int, bool);
 	int	(*xo_bcall)(struct oncrpc_xprt *, u_int);
+	uint32_t (*xo_starttls)(struct oncrpc_xprt *, struct mbuf *, void **,
+		    bool *);
+	bool	(*xo_tls)(struct oncrpc_xprt *, void *, uint8_t *);
+	bool	(*xo_flush)(struct oncrpc_xprt *);
 };
 
 struct oncrpc_xprt {

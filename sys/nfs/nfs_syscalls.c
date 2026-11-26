@@ -350,6 +350,10 @@ do_nfssvc(struct nfssvc_copy_ops *ops, struct lwp *l, int flag, void *argp, regi
 		}
 		error = nfssvc_addsock(fp, nam);
 		fd_putfile(nfsdarg.sock);
+#ifdef NFSSERVER_ONCRPC
+	} else if (flag & (NFSSVC_TLSWAIT | NFSSVC_TLSDONE)) {
+		error = nfs_oncrpc_tls(flag, argp);
+#endif
 	} else if (flag & (NFSSVC_SETEXPORTSLIST | NFSSVC_REPLACEEXPORTSLIST)) {
 		struct export_args *args;
 		struct mountd_exports_list mel;

@@ -347,6 +347,7 @@ int nfsrv_xattr_mkfh(const nfsrvfh_t *, bool, int, const char *,
 int nfsrv_xattr_fhtovp(const nfsrvfh_t *, bool, kauth_cred_t,
 	struct nfssvc_sock *, struct mbuf *, int, struct vnode **, int *,
 	char *, int *, nfsrvfh_t *);
+int nfs_oncrpc_tls(int, void *);
 #endif
 void nfsrv_zapsock(struct nfssvc_sock *);
 void nfsrv_slpderef(struct nfssvc_sock *);

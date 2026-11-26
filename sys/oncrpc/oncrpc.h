@@ -68,10 +68,16 @@
 #define	ONCRPC_AUTH_BADCRED	1
 #define	ONCRPC_AUTH_REJECTEDCRED 2
 #define	ONCRPC_AUTH_BADVERF	3
+#define	ONCRPC_AUTH_TOOWEAK	5
 
 /* RFC 5531 s8.2, enum auth_flavor */
 #define	ONCRPC_AUTH_NONE	0
 #define	ONCRPC_AUTH_SYS		1
+#define	ONCRPC_AUTH_TLS		7	/* RFC 9289 s7.1 */
+
+/* RFC 9289 s4.1, the body of the reply's verifier to an AUTH_TLS probe */
+#define	ONCRPC_STARTTLS		"STARTTLS"
+#define	ONCRPC_STARTTLS_LEN	8
 
 #define	ONCRPC_MAX_AUTH_BYTES	400	/* RFC 5531 s8.2, opaque body<400> */
 #define	ONCRPC_MAX_MACHINENAME	255	/* RFC 5531 App. A, machinename<255> */
@@ -208,5 +214,14 @@ void	oncrpc_req_finish(struct oncrpc_req *, struct mbuf *);
 int	oncrpc_svc_addrdma(struct oncrpc_svc *, struct file *, struct mbuf *);
 void	oncrpc_req_ddp_result(struct oncrpc_req *, u_int, u_int);
 u_int	oncrpc_req_rdma_ird(struct oncrpc_req *);
+
+/* RPC-over-TLS, RFC 9289: the connections handed to the handshake daemon. */
+struct oncrpc_tls_dgram;
+struct oncrpc_tls_event;
+struct oncrpc_tls_params;
+int	oncrpc_tls_wait(uint64_t *, int *, struct oncrpc_tls_event *,
+	    struct oncrpc_tls_dgram *);
+int	oncrpc_tls_done(uint64_t, int, const struct oncrpc_tls_params *);
+bool	oncrpc_req_tls(struct oncrpc_req *, uint8_t *);
 
 #endif /* !_ONCRPC_ONCRPC_H_ */

@@ -4,9 +4,24 @@ define	xdr
 
 defflag				ONCRPC: xdr, aes, des
 defflag	opt_oncrpc.h		ONCRPC_GSS_HEIMDAL_DES3
+# Out of RFC 9289 s5.1.2 on purpose: establish DTLS associations that
+# carry no connection ID, where the RFC says each handshake MUST
+# negotiate a nonzero one.  OpenSSL 4.1 does not implement connection
+# IDs for DTLS 1.3 (openssl/openssl#18724, and its DTLS 1.3 design
+# document leaves them out), so a client built on it cannot associate
+# without this.  rpc.tlsservd negotiates them when its OpenSSL has
+# SSL_set1_dtls_cid(), and the kernel's record layer handles them either
+# way: without this option, which is the RFC, a handshake without them
+# is refused at NFSSVC_TLSDONE.
+defflag	opt_oncrpc.h		ONCRPC_DTLS_NOCID
+# Log every DTLS record after the handshake on the console; for tests.
+defflag	opt_oncrpc.h		ONCRPC_DTLS_DEBUG
+# Records sent under one TLS key before our KeyUpdate; at most 2^24.
+defparam opt_oncrpc.h		ONCRPC_TLS_REKEY
 
 file	oncrpc/oncrpc_auth.c		oncrpc
 file	oncrpc/oncrpc_clnt.c		oncrpc
+file	oncrpc/oncrpc_dtls.c		oncrpc
 file	oncrpc/gss_krb5.c		oncrpc
 file	oncrpc/gss_krb5_crypto.c	oncrpc
 file	oncrpc/gss_ssv.c		oncrpc
@@ -22,6 +37,7 @@ file	oncrpc/oncrpc_rdma_nfs.c	oncrpc
 file	oncrpc/oncrpc_rdma_svc.c	oncrpc
 file	oncrpc/oncrpc_rm.c		oncrpc
 file	oncrpc/oncrpc_svc.c		oncrpc
+file	oncrpc/oncrpc_tls.c		oncrpc
 file	oncrpc/tls13_crypto.c		oncrpc
 file	oncrpc/xdr_mbuf.c		xdr
 file	oncrpc/xdr_module.c		xdr

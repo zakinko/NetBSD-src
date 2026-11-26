@@ -723,11 +723,13 @@ cgdopen(dev_t dev, int flags, int fmt, struct lwp *l)
 	sc = getcgd_softc(dev);
 	if (sc == NULL)
 		sc = cgd_spawn(CGDUNIT(dev));
-	cgd_unlock();
 	if (sc == NULL)
-		return ENXIO;
+		error = ENXIO;
+	else
+		error = dk_open(&sc->sc_dksc, dev, flags, fmt, l);
+	cgd_unlock();
 
-	return dk_open(&sc->sc_dksc, dev, flags, fmt, l);
+	return error;
 }
 
 static int

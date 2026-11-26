@@ -239,6 +239,8 @@ CFATTACH_DECL3_NEW(vnd, sizeof(struct vnd_softc),
 static struct vnd_softc	*vnd_spawn(int);
 static int	vnd_destroy(device_t);
 
+static kmutex_t	vnd_lock;	/* serializes open and close */
+
 static const struct	dkdriver vnddkdriver = {
 	.d_strategy = vndstrategy,
 	.d_minphys = minphys
@@ -248,6 +250,8 @@ void
 vndattach(int num)
 {
 	int error;
+
+	mutex_init(&vnd_lock, MUTEX_DEFAULT, IPL_NONE);
 
 	error = config_cfattach_attach(vnd_cd.cd_name, &vnd_ca);
 	if (error)
@@ -336,18 +340,23 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
 	if (vnddebug & VDB_FOLLOW)
 		printf("vndopen(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
 #endif
+	mutex_enter(&vnd_lock);
 	sc = device_lookup_private(&vnd_cd, unit);
 	if (sc == NULL) {
 		sc = vnd_spawn(unit);
-		if (sc == NULL)
+		if (sc == NULL) {
+			mutex_exit(&vnd_lock);
 			return ENOMEM;
+		}
 
 		/* compatibility, keep disklabel after close */
 		sc->sc_flags = VNF_KLABEL;
 	}
 
-	if ((error = vndlock(sc)) != 0)
+	if ((error = vndlock(sc)) != 0) {
+		mutex_exit(&vnd_lock);
 		return error;
+	}
 
 	mutex_enter(&sc->sc_dkdev.dk_openlock);
 
@@ -413,6 +422,7 @@ vndopen(dev_t dev, int flags, int mode, struct lwp *l)
  done:
 	mutex_exit(&sc->sc_dkdev.dk_openlock);
 	vndunlock(sc);
+	mutex_exit(&vnd_lock);
 	return error;
 }
 
@@ -427,12 +437,15 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l)
 	if (vnddebug & VDB_FOLLOW)
 		printf("vndclose(0x%"PRIx64", 0x%x, 0x%x, %p)\n", dev, flags, mode, l);
 #endif
+	mutex_enter(&vnd_lock);
 	sc = device_lookup_private(&vnd_cd, unit);
-	if (sc == NULL)
-		return ENXIO;
+	if (sc == NULL) {
+		error = ENXIO;
+		goto out;
+	}
 
 	if ((error = vndlock(sc)) != 0)
-		return error;
+		goto out;
 
 	mutex_enter(&sc->sc_dkdev.dk_openlock);
 
@@ -466,11 +479,12 @@ vndclose(dev_t dev, int flags, int mode, struct lwp *l)
 		if ((error = vnd_destroy(sc->sc_dev)) != 0) {
 			aprint_error_dev(sc->sc_dev,
 			    "unable to detach instance\n");
-			return error;
+			goto out;
 		}
 	}
 
-	return 0;
+out:	mutex_exit(&vnd_lock);
+	return error;
 }
 
 /*
@@ -2150,12 +2164,15 @@ vnd_modcmd(modcmd_t cmd, void *arg)
 	switch (cmd) {
 	case MODULE_CMD_INIT:
 #ifdef _MODULE
+		mutex_init(&vnd_lock, MUTEX_DEFAULT, IPL_NONE);
+
                 /*
                  * Attach the {b,c}devsw's
                  */
 		error = devsw_attach("vnd", &vnd_bdevsw, &vnd_bmajor,
 		    &vnd_cdevsw, &vnd_cmajor);
 		if (error) {
+			mutex_destroy(&vnd_lock);
 #ifdef DIAGNOSTIC
                         aprint_error("%s: unable to attach %s devsw, "
                             "error %d", __func__, vnd_cd.cd_name, error);
@@ -2166,6 +2183,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
 		error = config_cfdriver_attach(&vnd_cd);
 		if (error) {
 			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
+			mutex_destroy(&vnd_lock);
 			break;
 		}
 
@@ -2173,6 +2191,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
 	        if (error) {
 			config_cfdriver_detach(&vnd_cd);
 			devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
+			mutex_destroy(&vnd_lock);
 #ifdef DIAGNOSTIC
 			aprint_error("%s: unable to register cfattach for \n"
 			    "%s, error %d", __func__, vnd_cd.cd_name, error);
@@ -2208,6 +2227,7 @@ vnd_modcmd(modcmd_t cmd, void *arg)
                  * Remove {b,c}devsw's
                  */
 		devsw_detach(&vnd_bdevsw, &vnd_cdevsw);
+		mutex_destroy(&vnd_lock);
 
 #endif
 		break;

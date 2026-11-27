@@ -5,7 +5,8 @@
 set -eu
 D=/var/tmp/nfsv4
 command -v getfacl setfacl
-n=3
+# in-vm.sh has vnd1 to vnd4: vnd3 is the block layout's, vnd4 FFSv1.
+n=5
 for e in pacl pacl5; do
 	mkdir -p "/export/$e"
 	dd if=/dev/zero of="/var/tmp/$e.img" bs=1m count=128 2>/dev/null

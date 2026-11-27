@@ -135,12 +135,12 @@ jobs:
       - run: sh ci/oncrpc/swap.sh out/netbsd NFSV4T ssh netbsd
       - run: |
           tar -C out -cf - modules | ssh netbsd 'mkdir -p /var/tmp/nfsv4 && tar -C /var/tmp/nfsv4 -xf -'
-          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
+          scp ci/nfsv4/in-vm.sh ci/nfsv4/nfsv4d.c ci/nfsv4/lockhold.c ci/nfsv4/nfs3tcp.c ci/nfsv4/udp41.c ci/nfsv4/fib.c ci/nfsv4/restart.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/in-vm.sh'
           ssh netbsd 'sysctl -w ddb.onpanic=1 ddb.tee_msgbuf=1; sysctl -w ddb.commandonenter="bt;show all locks;reboot"' || :
       - name: The KDC, the daemons, and the exports with POSIX.1e ACLs
         run: |
-          tar -cf - sys/nfs/nfs.h usr.sbin/mountd usr.sbin/gssd usr.sbin/nfsd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          tar -cf - sys/nfs/nfs.h sys/oncrpc/oncrpc_sec.h usr.sbin/mountd usr.sbin/gssd usr.sbin/nfsd | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/nfsgss/vm-kdc.sh ci/nfsgss/desprobe.c ci/nfsgss/vm-des.sh ci/nfsacl/vm-acl.sh ci/nfsacl/vm-nfsd.sh ci/nfsacl/vm-nfsreg.sh ci/nfsacl/sacl.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/vm-acl.sh'
           ssh netbsd 'sh /var/tmp/nfsv4/vm-kdc.sh'

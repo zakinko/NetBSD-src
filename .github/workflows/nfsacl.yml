@@ -87,6 +87,7 @@ jobs:
             ci/nfsacl
             ci/oncrpc/swap.sh
             sys/nfs/nfs.h
+            sys/oncrpc/oncrpc_sec.h
             usr.sbin/mountd
             usr.sbin/gssd
             usr.sbin/nfsd

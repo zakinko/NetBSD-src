@@ -61,7 +61,10 @@ jobs:
           path: nb/netbsd
           key: nfsgss-kernel-${{ hashFiles('sys/nfs/*', 'sys/oncrpc/*', 'sys/conf/files', 'ci/nfsv4/base', 'ci/nfsv4/build.sh', 'sys/kern/vfs_lockf.c', 'sys/kern/vfs_subr.c', 'sys/kern/vfs_vnops.c', 'sys/kern/vfs_syscalls.c', 'sys/kern/sys_descrip.c', 'sys/sys/lockf.h', 'sys/sys/vnode.h', 'sys/ufs/ffs/ffs_inode.c', 'sys/fs/tmpfs/tmpfs_subr.c') }}
       # The bridge's invariant: with NFSSERVER_ONCRPC off, sys/nfs is as at
-      # its base cacd4b0 but for the include of the option's header.
+      # its base 82f07f1 but for the include of the option's header.  The
+      # base was cacd4b0 until the backbone came under the bridge: its
+      # recalls of NFSv4 delegations through NFSv3 (1a56bee, 82f07f1) are
+      # in the old server too, with the option off as with it on.
       - name: sys/nfs with the option off
         run: |
           # unifdef from this tree, not apt: the archive did not resolve
@@ -69,8 +72,8 @@ jobs:
           # stale in 43033388367.
           mkdir -p "$HOME/bin" && cc -O -w -D__dead= -D"__printflike(a,b)=" -o "$HOME/bin/unifdef" usr.bin/unifdef/unifdef.c
           export PATH=$HOME/bin:$PATH
-          git cat-file -e cacd4b0^{commit} 2>/dev/null || git fetch -q --depth=1 origin cacd4b0ecc01522a5e3f88160d8302dc97d29675
-          sh ci/nfsbridge/off-is-unchanged.sh cacd4b0
+          git cat-file -e 82f07f1b87a^{commit} 2>/dev/null || git fetch -q --depth=1 origin 82f07f1b87a313f47292aee65d92b100c85b1f34
+          sh ci/nfsbridge/off-is-unchanged.sh 82f07f1b87a
       - run: sh ci/nfsv4/build.sh kernel "$PWD/nb" "$PWD/out"
       - uses: actions/cache/save@v4
         if: steps.tools.outputs.cache-hit != 'true'

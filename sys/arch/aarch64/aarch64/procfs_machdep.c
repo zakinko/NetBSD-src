@@ -82,7 +82,13 @@ procfs_cpuinfo_features(struct cpu_info *ci, char *buf, int buflen)
 	if (SO_EQ(pfr0, ID_AA64PFR0_EL1_ADVSIMD, ID_AA64PFR0_EL1_ADV_SIMD_IMPL))
 		OUTPUT_BUF(" asimd");
 	/* notyet: " evtstrm" */
-	if (SO_EQ(isar0, ID_AA64ISAR0_EL1_AES, ID_AA64ISAR0_EL1_AES_AES))
+	/*
+	 * AES is 2 when PMULL is implemented as well, and from Armv8
+	 * only 0 and 2 are permitted (Arm ARM DDI 0487H.a, D13.2.61);
+	 * aes is there for 1 and 2, pmull only for 2.
+	 */
+	if (SO_EQ(isar0, ID_AA64ISAR0_EL1_AES, ID_AA64ISAR0_EL1_AES_AES) ||
+	    SO_EQ(isar0, ID_AA64ISAR0_EL1_AES, ID_AA64ISAR0_EL1_AES_PMUL))
 		OUTPUT_BUF(" aes");
 	if (SO_EQ(isar0, ID_AA64ISAR0_EL1_AES, ID_AA64ISAR0_EL1_AES_PMUL))
 		OUTPUT_BUF(" pmull");

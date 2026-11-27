@@ -14,7 +14,17 @@
 set -eu
 T=$1/tools; O=$1/obj; J=$(nproc)
 tip=$(git rev-parse HEAD)
-base=${EACH_BASE:-$(git log --format=%H --grep='^Add the protocol constants' -1 "$tip")}
+findbase() { git log --format=%H --grep='^Add the protocol constants' -1 "$tip"; }
+# A shallow checkout of a fixed depth stops reaching the start once the
+# series outgrows it, as nfs-integ did at 297 commits against 200, so
+# deepen it until it does, a bounded number of times.
+i=0
+while [ -z "${EACH_BASE:-}" ] && [ -z "$(findbase)" ] &&
+    [ "$(git rev-parse --is-shallow-repository)" = true ] && [ $i -lt 20 ]; do
+	git fetch -q --deepen=100 origin "$tip" || break
+	i=$((i + 1))
+done
+base=${EACH_BASE:-$(findbase)}
 # No base, as in a clone too shallow to reach it, would build nothing and
 # pass; say so and fail instead.
 if [ -z "$base" ]; then

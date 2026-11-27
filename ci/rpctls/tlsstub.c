@@ -12,6 +12,7 @@
 #include <nfs/rpcv2.h>
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
+#include <oncrpc/oncrpc_tlsarg.h>
 
 #include <err.h>
 #include <errno.h>

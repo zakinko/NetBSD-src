@@ -55,6 +55,7 @@ __RCSID("$NetBSD$");
 #include <nfs/rpcv2.h>
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
+#include <oncrpc/oncrpc_tlsarg.h>
 
 #include <openssl/err.h>
 #include <openssl/evp.h>

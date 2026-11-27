@@ -90,6 +90,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <oncrpc/oncrpc_gss.h>
 #include <oncrpc/oncrpc_rdma.h>
 #include <oncrpc/oncrpc_tls.h>
+#include <oncrpc/oncrpc_tlsarg.h>
 
 /* RFC 1094 s2.2.9, writeargs up to the data: the handle and four words. */
 #define	NFSX_V2WRITEHDR	(NFSX_V2FH + 4 * NFSX_UNSIGNED)

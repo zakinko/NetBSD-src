@@ -134,7 +134,7 @@ jobs:
         shell: bash
       - name: The stand-in daemon
         run: |
-          tar -cf - sys/nfs/nfs.h | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          tar -cf - sys/nfs/nfs.h sys/oncrpc/oncrpc_tlsarg.h | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/rpctls/tlsstub.c netbsd:/var/tmp/nfsv4/
           ssh netbsd 'cd /var/tmp/nfsv4 && cc -Wall -I/var/tmp/nfsv4/src/sys -o tlsstub tlsstub.c && (./tlsstub </dev/null >tlsstub.log 2>&1 & echo $! >tlsstub.pid) && sleep 1 && cat tlsstub.pid'
       - name: The AUTH_TLS probe and the hand-off
@@ -223,7 +223,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 30
         run: |
-          tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c ci/rpctls/cidpcap.c ci/rpctls/cidcheck.sh | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
+          tar -cf - usr.sbin/rpc.tlsservd sys/nfs/nfs.h sys/oncrpc/oncrpc_tlsarg.h sys/oncrpc/tls13_crypto.c sys/oncrpc/tls13_crypto.h tests/oncrpc/gss-shim ci/rpctls/dtlsclient.c ci/rpctls/cidpcap.c ci/rpctls/cidcheck.sh | ssh netbsd 'mkdir -p /var/tmp/nfsv4/src && tar -C /var/tmp/nfsv4/src -xf -'
           scp ci/rpctls/dtls-vm.sh netbsd:/var/tmp/nfsv4/
           ssh netbsd 'sh /var/tmp/nfsv4/dtls-vm.sh heavy' 2>&1 | tee out/probe-dtls.txt; exit ${PIPESTATUS[0]}
         shell: bash

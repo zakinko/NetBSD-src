@@ -84,6 +84,10 @@ __KERNEL_RCSID(0, "$NetBSD: nfs_syscalls.c,v 1.170 2026/08/26 13:28:37 riastradh
 #include <nfs/rpcv2.h>
 #include <nfs/xdr_subs.h>
 
+#ifdef NFSSERVER_ONCRPC
+#include <oncrpc/oncrpc_tlsarg.h>
+#endif
+
 extern int32_t (*nfsrv3_procs[NFS_NPROCS])(struct nfsrv_descript *,
 						struct nfssvc_sock *,
 						struct lwp *, struct mbuf **);
